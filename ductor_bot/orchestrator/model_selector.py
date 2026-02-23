@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ductor_bot.cli.auth import AuthStatus, check_all_auth
-from ductor_bot.config import update_config_file_async
+from ductor_bot.config import get_gemini_models, update_config_file_async
 
 if TYPE_CHECKING:
     from ductor_bot.cli.codex_cache import CodexModelCache
@@ -91,6 +91,40 @@ def _build_switch_summary(ctx: _SwitchSummaryContext) -> str:
     return "\n".join(parts)
 
 
+def _gemini_models_for_selector() -> list[str]:
+    """Return Gemini models discovered from local Gemini CLI files."""
+    models = sorted(get_gemini_models())
+    # Prefer stable models before previews in the selector.
+    stable = [model for model in models if "preview" not in model]
+    preview = [model for model in models if "preview" in model]
+    return [*stable, *preview]
+
+
+def _button_label(model_id: str) -> str:
+    """Compact button label while preserving identity in callback data."""
+    return model_id.removeprefix("gemini-").removeprefix("auto-")
+
+
+def _chunk_buttons(
+    model_ids: list[str],
+    *,
+    columns: int = 3,
+) -> list[list[InlineKeyboardButton]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    for index in range(0, len(model_ids), columns):
+        chunk = model_ids[index : index + columns]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=_button_label(model_id),
+                    callback_data=f"ms:m:{model_id}",
+                )
+                for model_id in chunk
+            ]
+        )
+    return rows
+
+
 def is_model_selector_callback(data: str) -> bool:
     """Return True if *data* belongs to the model selector wizard."""
     return data.startswith(MS_PREFIX)
@@ -119,7 +153,7 @@ async def model_selector_start(
         return (
             f"{header}\n\n"
             "No authenticated providers found.\n"
-            "Run `claude auth` or `codex auth` to get started.",
+            "Run `claude auth`, `codex auth`, or authenticate in `gemini` to get started.",
             None,
         )
 
@@ -128,14 +162,15 @@ async def model_selector_start(
         codex_cache = orch._codex_cache_observer.get_cache() if orch._codex_cache_observer else None
         return await _build_model_step(provider, header, codex_cache)
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="CLAUDE", callback_data="ms:p:claude"),
-                InlineKeyboardButton(text="CODEX", callback_data="ms:p:codex"),
-            ]
-        ]
-    )
+    buttons: list[InlineKeyboardButton] = []
+    if "claude" in authed:
+        buttons.append(InlineKeyboardButton(text="CLAUDE", callback_data="ms:p:claude"))
+    if "codex" in authed:
+        buttons.append(InlineKeyboardButton(text="CODEX", callback_data="ms:p:codex"))
+    if "gemini" in authed:
+        buttons.append(InlineKeyboardButton(text="GEMINI", callback_data="ms:p:gemini"))
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
     return f"{header}\n\nPick a provider:", keyboard
 
 
@@ -288,6 +323,24 @@ async def _build_model_step(
         )
         return f"{header}\n\nSelect Claude model:", keyboard
 
+    if provider == "gemini":
+        gemini_models = _gemini_models_for_selector()
+        if not gemini_models:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="<< Back", callback_data="ms:b:root")],
+                ]
+            )
+            return (
+                f"{header}\n\nNo Gemini models discovered from local Gemini CLI files.",
+                keyboard,
+            )
+
+        gemini_rows = _chunk_buttons(gemini_models)
+        gemini_rows.append([InlineKeyboardButton(text="<< Back", callback_data="ms:b:root")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=gemini_rows)
+        return f"{header}\n\nSelect Gemini model:", keyboard
+
     # Use cache instead of live discovery
     codex_models = codex_cache.models if codex_cache else []
     if not codex_models:
@@ -314,10 +367,10 @@ async def _handle_model_selected(
     model_id: str,
     codex_cache: CodexModelCache | None = None,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
-    """Handle a model button press. Claude: switch immediately. Codex: show reasoning."""
+    """Handle a model button press. Claude/Gemini: switch immediately. Codex: show reasoning."""
     provider = orch._models.provider_for(model_id)
 
-    if provider == "claude":
+    if provider in ("claude", "gemini"):
         result = await switch_model(orch, chat_id, model_id)
         return result, None
 

@@ -1,14 +1,15 @@
-# Cron Tools (Claude & Codex)
+# Cron Tools (Claude, Codex & Gemini)
 
 Scripts for creating, editing, listing, and removing scheduled jobs.
 
-## ⚠️ MANDATORY: Ask Before Creating Jobs
+## MANDATORY: Ask Before Creating Jobs
 
 **When the user requests a new cron job, you MUST ask:**
 
 1. **Which CLI provider?**
    - `claude` - Standard Claude models
    - `codex` - OpenAI Codex models with extended thinking
+   - `gemini` - Google Gemini models
 
 2. **Which model?**
    - **If Claude:**
@@ -21,6 +22,13 @@ Scripts for creating, editing, listing, and removing scheduled jobs.
      - `gpt-5.1-codex-max` - Optimized for deep and fast reasoning
      - `gpt-5.2` - Latest frontier model
      - `gpt-5.1-codex-mini` - Cheaper, faster (limited reasoning)
+   - **If Gemini:**
+     - `gemini-2.5-pro` - Balanced, most capable (recommended)
+     - `gemini-2.5-flash` - Fast and cost-effective
+     - `gemini-2.5-flash-lite` - Cheapest, fastest
+     - `gemini-3-pro-preview` - Next-gen preview
+     - `gemini-3-flash-preview` - Next-gen fast preview
+     - `gemini-3.1-pro-preview` - Latest preview
 
 3. **If Codex: Which thinking level?**
    - `low` - Fast, surface-level reasoning
@@ -87,10 +95,19 @@ python3 tools/cron_tools/cron_add.py \
   --provider codex \
   --model gpt-5.2-codex \
   --reasoning-effort high
+
+# Gemini example:
+python3 tools/cron_tools/cron_add.py \
+  --name "job-name" \
+  --title "Job Title" \
+  --description "What this job does" \
+  --schedule "0 9 * * *" \
+  --provider gemini \
+  --model gemini-2.5-pro
 ```
 
 **Available parameters:**
-- `--provider` - CLI provider: `claude` or `codex` (optional, uses global config if omitted)
+- `--provider` - CLI provider: `claude`, `codex`, or `gemini` (optional, uses global config if omitted)
 - `--model` - Model choice (optional, uses global config if omitted)
 - `--reasoning-effort` - Codex only: thinking level (optional, defaults to `medium`)
 - `--cli-parameters` - Advanced: JSON array of CLI flags (only if user explicitly requests)
@@ -106,8 +123,8 @@ python3 tools/cron_tools/cron_list.py
 ```bash
 python3 tools/cron_tools/cron_edit.py "exact-job-id" --schedule "30 8 * * *"
 python3 tools/cron_tools/cron_edit.py "exact-job-id" --timezone "Europe/Berlin"
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --provider codex
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --model gpt-5.3-codex
+python3 tools/cron_tools/cron_edit.py "exact-job-id" --provider gemini
+python3 tools/cron_tools/cron_edit.py "exact-job-id" --model gemini-2.5-flash
 python3 tools/cron_tools/cron_edit.py "exact-job-id" --reasoning-effort xhigh
 python3 tools/cron_tools/cron_edit.py "exact-job-id" --enable
 python3 tools/cron_tools/cron_edit.py "exact-job-id" --disable
@@ -125,7 +142,7 @@ Use `cron_edit.py` for in-place updates (title/description/schedule/timezone/pro
 
 Each job owns `cron_tasks/<name>/TASK_DESCRIPTION.md`.
 Edit that file to change task behavior.
-Do not edit task-folder `CLAUDE.md` or `AGENTS.md` manually.
+Do not edit task-folder `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md` manually.
 
 ## After Cron Setup
 

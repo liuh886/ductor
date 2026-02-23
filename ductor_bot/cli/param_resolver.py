@@ -11,7 +11,28 @@ if TYPE_CHECKING:
     from ductor_bot.cli.codex_cache import CodexModelCache
     from ductor_bot.config import AgentConfig
 
+from ductor_bot.config import _GEMINI_ALIASES, get_gemini_models
+
 _CLAUDE_MODELS: frozenset[str] = frozenset({"haiku", "sonnet", "opus"})
+
+
+def _looks_like_gemini_model(model: str) -> bool:
+    return model.startswith(("gemini-", "auto-gemini-"))
+
+
+def _validate_gemini_model(model: str) -> None:
+    gemini_models = get_gemini_models()
+    if model in _GEMINI_ALIASES:
+        return
+    if gemini_models and model not in gemini_models:
+        msg = f"Invalid Gemini model: {model}. Must be one of {sorted(gemini_models)}"
+        raise DuctorError(msg)
+    if not gemini_models and not _looks_like_gemini_model(model):
+        msg = (
+            f"Invalid Gemini model: {model}. Must use a Gemini model ID "
+            "(e.g. gemini-2.5-pro) or Gemini alias."
+        )
+        raise DuctorError(msg)
 
 
 @dataclass(frozen=True)
@@ -77,6 +98,8 @@ def resolve_cli_config(
         if model not in _CLAUDE_MODELS:
             msg = f"Invalid Claude model: {model}. Must be one of {sorted(_CLAUDE_MODELS)}"
             raise DuctorError(msg)
+    elif provider == "gemini":
+        _validate_gemini_model(model)
     else:  # codex
         if codex_cache is None:
             msg = "Codex cache is required for Codex model validation"

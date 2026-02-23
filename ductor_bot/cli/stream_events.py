@@ -49,6 +49,16 @@ class ToolUseEvent(StreamEvent):
     """Tool invocation detected during streaming."""
 
     tool_name: str = ""
+    tool_id: str | None = None
+    parameters: dict[str, Any] | None = None
+
+
+class ToolResultEvent(StreamEvent):
+    """Tool execution result (emitted by Gemini CLI)."""
+
+    tool_id: str = ""
+    status: str = ""
+    output: str = ""
 
 
 class ThinkingEvent(StreamEvent):

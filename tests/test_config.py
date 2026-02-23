@@ -11,9 +11,15 @@ from ductor_bot.config import (
     ModelRegistry,
     StreamingConfig,
     deep_merge_config,
+    set_gemini_models,
 )
 
 # -- AgentConfig defaults --
+
+
+@pytest.fixture(autouse=True)
+def _reset_gemini_models() -> None:
+    set_gemini_models(frozenset())
 
 
 def test_agent_config_defaults() -> None:
@@ -24,8 +30,15 @@ def test_agent_config_defaults() -> None:
     assert cfg.daily_reset_hour == 4
     assert cfg.cli_timeout == 600.0
     assert cfg.permission_mode == "bypassPermissions"
+    assert cfg.gemini_api_key is None
     assert cfg.telegram_token == ""
     assert cfg.allowed_user_ids == []
+
+
+def test_agent_config_normalizes_nullish_gemini_api_key() -> None:
+    assert AgentConfig(gemini_api_key="null").gemini_api_key is None
+    assert AgentConfig(gemini_api_key=" NONE ").gemini_api_key is None
+    assert AgentConfig(gemini_api_key="   ").gemini_api_key is None
 
 
 def test_agent_config_streaming_defaults() -> None:
@@ -102,23 +115,10 @@ def test_registry_provider_for_codex() -> None:
     assert reg.provider_for("o3") == "codex"
 
 
-def test_registry_resolve_for_provider_native() -> None:
+def test_registry_provider_for_gemini_prefix() -> None:
     reg = ModelRegistry()
-    model_id, provider = reg.resolve_for_provider("opus", frozenset({"claude"}))
-    assert model_id == "opus"
-    assert provider == "claude"
-
-
-def test_registry_resolve_for_provider_fallback() -> None:
-    reg = ModelRegistry()
-    _model_id, provider = reg.resolve_for_provider("opus", frozenset({"codex"}))
-    assert provider == "codex"
-
-
-def test_registry_resolve_for_provider_no_provider() -> None:
-    reg = ModelRegistry()
-    with pytest.raises(ValueError, match="No available provider"):
-        reg.resolve_for_provider("opus", frozenset())
+    set_gemini_models(frozenset())
+    assert reg.provider_for("gemini-2.5-pro") == "gemini"
 
 
 def test_streaming_config_fields() -> None:

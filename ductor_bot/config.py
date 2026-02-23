@@ -7,9 +7,11 @@ import logging
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
+NULLISH_TEXT_VALUES: frozenset[str] = frozenset({"null", "none"})
+DEFAULT_EMPTY_GEMINI_API_KEY: str = "null"
 
 
 class StreamingConfig(BaseModel):
@@ -47,6 +49,8 @@ _DEFAULT_HEARTBEAT_PROMPT = (
     "Reply exactly: HEARTBEAT_OK"
 )
 
+_DEFAULT_HEARTBEAT_ACK = "HEARTBEAT_OK"
+
 
 class HeartbeatConfig(BaseModel):
     """Settings for the periodic heartbeat system."""
@@ -57,7 +61,7 @@ class HeartbeatConfig(BaseModel):
     quiet_start: int = 21
     quiet_end: int = 8
     prompt: str = _DEFAULT_HEARTBEAT_PROMPT
-    ack_token: str = "HEARTBEAT_OK"  # noqa: S105
+    ack_token: str = _DEFAULT_HEARTBEAT_ACK
 
 
 class CleanupConfig(BaseModel):
@@ -74,6 +78,7 @@ class CLIParametersConfig(BaseModel):
 
     claude: list[str] = Field(default_factory=list)
     codex: list[str] = Field(default_factory=list)
+    gemini: list[str] = Field(default_factory=list)
 
 
 class WebhookConfig(BaseModel):
@@ -151,6 +156,7 @@ class AgentConfig(BaseModel):
     cli_timeout: float = 600.0
     reasoning_effort: str = "medium"
     file_access: str = "all"
+    gemini_api_key: str | None = None
     streaming: StreamingConfig = Field(default_factory=StreamingConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
@@ -160,6 +166,17 @@ class AgentConfig(BaseModel):
     user_timezone: str = ""
     telegram_token: str = ""
     allowed_user_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("gemini_api_key", mode="before")
+    @classmethod
+    def _normalize_gemini_api_key(cls, value: object) -> object:
+        """Normalize null-like string values to ``None`` for optional key config."""
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized or normalized.lower() in NULLISH_TEXT_VALUES:
+            return None
+        return normalized
 
 
 def resolve_user_timezone(configured: str = "") -> ZoneInfo:
@@ -223,22 +240,17 @@ def _detect_posix_timezone() -> ZoneInfo | None:
 
 _CLAUDE_MODELS: frozenset[str] = frozenset({"haiku", "sonnet", "opus"})
 
-_MODEL_EQUIVALENCE: dict[str, str] = {
-    "opus": "gpt-5.2-codex",
-    "sonnet": "gpt-5.1-codex-mini",
-    "haiku": "gpt-5.1-codex-mini",
-    "gpt-5.2-codex": "opus",
-    "gpt-5.1-codex-max": "opus",
-    "gpt-5.1-codex-mini": "sonnet",
-    "gpt-5.2": "opus",
-    "gpt-5.3-codex": "opus",
-}
+# "auto" is a Gemini-specific alias (Gemini CLI auto-selects the best model).
+_GEMINI_ALIASES: frozenset[str] = frozenset({"auto", "pro", "flash", "flash-lite"})
+
+_RUNTIME_GEMINI_MODELS: frozenset[str] = frozenset()
 
 
 class ModelRegistry:
     """Provider resolution for models.
 
     Claude models (haiku, sonnet, opus) are hardcoded.
+    Gemini models are hardcoded (parsed from CLI at startup if available).
     Codex models are discovered dynamically at runtime.
     """
 
@@ -247,42 +259,21 @@ class ModelRegistry:
         """Return the provider for a model ID."""
         if model_id in _CLAUDE_MODELS:
             return "claude"
+        if (
+            model_id in _GEMINI_ALIASES
+            or model_id in _RUNTIME_GEMINI_MODELS
+            or model_id.startswith(("gemini-", "auto-gemini-"))
+        ):
+            return "gemini"
         return "codex"
 
-    def resolve_for_provider(
-        self,
-        model_name: str,
-        available_providers: frozenset[str],
-    ) -> tuple[str, str]:
-        """Resolve *model_name* to ``(model_id, provider)`` with fallback."""
-        native_provider = self.provider_for(model_name)
 
-        if native_provider in available_providers:
-            return model_name, native_provider
+def get_gemini_models() -> frozenset[str]:
+    """Return dynamically discovered Gemini models from the local installation."""
+    return _RUNTIME_GEMINI_MODELS
 
-        equivalent = _MODEL_EQUIVALENCE.get(model_name)
-        if equivalent:
-            eq_provider = self.provider_for(equivalent)
-            if eq_provider in available_providers:
-                logger.info(
-                    "Model fallback: %s (%s) -> %s (%s)",
-                    model_name,
-                    native_provider,
-                    equivalent,
-                    eq_provider,
-                )
-                return equivalent, eq_provider
 
-        fallback_provider = next(iter(available_providers), None)
-        if fallback_provider:
-            fallback_model = "opus" if fallback_provider == "claude" else model_name
-            logger.warning(
-                "No equivalent for '%s', falling back to %s (%s)",
-                model_name,
-                fallback_model,
-                fallback_provider,
-            )
-            return fallback_model, fallback_provider
-
-        msg = f"No available provider for model '{model_name}'"
-        raise ValueError(msg)
+def set_gemini_models(models: frozenset[str]) -> None:
+    """Set runtime Gemini models discovered from local Gemini CLI files."""
+    global _RUNTIME_GEMINI_MODELS  # noqa: PLW0603
+    _RUNTIME_GEMINI_MODELS = models

@@ -203,7 +203,7 @@ async def test_diagnose_shows_effective_runtime_target(orch: Orchestrator) -> No
     result = await cmd_diagnose(orch, 0, "/diagnose")
 
     assert "Configured: claude / opus" in result.text
-    assert "Effective runtime: codex / gpt-5.2-codex" in result.text
+    assert "Effective runtime: claude / opus" in result.text
 
 
 # -- cmd_stop --

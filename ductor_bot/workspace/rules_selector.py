@@ -1,4 +1,4 @@
-"""Auto-discovery and deployment of provider-specific rule files (CLAUDE.md/AGENTS.md)."""
+"""Auto-discovery and deployment of provider-specific rule files."""
 
 from __future__ import annotations
 
@@ -22,12 +22,14 @@ class RulesSelector:
     - RULES.md (static rules for all providers)
     - RULES-claude-only.md (Claude-specific variant)
     - RULES-codex-only.md (Codex-specific variant)
-    - RULES-claude-and-codex.md (both providers variant)
+    - RULES-gemini-only.md (Gemini-specific variant)
+    - RULES-all-clis.md (multi-provider variant)
 
     Deployed naming in ~/.ductor/:
-    - CLAUDE.md (always created if Claude authenticated)
-    - AGENTS.md (always created if Codex authenticated)
-    - Both synchronized via sync_rule_files() when both exist
+    - CLAUDE.md (created if Claude authenticated)
+    - AGENTS.md (created if Codex authenticated)
+    - GEMINI.md (created if Gemini authenticated)
+    - All synchronized via sync_rule_files() when multiple exist
 
     Usage:
         selector = RulesSelector(paths)
@@ -40,6 +42,7 @@ class RulesSelector:
         auth = check_all_auth()
         claude_result = auth.get("claude")
         codex_result = auth.get("codex")
+        gemini_result = auth.get("gemini")
 
         self._claude_authenticated = (
             claude_result.status == AuthStatus.AUTHENTICATED if claude_result else False
@@ -47,19 +50,37 @@ class RulesSelector:
         self._codex_authenticated = (
             codex_result.status == AuthStatus.AUTHENTICATED if codex_result else False
         )
+        self._gemini_authenticated = (
+            gemini_result.status == AuthStatus.AUTHENTICATED if gemini_result else False
+        )
+
+    @property
+    def _authenticated_count(self) -> int:
+        """Number of authenticated providers."""
+        return sum(
+            (
+                self._claude_authenticated,
+                self._codex_authenticated,
+                self._gemini_authenticated,
+            )
+        )
 
     def get_variant_suffix(self) -> str:
         """Determine template variant based on CLI authentication status.
 
         Returns:
-            "claude-and-codex" if both authenticated
-            "codex-only" if only Codex authenticated
-            "claude-only" otherwise (default fallback)
+            "all-clis" if 2+ providers authenticated
+            "claude-only" if only Claude
+            "codex-only" if only Codex
+            "gemini-only" if only Gemini
+            "claude-only" as fallback (no providers authenticated)
         """
-        if self._claude_authenticated and self._codex_authenticated:
-            return "claude-and-codex"
+        if self._authenticated_count >= 2:
+            return "all-clis"
         if self._codex_authenticated:
             return "codex-only"
+        if self._gemini_authenticated:
+            return "gemini-only"
         return "claude-only"
 
     def discover_template_directories(self) -> list[Path]:
@@ -113,19 +134,20 @@ class RulesSelector:
 
         Scans _home_defaults/ for directories with RULES templates, selects
         the best variant for current auth state, and deploys to ~/.ductor/
-        as CLAUDE.md and/or AGENTS.md based on authentication status.
+        as CLAUDE.md, AGENTS.md, and/or GEMINI.md based on authentication.
 
         Deployment logic:
-        - Only Claude authenticated → only CLAUDE.md
-        - Only Codex authenticated → only AGENTS.md
-        - Both authenticated → both CLAUDE.md and AGENTS.md (kept in sync)
+        - Claude authenticated → CLAUDE.md
+        - Codex authenticated → AGENTS.md
+        - Gemini authenticated → GEMINI.md
         """
         variant = self.get_variant_suffix()
         logger.info(
-            "Deploying rule files (variant: %s, claude=%s, codex=%s)",
+            "Deploying rule files (variant: %s, claude=%s, codex=%s, gemini=%s)",
             variant,
             self._claude_authenticated,
             self._codex_authenticated,
+            self._gemini_authenticated,
         )
 
         template_dirs = self.discover_template_directories()
@@ -164,52 +186,50 @@ class RulesSelector:
                     deployed_count += 1
                     logger.debug("Deployed: %s -> AGENTS.md", template.name)
 
+                # Deploy GEMINI.md if Gemini is authenticated
+                if self._gemini_authenticated:
+                    gemini_dst = dst_dir / "GEMINI.md"
+                    shutil.copy2(template, gemini_dst)
+                    deployed_count += 1
+                    logger.debug("Deployed: %s -> GEMINI.md", template.name)
+
             except OSError:
                 logger.exception("Failed to deploy %s", template)
 
         logger.info(
-            "Deployed %d rule files (Claude=%s, Codex=%s)",
+            "Deployed %d rule files (Claude=%s, Codex=%s, Gemini=%s)",
             deployed_count,
             self._claude_authenticated,
             self._codex_authenticated,
+            self._gemini_authenticated,
         )
 
         # Cleanup: Remove stale files that don't match current auth status
         self._cleanup_stale_files()
 
     def _cleanup_stale_files(self) -> None:
-        """Remove CLAUDE.md or AGENTS.md files that don't match current auth status.
+        """Remove rule files that don't match current auth status.
 
-        Cleanup logic:
-        - Only Claude authenticated → remove all AGENTS.md files
-        - Only Codex authenticated → remove all CLAUDE.md files
-        - Both authenticated → keep both (they stay in sync via sync_rule_files)
+        Removes CLAUDE.md, AGENTS.md, or GEMINI.md files for providers
+        that are not currently authenticated.
         """
-        # If both authenticated, no cleanup needed
-        if self._claude_authenticated and self._codex_authenticated:
-            logger.debug("Both CLIs authenticated, no cleanup needed")
-            return
+        stale: list[tuple[str, str]] = []
+        if not self._claude_authenticated:
+            stale.append(("CLAUDE.md", "Claude"))
+        if not self._codex_authenticated:
+            stale.append(("AGENTS.md", "Codex"))
+        if not self._gemini_authenticated:
+            stale.append(("GEMINI.md", "Gemini"))
 
-        # Only Claude authenticated → remove AGENTS.md
-        if self._claude_authenticated and not self._codex_authenticated:
-            removed = self._remove_files_by_name("AGENTS.md")
+        for filename, provider_name in stale:
+            removed = self._remove_files_by_name(filename)
             if removed > 0:
                 logger.info(
-                    "Cleaned up %d stale AGENTS.md files (Codex not authenticated)", removed
+                    "Cleaned up %d stale %s files (%s not authenticated)",
+                    removed,
+                    filename,
+                    provider_name,
                 )
-            return
-
-        # Only Codex authenticated → remove CLAUDE.md
-        if self._codex_authenticated and not self._claude_authenticated:
-            removed = self._remove_files_by_name("CLAUDE.md")
-            if removed > 0:
-                logger.info(
-                    "Cleaned up %d stale CLAUDE.md files (Claude not authenticated)", removed
-                )
-            return
-
-        # Neither authenticated (shouldn't happen, but handle gracefully)
-        logger.warning("Neither Claude nor Codex authenticated, skipping cleanup")
 
     def _remove_files_by_name(self, filename: str) -> int:
         """Remove all files with given name in ~/.ductor/.

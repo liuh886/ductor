@@ -1,21 +1,21 @@
 # workspace/
 
-Workspace and home-directory management. Resolves runtime paths, seeds `~/.ductor` from packaged defaults, deploys provider-aware rule files, syncs `CLAUDE.md`/`AGENTS.md`, injects runtime environment notices, and manages cron task folders.
+Workspace/home-directory management for `~/.ductor`.
 
 ## Files
 
-- `paths.py`: immutable `DuctorPaths` + `resolve_paths()`.
-- `init.py`: `init_workspace()`, `_walk_and_copy()` zone rules, required-dir creation, config merge, rule sync, runtime environment injection.
-- `rules_selector.py`: auth-based RULES template selection/deployment + stale-file cleanup.
-- `loader.py`: safe file readers (`read_file`, `read_mainmemory`).
-- `cron_tasks.py`: create/list/delete cron-task mini workspaces + template render helpers.
-- `skill_sync.py`: cross-platform skill directory sync (see [skill_system](skill_system.md)).
+- `paths.py`: immutable `DuctorPaths` + `resolve_paths()`
+- `init.py`: workspace init pipeline, zone copy rules, rule sync, runtime notice injection
+- `rules_selector.py`: auth-aware RULES template selection/deployment + stale file cleanup
+- `cron_tasks.py`: create/list/delete cron-task folders
+- `skill_sync.py`: cross-tool skill sync and bundled-skill sync
+- `loader.py`: safe file readers
 
 ## `DuctorPaths`
 
-Important properties (runtime side):
+Important runtime paths:
 
-- `ductor_home`: `~/.ductor` (default, overridable)
+- `ductor_home`: `~/.ductor` (default)
 - `workspace`: `~/.ductor/workspace`
 - `config_path`: `~/.ductor/config/config.json`
 - `sessions_path`: `~/.ductor/sessions.json`
@@ -23,90 +23,100 @@ Important properties (runtime side):
 - `webhooks_path`: `~/.ductor/webhooks.json`
 - `logs_dir`: `~/.ductor/logs`
 - `cron_tasks_dir`: `~/.ductor/workspace/cron_tasks`
-- `tools_dir`: `~/.ductor/workspace/tools`
-- `user_tools_dir`: `~/.ductor/workspace/tools/user_tools`
-- `telegram_files_dir`: `~/.ductor/workspace/telegram_files`
-- `output_to_user_dir`: `~/.ductor/workspace/output_to_user`
 - `skills_dir`: `~/.ductor/workspace/skills`
-- `bundled_skills_dir`: `ductor_bot/_home_defaults/workspace/skills` (package-internal, read-only)
-- `mainmemory_path`: `~/.ductor/workspace/memory_system/MAINMEMORY.md`
+- `bundled_skills_dir`: package `_home_defaults/workspace/skills`
 
-Template source side:
+## `init_workspace()` order
 
-- `home_defaults`: `ductor_bot/_home_defaults/` (mirrors `~/.ductor` layout)
-- `config_example_path`: `<repo>/config.example.json` in source checkouts, otherwise bundled fallback `ductor_bot/_config_example.json`
+1. migrate legacy `workspace/tasks -> workspace/cron_tasks`
+2. `sync_bundled_skills(paths)`
+3. `_sync_home_defaults(paths)`
+4. ensure required directories
+5. `RulesSelector(paths).deploy_rules()`
+6. `sync_rule_files(paths.workspace)`
+7. `_smart_merge_config(paths)`
+8. `_clean_orphan_symlinks(paths)`
+9. `sync_skills(paths)`
 
-`resolve_paths()` resolution order:
+Idempotent by design (called from multiple startup paths).
 
-- `ductor_home`: explicit arg -> `DUCTOR_HOME` env -> `~/.ductor`
-- `framework_root`: explicit arg -> `DUCTOR_FRAMEWORK_ROOT` env -> package default
-- `home_defaults`: explicit arg -> package `_home_defaults`
+## Zone copy rules (`_walk_and_copy`)
 
-## `init_workspace()` Flow
+### Zone 2 (always overwritten)
 
-1. one-time migration: `workspace/tasks` -> `workspace/cron_tasks`.
-2. link bundled skills from package via `sync_bundled_skills(paths)`.
-3. sync home defaults (`paths.home_defaults`) into runtime home via `_walk_and_copy()` (skips already-symlinked targets).
-4. ensure required directories exist (`workspace/*`, `config/`, `logs/`).
-5. deploy rule files with `RulesSelector(paths).deploy_rules()` based on current CLI auth status.
-6. sync `CLAUDE.md` <-> `AGENTS.md` under `paths.workspace` (mtime-based).
-7. shallow config merge with `config.example.json` (`_smart_merge_config`).
-8. remove orphan symlinks in workspace root.
-9. run `sync_skills(paths)` for cross-platform skill sync.
+- `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
+- `.py` files in:
+  - `workspace/tools/cron_tools/`
+  - `workspace/tools/webhook_tools/`
 
-This function is intentionally called from both `__main__.py` and `Orchestrator.create()`. Behavior is idempotent and rule-based, so repeated execution is safe.
+Special case:
 
-## Copy Rules (`_walk_and_copy`)
+- when copying a template `CLAUDE.md`, init also writes mirrored `AGENTS.md` and `GEMINI.md` in same target dir.
 
-- Zone 2 (always overwrite):
-  - `CLAUDE.md`, `AGENTS.md`
-  - all `.py` files in `workspace/tools/cron_tools/` and `workspace/tools/webhook_tools/` (framework-managed tool scripts)
-- Zone 3 (seed once): all other files copied only if missing.
-- Rule template files are skipped here (`RULES.md`, `RULES-claude-only.md`, `RULES-codex-only.md`, `RULES-claude-and-codex.md`).
-- Targets that are already symlinks are skipped (preserves bundled skill links).
-- Hidden/ignored dirs are skipped (`.venv`, `.git`, `.mypy_cache`, `__pycache__`, `node_modules`).
+### Zone 3 (seed once)
 
-## RULES Template Deployment (`RulesSelector`)
+- all other files: copied only when missing.
 
-Templates in `_home_defaults/` use `RULES*.md` naming and are deployed to runtime names (`CLAUDE.md`/`AGENTS.md`) under `~/.ductor/`.
+Skipped template files (handled by `RulesSelector`):
 
-Selection/deploy behavior:
+- `RULES.md`
+- `RULES-claude-only.md`
+- `RULES-codex-only.md`
+- `RULES-gemini-only.md`
+- `RULES-all-clis.md`
 
-1. discover directories containing `RULES*.md`.
-2. choose variant by auth status:
-   - both authenticated -> `RULES-claude-and-codex.md` (fallback `RULES.md`)
-   - only Codex authenticated -> `RULES-codex-only.md` (fallback `RULES.md`)
-   - otherwise -> `RULES-claude-only.md` (fallback `RULES.md`)
-3. deploy outputs:
-   - Claude authenticated -> write `CLAUDE.md`
-   - Codex authenticated -> write `AGENTS.md`
-4. post-deploy cleanup of stale files:
-   - only Claude authenticated -> remove `AGENTS.md`
-   - only Codex authenticated -> remove `CLAUDE.md`
-   - both authenticated -> keep both
+## RULES deployment (`rules_selector.py`)
 
-## Rule Sync
+Template variants:
 
-`sync_rule_files(root)` runs recursively:
+- `RULES.md`
+- `RULES-claude-only.md`
+- `RULES-codex-only.md`
+- `RULES-gemini-only.md`
+- `RULES-all-clis.md`
 
-- only `CLAUDE.md` exists -> create `AGENTS.md`
-- only `AGENTS.md` exists -> create `CLAUDE.md`
-- both exist -> newer file (mtime) overwrites older file
+Variant selection:
 
-`watch_rule_files(workspace, interval=10s)` runs this continuously in background.
+- `all-clis` when 2+ providers are authenticated
+- `codex-only` when only Codex
+- `gemini-only` when only Gemini
+- otherwise `claude-only`
 
-## Runtime Environment Injection
+Deployment outputs per authenticated provider:
 
-`inject_runtime_environment(paths, docker_container=...)` appends a runtime notice to `workspace/CLAUDE.md` and `workspace/AGENTS.md` (if present):
+- Claude -> `CLAUDE.md`
+- Codex -> `AGENTS.md`
+- Gemini -> `GEMINI.md`
 
-- Docker mode: informs the agent it runs inside container with `/ductor` mount.
-- Host mode: warns the agent it runs directly on host system.
+Cleanup removes stale provider files for unauthenticated providers, except inside `workspace/cron_tasks/` (user-owned task rules).
 
-Injection is idempotent (`"## Runtime Environment"` marker check).
+## Rule sync (`sync_rule_files`)
 
-## Cron Task Workspaces (`cron_tasks.py`)
+Recursive mtime-based sync for:
 
-`create_cron_task(paths, name, title, description, with_venv=False)` creates:
+- `CLAUDE.md`
+- `AGENTS.md`
+- `GEMINI.md`
+
+Per directory:
+
+- pick newest existing file
+- copy to outdated existing siblings (missing siblings are not created)
+
+Background watcher: `watch_rule_files(workspace, interval=10s)`.
+
+## Runtime environment injection
+
+`inject_runtime_environment(paths, docker_container=...)` appends one notice section to each existing workspace rule file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`):
+
+- Docker mode notice (`/ductor` mount)
+- host mode warning (no sandbox)
+
+Marker `## Runtime Environment` prevents duplicate insertion.
+
+## Cron task folders (`cron_tasks.py`)
+
+`create_cron_task(...)` creates:
 
 ```text
 cron_tasks/<safe_name>/
@@ -115,20 +125,26 @@ cron_tasks/<safe_name>/
   TASK_DESCRIPTION.md
   <safe_name>_MEMORY.md
   scripts/
-  [.venv/]  # optional
 ```
 
-Key behaviors:
+Path traversal protection is enforced for create/delete operations.
 
-- task name is sanitized + traversal-protected,
-- `CLAUDE.md` and `AGENTS.md` are generated from the same rendered template,
-- `delete_cron_task()` validates resolved path stays inside `cron_tasks_dir`.
+`sync_rule_files()` only updates already-existing rule files by mtime; it does not create missing `GEMINI.md` files in task folders.
 
-## Skill Sync
+## Skill sync summary
 
-Three-way symlink sync between `~/.ductor/workspace/skills/`, `~/.claude/skills/`, and `~/.codex/skills/`. Skills added anywhere appear everywhere. Background watcher runs every 30 seconds. Full documentation in [skill_system](skill_system.md).
+`sync_skills()` syncs between:
 
-## Loader API
+- `~/.ductor/workspace/skills`
+- `~/.claude/skills`
+- `~/.codex/skills`
+- `~/.gemini/skills`
 
-- `read_file(path) -> str | None`: tolerant reader, logs `OSError` and returns `None`.
-- `read_mainmemory(paths) -> str`: returns `MAINMEMORY.md` content or empty string.
+Default mode uses symlinks/junctions. Docker mode uses managed directory copies (`.ductor_managed`) so paths resolve inside container namespace.
+
+See `docs/modules/skill_system.md`.
+
+## Loader helpers
+
+- `read_file(path) -> str | None`
+- `read_mainmemory(paths) -> str`

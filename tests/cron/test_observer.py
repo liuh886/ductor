@@ -13,7 +13,7 @@ import time_machine
 
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_discovery import CodexModelInfo
-from ductor_bot.config import AgentConfig, ModelRegistry
+from ductor_bot.config import AgentConfig
 from ductor_bot.cron.execution import (
     enrich_instruction,
     parse_claude_result,
@@ -41,11 +41,6 @@ def _make_config(**overrides: Any) -> AgentConfig:
     return AgentConfig(**overrides)
 
 
-def _make_models() -> ModelRegistry:
-    """Return a real ModelRegistry (stateless, no file needed)."""
-    return ModelRegistry()
-
-
 def _make_codex_cache() -> CodexModelCache:
     """Return a mock CodexModelCache."""
     cache = MagicMock(spec=CodexModelCache)
@@ -65,7 +60,6 @@ def _make_observer(
     paths: DuctorPaths,
     mgr: CronManager,
     *,
-    models: ModelRegistry | None = None,
     codex_cache: CodexModelCache | None = None,
     **config_overrides: Any,
 ) -> CronObserver:
@@ -73,7 +67,6 @@ def _make_observer(
         paths,
         mgr,
         config=_make_config(**config_overrides),
-        models=models or _make_models(),
         codex_cache=codex_cache or _make_codex_cache(),
     )
 
@@ -102,7 +95,9 @@ class TestCronObserverScheduling:
     """Scheduling and lifecycle tests."""
 
     async def test_observer_imports(self) -> None:
-        from ductor_bot.cron.observer import CronObserver  # noqa: F401
+        from ductor_bot.cron.observer import CronObserver
+
+        assert CronObserver is not None
 
     async def test_observer_loads_jobs_on_start(self, tmp_path: Path) -> None:
         paths = _make_paths(tmp_path)
@@ -240,7 +235,7 @@ class TestCronObserverExecution:
         task_folder = paths.cron_tasks_dir / "daily"
         task_folder.mkdir()
 
-        observer = _make_observer(paths, mgr, models=_make_models())
+        observer = _make_observer(paths, mgr)
 
         mock_proc = AsyncMock()
         mock_proc.returncode = 0
@@ -286,7 +281,6 @@ class TestCronObserverExecution:
         observer = _make_observer(
             paths,
             mgr,
-            models=_make_models(),
             codex_cache=codex_cache,
             model="gpt-5.2",
             provider="codex",  # Set provider to match model

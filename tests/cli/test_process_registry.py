@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ductor_bot.cli.process_registry import ProcessRegistry, TrackedProcess
+from ductor_bot.cli.process_registry import ProcessRegistry, TrackedProcess, _kill_process_tree
 
 
 def _mock_process(*, pid: int = 1, returncode: int | None = None) -> MagicMock:
@@ -81,3 +82,61 @@ def test_multiple_chats_isolated() -> None:
     proc2 = _mock_process(pid=2)
     reg.register(chat_id=1, process=proc1, label="main")
     reg.register(chat_id=2, process=proc2, label="main")
+    assert reg.has_active(1) is True
+    assert reg.has_active(2) is True
+    assert reg.has_active(3) is False
+
+
+def test_unregister_ignores_foreign_tracked_same_chat() -> None:
+    reg = ProcessRegistry()
+    proc = _mock_process(pid=11)
+    reg.register(chat_id=1, process=proc, label="main")
+    foreign = TrackedProcess(process=proc, chat_id=1, label="main")
+    reg.unregister(foreign)  # no error
+    assert reg.has_active(1) is True
+
+
+async def test_kill_stale_returns_zero_when_none_stale() -> None:
+    reg = ProcessRegistry()
+    proc = _mock_process(pid=21)
+    reg.register(chat_id=1, process=proc, label="main")
+    killed = await reg.kill_stale(max_age_seconds=9999)
+    assert killed == 0
+
+
+async def test_kill_stale_kills_and_unregisters_old_entries() -> None:
+    reg = ProcessRegistry()
+    old_proc = _mock_process(pid=30)
+    fresh_proc = _mock_process(pid=31)
+    done_proc = _mock_process(pid=32, returncode=0)
+
+    old = reg.register(chat_id=1, process=old_proc, label="old")
+    fresh = reg.register(chat_id=1, process=fresh_proc, label="fresh")
+    reg.register(chat_id=1, process=done_proc, label="done")
+    old.registered_at = time.time() - 1000
+    fresh.registered_at = time.time()
+
+    with patch("ductor_bot.cli.process_registry.asyncio.sleep", new_callable=AsyncMock):
+        killed = await reg.kill_stale(max_age_seconds=60)
+
+    assert killed == 1
+    assert old_proc.terminate.called
+    assert reg.has_active(1) is True  # fresh process remains
+
+
+async def test_kill_stale_handles_process_lookup_error() -> None:
+    reg = ProcessRegistry()
+    proc = _mock_process(pid=40)
+    proc.terminate.side_effect = ProcessLookupError()
+    tracked = reg.register(chat_id=1, process=proc, label="gone")
+    tracked.registered_at = time.time() - 1000
+
+    with patch("ductor_bot.cli.process_registry.asyncio.sleep", new_callable=AsyncMock):
+        killed = await reg.kill_stale(max_age_seconds=60)
+
+    assert killed == 0
+
+
+def test_kill_process_tree_swallows_oserror() -> None:
+    with patch("ductor_bot.cli.process_registry.subprocess.run", side_effect=OSError()):
+        _kill_process_tree(1234)

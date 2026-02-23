@@ -133,6 +133,13 @@ def test_canonical_only_codex(tmp_path: Path) -> None:
     assert result == codex["sk"]
 
 
+def test_canonical_gemini_last_priority(tmp_path: Path) -> None:
+    gemini = {"sk": tmp_path / "gemini" / "sk"}
+    gemini["sk"].mkdir(parents=True)
+    result = _resolve_canonical("sk", {}, {}, {}, gemini)
+    assert result == gemini["sk"]
+
+
 def test_canonical_follows_symlink(tmp_path: Path) -> None:
     real = tmp_path / "external" / "sk"
     real.mkdir(parents=True)
@@ -265,6 +272,42 @@ def test_sync_ductor_to_both(tmp_path: Path) -> None:
         mock.return_value = {"claude": claude_skills, "codex": codex_skills}
         sync_skills(paths)
     for d in (claude_skills, codex_skills):
+        link = d / "from-ductor"
+        assert link.is_symlink()
+        assert link.resolve() == (paths.skills_dir / "from-ductor").resolve()
+
+
+def test_sync_gemini_to_ductor(tmp_path: Path) -> None:
+    paths, _, _ = _setup_three_dirs(tmp_path)
+    gemini_home = tmp_path / "fake_home" / ".gemini"
+    gemini_home.mkdir(parents=True)
+    gemini_skills = gemini_home / "skills"
+    _make_skill(gemini_skills, "from-gemini")
+    with patch("ductor_bot.workspace.skill_sync._cli_skill_dirs") as mock:
+        mock.return_value = {"gemini": gemini_skills}
+        sync_skills(paths)
+    link = paths.skills_dir / "from-gemini"
+    assert link.is_symlink()
+    assert link.resolve() == (gemini_skills / "from-gemini").resolve()
+
+
+def test_sync_ductor_to_all_three(tmp_path: Path) -> None:
+    paths, claude_skills, codex_skills = _setup_three_dirs(tmp_path)
+    gemini_home = tmp_path / "fake_home" / ".gemini"
+    gemini_home.mkdir(parents=True)
+    gemini_skills = gemini_home / "skills"
+    claude_skills.mkdir(parents=True, exist_ok=True)
+    codex_skills.mkdir(parents=True, exist_ok=True)
+    gemini_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill(paths.skills_dir, "from-ductor")
+    with patch("ductor_bot.workspace.skill_sync._cli_skill_dirs") as mock:
+        mock.return_value = {
+            "claude": claude_skills,
+            "codex": codex_skills,
+            "gemini": gemini_skills,
+        }
+        sync_skills(paths)
+    for d in (claude_skills, codex_skills, gemini_skills):
         link = d / "from-ductor"
         assert link.is_symlink()
         assert link.resolve() == (paths.skills_dir / "from-ductor").resolve()

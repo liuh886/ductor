@@ -17,8 +17,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from ductor_bot.cli.auth import AuthStatus, check_claude_auth, check_codex_auth
-from ductor_bot.config import AgentConfig, deep_merge_config
+from ductor_bot.cli.auth import AuthStatus, check_claude_auth, check_codex_auth, check_gemini_auth
+from ductor_bot.config import DEFAULT_EMPTY_GEMINI_API_KEY, AgentConfig, deep_merge_config
 from ductor_bot.workspace.init import init_workspace
 from ductor_bot.workspace.paths import resolve_paths
 
@@ -98,14 +98,16 @@ def _check_clis(console: Console) -> None:
     """Detect CLI availability and require at least one authenticated provider."""
     claude = check_claude_auth()
     codex = check_codex_auth()
+    gemini = check_gemini_auth()
 
     lines = [
         "[bold]Detected AI Backends:[/bold]\n",
         f"  Claude Code CLI   {_STATUS_ICON[claude.status]}",
         f"  OpenAI Codex CLI  {_STATUS_ICON[codex.status]}",
+        f"  Google Gemini CLI {_STATUS_ICON[gemini.status]}",
     ]
 
-    has_auth = claude.is_authenticated or codex.is_authenticated
+    has_auth = claude.is_authenticated or codex.is_authenticated or gemini.is_authenticated
 
     if has_auth:
         border = "green"
@@ -114,7 +116,8 @@ def _check_clis(console: Console) -> None:
         lines.append(
             "\n[bold red]At least one CLI must be installed and authenticated.[/bold red]\n\n"
             "  Claude: [dim]https://docs.anthropic.com/en/docs/claude-code[/dim]\n"
-            "  Codex:  [dim]https://github.com/openai/codex[/dim]"
+            "  Codex:  [dim]https://github.com/openai/codex[/dim]\n"
+            "  Gemini: [dim]https://github.com/google-gemini/gemini-cli[/dim]"
         )
 
     console.print(
@@ -359,7 +362,10 @@ def _write_config(
         existing = {}
 
     defaults = AgentConfig().model_dump(mode="json")
+    defaults["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
     merged, _ = deep_merge_config(existing, defaults)
+    if merged.get("gemini_api_key") is None:
+        merged["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
 
     merged["telegram_token"] = telegram_token
     merged["allowed_user_ids"] = allowed_user_ids

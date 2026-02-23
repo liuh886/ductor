@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -82,6 +83,9 @@ class TestLoadConfig:
 
         # Should have picked up default streaming config
         assert config.streaming.enabled is True
+        assert config.gemini_api_key is None
+        merged = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert merged["gemini_api_key"] == "null"
 
     def test_creates_default_config_when_no_example(self, tmp_path: Path) -> None:
         from ductor_bot.__main__ import load_config
@@ -101,6 +105,31 @@ class TestLoadConfig:
 
         assert paths.config_path.exists()
         assert config.provider == "claude"
+        created = json.loads(paths.config_path.read_text(encoding="utf-8"))
+        assert created["gemini_api_key"] == "null"
+
+    def test_normalizes_existing_null_gemini_api_key_to_string(self, tmp_path: Path) -> None:
+        from ductor_bot.__main__ import load_config
+
+        home = tmp_path / ".ductor"
+        config_dir = home / "config"
+        config_dir.mkdir(parents=True)
+        fw = tmp_path / "framework"
+        fw.mkdir()
+        user_cfg = {"telegram_token": "TOKEN", "provider": "claude", "gemini_api_key": None}
+        (config_dir / "config.json").write_text(json.dumps(user_cfg), encoding="utf-8")
+
+        with patch("ductor_bot.__main__.resolve_paths") as mock_paths:
+            from ductor_bot.workspace.paths import DuctorPaths
+
+            paths = DuctorPaths(ductor_home=home, home_defaults=fw / "workspace", framework_root=fw)
+            mock_paths.return_value = paths
+            with patch("ductor_bot.__main__.init_workspace"):
+                config = load_config()
+
+        assert config.gemini_api_key is None
+        merged = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+        assert merged["gemini_api_key"] == "null"
 
 
 class TestIsConfigured:
@@ -388,18 +417,19 @@ class TestUpgradeCli:
 class TestReExecBot:
     """Test cross-platform re-exec helper."""
 
-    def test_posix_uses_execv(self) -> None:
+    def test_re_exec_spawns_process_and_exits(self) -> None:
         from ductor_bot.__main__ import _re_exec_bot
 
         with (
-            patch("ductor_bot.__main__._IS_WINDOWS", False),
-            patch("ductor_bot.__main__.os.execv") as mock_execv,
+            patch("ductor_bot.__main__.subprocess.Popen") as mock_popen,
+            pytest.raises(SystemExit) as exc_info,
         ):
             _re_exec_bot()
 
-        mock_execv.assert_called_once()
+        mock_popen.assert_called_once_with([sys.executable, "-m", "ductor_bot"])
+        assert exc_info.value.code == 0
 
-    def test_windows_uses_popen_and_exit(self) -> None:
+    def test_re_exec_uses_same_args_on_windows_flag(self) -> None:
         from ductor_bot.__main__ import _re_exec_bot
 
         with (
@@ -409,7 +439,7 @@ class TestReExecBot:
         ):
             _re_exec_bot()
 
-        mock_popen.assert_called_once()
+        mock_popen.assert_called_once_with([sys.executable, "-m", "ductor_bot"])
         assert exc_info.value.code == 0
 
 
@@ -718,4 +748,91 @@ class TestSetupCommand:
         ):
             _cmd_setup(False)
 
+        mock_start.assert_not_called()
+
+
+class TestMainHelpers:
+    def test_parse_service_subcommand_ignores_flags(self) -> None:
+        from ductor_bot.__main__ import _parse_service_subcommand
+
+        assert _parse_service_subcommand(["-v", "service", "status"]) == "status"
+
+    def test_parse_service_subcommand_unknown_returns_none(self) -> None:
+        from ductor_bot.__main__ import _parse_service_subcommand
+
+        assert _parse_service_subcommand(["service", "invalid"]) is None
+
+    def test_cmd_service_without_subcommand_prints_help(self) -> None:
+        from ductor_bot.__main__ import _cmd_service
+
+        with patch("ductor_bot.__main__._print_service_help") as mock_help:
+            _cmd_service(["service"])
+        mock_help.assert_called_once()
+
+    def test_cmd_service_install_dispatches_backend(self) -> None:
+        from ductor_bot.__main__ import _cmd_service
+
+        with patch("ductor_bot.infra.service.install_service") as mock_install:
+            _cmd_service(["service", "install"])
+        mock_install.assert_called_once()
+
+    def test_cmd_service_status_dispatches_backend(self) -> None:
+        from ductor_bot.__main__ import _cmd_service
+
+        with patch("ductor_bot.infra.service.print_service_status") as mock_status:
+            _cmd_service(["service", "status"])
+        mock_status.assert_called_once()
+
+    def test_print_usage_calls_status_when_configured(self) -> None:
+        from ductor_bot.__main__ import _print_usage
+
+        with (
+            patch("ductor_bot.__main__._is_configured", return_value=True),
+            patch("ductor_bot.__main__._print_status") as mock_status,
+        ):
+            _print_usage()
+        mock_status.assert_called_once()
+
+    def test_print_usage_shows_not_configured_panel(self) -> None:
+        from ductor_bot.__main__ import _print_usage
+
+        with patch("ductor_bot.__main__._is_configured", return_value=False):
+            _print_usage()  # should run without error
+
+    def test_cmd_status_prints_not_configured(self) -> None:
+        from ductor_bot.__main__ import _cmd_status
+
+        with patch("ductor_bot.__main__._is_configured", return_value=False):
+            _cmd_status()  # should run without error
+
+    def test_cmd_restart_stops_and_reexecs(self) -> None:
+        from ductor_bot.__main__ import _cmd_restart
+
+        with (
+            patch("ductor_bot.__main__._stop_bot") as mock_stop,
+            patch("ductor_bot.__main__._re_exec_bot", side_effect=SystemExit),
+            pytest.raises(SystemExit),
+        ):
+            _cmd_restart()
+        mock_stop.assert_called_once()
+
+    def test_default_action_configured_starts(self) -> None:
+        from ductor_bot.__main__ import _default_action
+
+        with (
+            patch("ductor_bot.__main__._is_configured", return_value=True),
+            patch("ductor_bot.__main__._start_bot") as mock_start,
+        ):
+            _default_action(verbose=True)
+        mock_start.assert_called_once_with(True)
+
+    def test_default_action_onboarding_service_installed_skips_start(self) -> None:
+        from ductor_bot.__main__ import _default_action
+
+        with (
+            patch("ductor_bot.__main__._is_configured", return_value=False),
+            patch("ductor_bot.cli.init_wizard.run_onboarding", return_value=True),
+            patch("ductor_bot.__main__._start_bot") as mock_start,
+        ):
+            _default_action(verbose=False)
         mock_start.assert_not_called()

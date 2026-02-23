@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ductor_bot.infra.service_linux import (
@@ -39,6 +40,16 @@ class TestGenerateServiceUnit:
         assert "[Service]" in unit
         assert "[Unit]" in unit
         assert "[Install]" in unit
+
+    def test_includes_all_nvm_bins(self, tmp_path: Path) -> None:
+        (tmp_path / ".nvm" / "versions" / "node" / "v24.0.0" / "bin").mkdir(parents=True)
+        (tmp_path / ".nvm" / "versions" / "node" / "v22.0.0" / "bin").mkdir(parents=True)
+
+        with patch("ductor_bot.infra.service_linux.Path.home", return_value=tmp_path):
+            unit = _generate_service_unit("ductor")
+
+        assert f"{tmp_path}/.nvm/versions/node/v24.0.0/bin" in unit
+        assert f"{tmp_path}/.nvm/versions/node/v22.0.0/bin" in unit
 
 
 class TestIsServiceAvailable:

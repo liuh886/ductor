@@ -37,7 +37,7 @@ def _write_atomic(path: Path, content: str) -> None:
 
 # Files that are ALWAYS overwritten on every start (Zone 2).
 # Everything else is seeded only once (Zone 3).
-_ZONE2_FILES = frozenset({"CLAUDE.md", "AGENTS.md"})
+_ZONE2_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
 
 # Directories where ALL .py files are Zone 2 (framework-managed).
 # User-owned scripts should go in tools/user_tools/ (Zone 3).
@@ -49,7 +49,8 @@ _SKIP_FILES = frozenset(
     {
         "RULES-claude-only.md",
         "RULES-codex-only.md",
-        "RULES-claude-and-codex.md",
+        "RULES-gemini-only.md",
+        "RULES-all-clis.md",
         "RULES.md",  # Static templates also handled by RulesSelector
     }
 )
@@ -106,14 +107,15 @@ def _copy_with_symlink_check(entry: Path, target: Path) -> None:
 
 
 def _handle_zone2_file(entry: Path, target: Path, dst: Path) -> None:
-    """Handle Zone 2 file copy (always overwrite) and AGENTS.md mirroring."""
+    """Handle Zone 2 file copy (always overwrite) and mirror creation."""
     _copy_with_symlink_check(entry, target)
     logger.debug("Zone 2 copy: %s", target)
-    # Auto-create AGENTS.md mirror for every CLAUDE.md
+    # Auto-create mirrors for every CLAUDE.md (AGENTS.md + GEMINI.md)
     if entry.name == "CLAUDE.md":
-        agents_target = dst / "AGENTS.md"
-        _copy_with_symlink_check(entry, agents_target)
-        logger.debug("Zone 2 copy: %s", agents_target)
+        for mirror_name in ("AGENTS.md", "GEMINI.md"):
+            mirror_target = dst / mirror_name
+            _copy_with_symlink_check(entry, mirror_target)
+            logger.debug("Zone 2 copy: %s", mirror_target)
 
 
 def _handle_regular_file(entry: Path, target: Path, src: Path, root_src: Path) -> None:
@@ -162,42 +164,43 @@ def _walk_and_copy(src: Path, dst: Path, root_src: Path | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+_RULE_FILE_NAMES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
+
+
 def sync_rule_files(root: Path) -> None:
-    """Recursively sync CLAUDE.md <-> AGENTS.md by mtime in all subdirs.
+    """Recursively sync CLAUDE.md <-> AGENTS.md <-> GEMINI.md by mtime.
 
     For each directory under root (including root itself):
-    - If CLAUDE.md exists but AGENTS.md does not: copy CLAUDE.md to AGENTS.md
-    - If AGENTS.md exists but CLAUDE.md does not: copy AGENTS.md to CLAUDE.md
-    - If both exist: copy the newer one to the older one (by mtime)
-    - Skip directories in _SKIP_DIRS
+    - Find the newest rule file among the three by mtime.
+    - Copy the newest to all others that exist or are missing.
+    - Skip directories in _SKIP_DIRS.
     """
     if not root.is_dir():
         return
-    _sync_pair(root)
+    _sync_group(root)
     for dirpath in root.rglob("*"):
         if not dirpath.is_dir():
             continue
         if any(part in _SKIP_DIRS for part in dirpath.parts):
             continue
-        _sync_pair(dirpath)
+        _sync_group(dirpath)
 
 
-def _sync_pair(directory: Path) -> None:
-    """Sync CLAUDE.md and AGENTS.md in a single directory."""
-    claude = directory / "CLAUDE.md"
-    agents = directory / "AGENTS.md"
+def _sync_group(directory: Path) -> None:
+    """Sync all rule files (CLAUDE.md, AGENTS.md, GEMINI.md) in a single directory."""
+    files = {name: directory / name for name in _RULE_FILE_NAMES}
+    existing = {name: path for name, path in files.items() if path.exists()}
+    if not existing:
+        return
 
-    if claude.exists() and not agents.exists():
-        shutil.copy2(claude, agents)
-    elif agents.exists() and not claude.exists():
-        shutil.copy2(agents, claude)
-    elif claude.exists() and agents.exists():
-        claude_mtime = claude.stat().st_mtime
-        agents_mtime = agents.stat().st_mtime
-        if claude_mtime > agents_mtime:
-            shutil.copy2(claude, agents)
-        elif agents_mtime > claude_mtime:
-            shutil.copy2(agents, claude)
+    newest_name, newest_path = max(existing.items(), key=lambda item: item[1].stat().st_mtime)
+    newest_mtime = newest_path.stat().st_mtime
+
+    for name, path in files.items():
+        if name == newest_name:
+            continue
+        if path.exists() and path.stat().st_mtime < newest_mtime:
+            shutil.copy2(newest_path, path)
 
 
 # ---------------------------------------------------------------------------
@@ -338,12 +341,12 @@ _HOST_NOTICE = """
 
 
 def inject_runtime_environment(paths: DuctorPaths, *, docker_container: str) -> None:
-    """Append a runtime environment section to workspace CLAUDE.md + AGENTS.md.
+    """Append a runtime environment section to workspace rule files.
 
     Called once after workspace init when the Docker state is known.
     """
     notice = _DOCKER_NOTICE.format(container=docker_container) if docker_container else _HOST_NOTICE
-    for name in ("CLAUDE.md", "AGENTS.md"):
+    for name in _RULE_FILE_NAMES:
         target = paths.workspace / name
         if not target.exists():
             continue
@@ -362,11 +365,10 @@ _RULE_SYNC_INTERVAL = 10.0  # seconds
 
 
 async def watch_rule_files(workspace: Path, *, interval: float = _RULE_SYNC_INTERVAL) -> None:
-    """Continuously sync CLAUDE.md <-> AGENTS.md across the workspace.
+    """Continuously sync CLAUDE.md <-> AGENTS.md <-> GEMINI.md across the workspace.
 
     Runs ``sync_rule_files`` in a thread every *interval* seconds so that
-    changes made by either Claude (CLAUDE.md) or Codex (AGENTS.md) are
-    propagated to the counterpart file automatically.
+    changes made by any CLI agent are propagated to all rule files automatically.
     """
     while True:
         await asyncio.sleep(interval)

@@ -1,118 +1,108 @@
 # infra/
 
-Process/runtime infrastructure: PID locking, restart signaling, Docker sandbox helper, install-mode detection, service management, version checking, auto-update observer, and supervisor loop.
+Runtime infrastructure: process lifecycle, restart/update flow, Docker sandbox, service backends.
 
 ## Files
 
-- `pidlock.py`: single-instance lock with optional kill-existing behavior.
-- `restart.py`: restart sentinel/marker helpers + `EXIT_RESTART = 42`.
-- `docker.py`: `DockerManager` for optional persistent sidecar container.
-- `install.py`: installation mode detection (`pipx` / `pip` / `dev`).
-- `service.py`: platform dispatcher for service management backends.
-- `service_linux.py`: Linux systemd user-service install/status/start/stop/logs/uninstall.
-- `service_macos.py`: macOS launchd Launch Agent install/status/start/stop/logs/uninstall.
-- `service_windows.py`: Windows Task Scheduler install/status/start/stop/logs/uninstall.
-- `version.py`: PyPI version check, GitHub changelog fetch, `VersionInfo` model, installed version detection.
-- `updater.py`: `UpdateObserver` background task, `perform_upgrade()`, upgrade sentinel read/write.
-- `ductor_bot/run.py`: supervisor (hot reload + crash recovery).
-- `run.py` (repo root): thin wrapper calling `ductor_bot.run.main()`.
+- `pidlock.py`: single-instance PID lock
+- `restart.py`: restart marker/sentinel helpers, `EXIT_RESTART = 42`
+- `docker.py`: `DockerManager`
+- `install.py`: install mode detection (`pipx` / `pip` / `dev`)
+- `service.py`: platform dispatch facade
+- `service_common.py`: shared console helper
+- `service_logs.py`: shared recent-log renderer
+- `service_linux.py`: Linux systemd backend
+- `service_macos.py`: macOS launchd backend
+- `service_windows.py`: Windows Task Scheduler backend
+- `version.py`: PyPI version/changelog utilities
+- `updater.py`: `UpdateObserver`, upgrade helpers/sentinel
+- `ductor_bot/run.py`: supervisor loop
 
-## Service Backends
+## Service management
 
 `service.py` dispatches by platform:
 
-- `win32` -> `service_windows`
-- `darwin` -> `service_macos`
-- otherwise -> `service_linux`
+- Linux -> systemd user service (`service_linux.py`)
+- macOS -> launchd Launch Agent (`service_macos.py`)
+- Windows -> Task Scheduler (`service_windows.py`)
 
-Backend highlights:
+Shared helpers:
 
-- Linux (`service_linux.py`): systemd user service with linger support (`loginctl enable-linger`).
-- macOS (`service_macos.py`): launchd user Launch Agent (`~/Library/LaunchAgents/dev.ductor.plist`) with crash-only restart (`KeepAlive.SuccessfulExit=false`), restart throttle (`ThrottleInterval=10`), and launchd stdout/stderr at `~/.ductor/logs/service.log` + `service.err`.
-- Windows (`service_windows.py`): Task Scheduler task with 10s logon delay (`PT10S`), prefers `pythonw.exe -m ductor_bot` to avoid console windows (fallback `ductor` binary), and shows explicit Admin guidance when `schtasks` returns access-denied errors.
-- `print_service_logs()` on Linux: `journalctl --user -u ductor -f`
-- `print_service_logs()` on macOS/Windows: prints recent lines from newest `~/.ductor/logs/ductor*.log`
+- `ensure_console()` in `service_common.py`
+- `print_recent_logs()` in `service_logs.py`
 
-## PID Lock
+`print_recent_logs()` behavior:
 
-`acquire_lock(pid_file, kill_existing=False)`:
+- prefers `~/.ductor/logs/agent.log`
+- fallback: newest `*.log`
+- prints last 50 lines by default
 
-- reads existing PID if lockfile exists,
-- if process is alive:
-  - `kill_existing=True` -> SIGTERM, wait, optional SIGKILL,
-  - otherwise -> exit with error,
-- writes current PID.
+### Linux backend
 
-`release_lock(pid_file)` removes lock only when PID belongs to current process.
+- service file: `~/.config/systemd/user/ductor.service`
+- optional linger enable via `sudo loginctl enable-linger <user>`
+- logs command uses `journalctl --user -u ductor -f`
 
-### Windows compatibility
+### macOS backend
 
-- `_is_process_alive(pid)` catches `OSError` in addition to `ProcessLookupError` and `PermissionError`, because Windows raises various `OSError` subclasses from `os.kill(pid, 0)` for invalid or stale PIDs.
-- `_force_kill_process(pid)` falls back to `SIGTERM` on Windows since `signal.SIGKILL` does not exist there.
+- plist: `~/Library/LaunchAgents/dev.ductor.plist`
+- launchd logs configured to `service.log` / `service.err`
+- `ductor service logs` uses `print_recent_logs()` over ductor log files
 
-## Restart Protocol
+### Windows backend
 
-`restart.py` API:
+- scheduled task name: `ductor`
+- starts 10s after logon
+- prefers `pythonw.exe -m ductor_bot`, fallback `ductor` binary
+- explicit admin hint panel on access-denied `schtasks` errors
+- `ductor service logs` uses `print_recent_logs()`
 
-- `write_restart_sentinel(chat_id, message, sentinel_path)`
-- `consume_restart_sentinel(sentinel_path)`
-- `write_restart_marker(marker_path)`
-- `consume_restart_marker(marker_path)`
+## PID lock
 
-Usage:
+`acquire_lock(pid_file, kill_existing=True)` is used for bot startup.
 
-- `/restart` writes sentinel and stops polling with exit code `42`.
-- on next startup, sentinel is consumed and user gets restart confirmation.
-- marker file (`restart-requested`) allows external restart request for running bot.
+- detects stale/alive PID
+- optionally terminates existing process
+- writes current PID
 
-## Docker Manager
+Windows compatibility includes broader `OSError` handling around PID liveness/termination checks.
+
+## Restart protocol
+
+- `/restart` or restart marker file triggers exit code `42`
+- restart sentinel stores chat + message for post-restart notification
+- sentinel consumed on next startup
+
+## Docker manager
 
 `DockerManager.setup()`:
 
-1. verify docker binary and daemon,
-2. verify image or build (if `auto_build=true`),
-3. reuse or start configured container,
-4. mount `~/.ductor` into container as `/ductor` and mount available auth directories (`~/.claude`, `~/.codex`) when present.
+1. verify Docker binary/daemon
+2. ensure image (build when missing and `auto_build=true`)
+3. reuse running container or start new one
+4. mount `~/.ductor -> /ductor`
+5. mount provider homes when present:
+   - `~/.claude`
+   - `~/.codex`
+   - `~/.gemini`
 
-`teardown()` stops and removes container.
+Linux adds UID/GID mapping (`--user uid:gid`) to avoid root-owned host files.
 
-`Orchestrator.create()` calls `DockerManager.setup()` when `docker.enabled=true`. If setup fails, orchestration continues in host-execution mode with warning logs.
+If setup fails, orchestrator falls back to host execution.
 
-## Version Check (`version.py`)
+## Version/update system
 
-- `get_current_version()`: returns installed version via `importlib.metadata.version("ductor")`, falls back to `"0.0.0"`.
-- `check_pypi()`: async HTTP GET to `https://pypi.org/pypi/ductor/json`, returns `VersionInfo(current, latest, update_available, summary)` or `None` on failure.
-- `fetch_changelog(version)`: async fetch from GitHub Releases (`v<version>` tag fallback to `<version>`).
-- Version comparison: dotted string parsed to int tuple via `_parse_version()`.
-
-## Update Observer (`updater.py`)
-
-`UpdateObserver`:
-
-- background asyncio task matching `CronObserver` / `HeartbeatObserver` pattern,
-- initial delay: 60 seconds, check interval: 60 minutes,
-- calls `check_pypi()` and invokes `notify` callback when new version found,
-- deduplicates by version string (notifies once per new version).
-- started by `TelegramBot` only for upgradeable installs (`pipx`/`pip`).
-
-`perform_upgrade()`:
-
-- refuses dev/source installs (`detect_install_mode() == "dev"`),
-- otherwise uses `pipx upgrade --force ductor` or falls back to `python -m pip install --upgrade ductor`,
-- returns `(success: bool, output: str)`.
-
-Upgrade sentinel (`upgrade-sentinel.json`):
-
-- `write_upgrade_sentinel(sentinel_dir, chat_id, old_version, new_version)`: persists chat context for post-restart notification.
-- `consume_upgrade_sentinel(sentinel_dir)`: reads + deletes sentinel, returns data dict or `None`.
+- `check_pypi()` fetches latest package metadata
+- `UpdateObserver` checks periodically and notifies once per new version
+- `perform_upgrade()` runs `pipx upgrade --force ductor` (or pip fallback)
+- upgrade sentinel stores old/new version + chat for post-restart confirmation
 
 ## Supervisor (`ductor_bot/run.py`)
 
-- starts child process `python -m ductor_bot`.
-- optionally watches `.py` file changes (if `watchfiles` installed).
-- restart rules:
-  - exit `0`: stop supervisor,
-  - exit `42`: immediate restart,
-  - file-change trigger: immediate restart,
-  - crash: exponential backoff up to configured max.
-- SIGINT/SIGTERM cancel supervisor task.
+Runs `python -m ductor_bot` child process.
+
+Restart conditions:
+
+- exit `42` -> immediate restart
+- file change (when watch mode enabled) -> restart
+- crash -> exponential backoff

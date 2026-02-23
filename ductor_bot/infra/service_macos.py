@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
 
+from ductor_bot.infra.service_common import collect_nvm_bin_dirs, ensure_console
+from ductor_bot.infra.service_logs import print_recent_logs
 from ductor_bot.workspace.paths import resolve_paths
 
 if TYPE_CHECKING:
@@ -65,11 +67,11 @@ def _generate_plist_data(binary_path: str) -> dict[str, Any]:
         "/usr/bin",
         "/bin",
     ]
-    nvm_dir = home / ".nvm"
-    if nvm_dir.is_dir():
-        for node_dir in sorted(nvm_dir.glob("versions/node/*/bin"), reverse=True):
-            path_dirs.insert(0, str(node_dir))
-            break
+    nvm_bins = collect_nvm_bin_dirs(home)
+    if nvm_bins:
+        path_dirs = [*nvm_bins, *path_dirs]
+
+    path_dirs = list(dict.fromkeys(path_dirs))
 
     return {
         "Label": _LABEL,
@@ -112,10 +114,7 @@ def install_service(console: Console | None = None) -> bool:
 
     Returns True on success.
     """
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_available():
         console.print("[bold red]launchctl not found. Service install requires macOS.[/bold red]")
@@ -169,10 +168,7 @@ def install_service(console: Console | None = None) -> bool:
 
 def uninstall_service(console: Console | None = None) -> bool:
     """Stop and remove the ductor Launch Agent."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]No service installed.[/dim]")
@@ -190,10 +186,7 @@ def uninstall_service(console: Console | None = None) -> bool:
 
 def start_service(console: Console | None = None) -> None:
     """Start the Launch Agent."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed. Run [bold]ductor service install[/bold].[/dim]")
@@ -208,10 +201,7 @@ def start_service(console: Console | None = None) -> None:
 
 def stop_service(console: Console | None = None) -> None:
     """Stop the Launch Agent."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_running():
         console.print("[dim]Service is not running.[/dim]")
@@ -226,10 +216,7 @@ def stop_service(console: Console | None = None) -> None:
 
 def print_service_status(console: Console | None = None) -> None:
     """Print the Launch Agent status."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed. Run [bold]ductor service install[/bold].[/dim]")
@@ -244,36 +231,11 @@ def print_service_status(console: Console | None = None) -> None:
 
 def print_service_logs(console: Console | None = None) -> None:
     """Show recent log output."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed.[/dim]")
         return
 
     paths = resolve_paths()
-    agent_log = paths.logs_dir / "agent.log"
-    if agent_log.exists():
-        latest_log = agent_log
-    else:
-        log_files = sorted(
-            paths.logs_dir.glob("*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if not log_files:
-            console.print("[dim]No log files found.[/dim]")
-            return
-        latest_log = log_files[0]
-    console.print(f"[dim]Showing last 50 lines from {latest_log.name}[/dim]\n")
-
-    try:
-        lines = latest_log.read_text(encoding="utf-8", errors="replace").splitlines()
-        for line in lines[-50:]:
-            console.print(line)
-    except OSError as exc:
-        console.print(f"[red]Could not read log file: {exc}[/red]")
-
-    console.print(f"\n[dim]Full log: {latest_log}[/dim]")
+    print_recent_logs(console, paths.logs_dir)

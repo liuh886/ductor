@@ -1,12 +1,17 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file gives coding agents a current map of the repository.
 
 ## Project Overview
 
-ductor is a Telegram bot that bridges messages to Claude Code CLI or OpenAI Codex CLI for AI-powered assistance. It streams responses back to Telegram with live editing, manages persistent sessions, runs scheduled cron jobs, handles inbound webhooks, and performs periodic heartbeat checks.
+ductor is a Telegram bot that routes chat input to official provider CLIs (`claude`, `codex`, `gemini`), streams responses back to Telegram, persists per-chat state, and runs cron/webhook/heartbeat automation in-process.
 
-**Stack:** Python 3.11+, aiogram 3.x, Pydantic 2.x, asyncio, hatchling build system.
+Stack:
+
+- Python 3.11+
+- aiogram 3.x
+- Pydantic 2.x
+- asyncio
 
 ## Development Commands
 
@@ -16,93 +21,100 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 # Run
-ductor                  # Start bot (auto-onboarding if unconfigured)
-ductor -v               # Verbose logging
+ductor
+ductor -v
 
 # Tests
-pytest                                              # All tests
-pytest tests/bot/test_app.py                        # Single file
-pytest tests/bot/test_app.py::test_function_name    # Single test
-pytest -k "test_pattern"                            # By pattern
-pytest --cov=ductor_bot --cov-report=term-missing   # With coverage
+pytest
+pytest tests/bot/test_app.py
+pytest -k "pattern"
 
-# Quality (all must pass with zero warnings)
+# Quality
 ruff format .
 ruff check .
 mypy ductor_bot
 ```
 
-## Architecture
+## Runtime Flow
 
-### Runtime Flow
-
+```text
+Telegram Update
+  -> AuthMiddleware
+  -> SequentialMiddleware (queue + per-chat lock)
+  -> TelegramBot handlers
+  -> Orchestrator
+  -> CLIService
+  -> provider subprocess (claude/codex/gemini)
+  -> Telegram output (stream edit or one-shot)
 ```
-Telegram Update → aiogram Router → AuthMiddleware → SequentialMiddleware (per-chat lock + queue tracking)
-  → TelegramBot handler → Orchestrator → CLIService → Claude/Codex subprocess
-  → Streamed response → Telegram
-```
 
-### Module Map
+## Module Map
 
 | Module | Purpose |
-|--------|---------|
-| `bot/` | Telegram frontend: aiogram handlers, streaming editors, rich sender, middleware, file browser, response formatting |
-| `orchestrator/` | Central router: command registry, message flows, hooks, model selector, directives |
-| `cli/` | CLI subprocess management: Claude/Codex providers, stream event parsing, process registry |
-| `session/` | Per-chat session lifecycle, JSON persistence (`sessions.json`) |
-| `cron/` | In-process scheduler: cron expression evaluation, timezone-aware execution |
-| `heartbeat/` | Periodic background checks in active sessions during non-quiet hours |
-| `webhook/` | HTTP ingress (`/hooks/{hook_id}`): bearer/HMAC auth, wake and cron_task modes |
-| `workspace/` | Path resolution (`DuctorPaths`), home seeding from `_home_defaults/`, rule-file sync, skill directory sync |
-| `security/` | Prompt injection detection, path traversal validation |
-| `infra/` | PID lock, restart sentinel, version checking, auto-updater |
+|---|---|
+| `bot/` | Telegram handlers, callback routing, streaming delivery, queue UX |
+| `orchestrator/` | command registry, directives/hooks, flow routing, observer wiring |
+| `cli/` | provider wrappers, stream parsing, auth checks, process registry, model caches |
+| `session/` | chat sessions with provider-isolated buckets |
+| `cron/` | in-process scheduler and one-shot task execution |
+| `webhook/` | HTTP hooks (`wake` and `cron_task`) |
+| `heartbeat/` | periodic proactive checks in active sessions |
+| `cleanup/` | daily retention cleanup |
+| `workspace/` | home seeding, rules deployment/sync, skill sync |
+| `infra/` | PID lock, service backends, Docker manager, update/restart helpers |
 
-### Key Design Patterns
+## Key Runtime Patterns
 
-- **DuctorPaths** (`workspace/paths.py`): Frozen dataclass, single source of truth for all filesystem paths. All modules derive paths from it.
-- **Zone-based workspace sync** (`workspace/init.py`): Zone 2 files (CLAUDE.md, AGENTS.md) are always overwritten on update. Zone 3 files are seeded once and user-owned thereafter. Bundled skills are symlinked from the package (not copied) so they auto-update with the installed version.
-- **Stream fallback**: Streaming auto-falls-back to non-streaming on error. No data loss.
-- **ContextVar logging** (`log_context.py`): Async-safe log enrichment with `[op:chat_id:session_id]` prefix. Operations: `msg`, `cb`, `cron`, `hb`, `wh`.
-- **Process registry** (`cli/process_registry.py`): Tracks active subprocesses per chat_id for abort/kill.
-- **Message queue tracking** (`bot/middleware.py`): Tracks pending messages per chat with `[Message in queue...]` indicators, individual cancel buttons (`mq:` callbacks), and bulk drain on `/stop`.
-- **Message hooks** (`orchestrator/hooks.py`): Condition-based prompt suffixes (e.g., memory reminder every 6th message) without modifying core flow.
-- **Provider abstraction** (`cli/claude_provider.py`, `cli/codex_provider.py`): Same CLIService interface for both Claude Code and Codex CLI.
-- **Shared response formatting** (`bot/response_format.py`): `SEP`, `fmt()`, shared text constants for `/new` and `/stop`. All command responses use consistent title/separator/body layout.
-- **File browser** (`bot/file_browser.py`): Interactive `~/.ductor/` navigator via inline keyboard. Callback encoding: `sf:<rel_path>` (directory nav), `sf!<rel_path>` (file request to agent). Edits messages in-place on button press.
-- **Command ownership**: `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/restart`, `/new` are handled directly by `bot/app.py`. `/status`, `/memory`, `/model`, `/cron`, `/diagnose`, `/upgrade` route through the orchestrator command registry. `/showfiles` and other read-only commands bypass the per-chat lock via `QUICK_COMMANDS`.
+- `DuctorPaths` (`workspace/paths.py`) is the single source of truth for paths.
+- Workspace init is zone-based:
+  - Zone 2 overwrite: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, and framework cron/webhook tool scripts.
+  - Zone 3 seed-once for user-owned files.
+- Rules are selected from `RULES*.md` variants and deployed per authenticated provider.
+- Rule sync updates existing `CLAUDE.md`, `AGENTS.md`, `GEMINI.md` siblings recursively by mtime.
+- Skill sync spans `~/.ductor/workspace/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills`.
+  - normal mode: links
+  - Docker mode: managed copies (`.ductor_managed` marker)
+- Streaming fallback is automatic; `/stop` abort checks are enforced during event loop processing.
+- Session state is provider-isolated; `/new` resets only the active provider bucket.
 
-### Background Systems
+## Background Systems
 
-All run in-process as asyncio tasks, managed by the Orchestrator:
-- **CronObserver**: Polls `cron_jobs.json` mtime, schedules jobs via cronsim.
-- **HeartbeatObserver**: Periodic checks with cooldown and quiet-hour awareness.
-- **WebhookObserver**: aiohttp server with per-hook auth and rate limiting.
-- **CleanupObserver**: Daily retention cleanup for `telegram_files/` and `output_to_user/` (configurable age + check hour).
-- **UpdateObserver**: PyPI version check every 60 minutes.
-- **Rule sync task**: Mirrors CLAUDE.md/AGENTS.md by mtime.
-- **Skill sync task**: Three-way symlink sync between ductor/Claude/Codex skill directories (30s interval). Bundled skills linked from package, external user symlinks protected. Ductor-created symlinks cleaned up on shutdown via `cleanup_ductor_links()`.
+All run as in-process asyncio tasks:
 
-### Error Hierarchy
+- `CronObserver`
+- `HeartbeatObserver`
+- `WebhookObserver`
+- `CleanupObserver`
+- `CodexCacheObserver`
+- `GeminiCacheObserver`
+- rule sync watcher
+- skill sync watcher
+- update observer (upgradeable installs)
 
-`DuctorError` (base) → `CLIError`, `SessionError`, `CronError`, `StreamError`, `SecurityError`, `PathValidationError`, `WebhookError` (all in `errors.py`).
+## Service Backends
 
-### Data Persistence
+- Linux: systemd user service
+- macOS: launchd Launch Agent
+- Windows: Task Scheduler
 
-All JSON files use atomic writes (temp file + rename). Located in `~/.ductor/`:
-- `config/config.json` — Bot configuration (deep-merged with Pydantic defaults on startup)
-- `sessions.json` — Active sessions per chat_id
-- `cron_jobs.json` — Scheduled tasks
-- `webhooks.json` — Webhook definitions
+`ductor service logs` behavior:
 
-### Home Defaults
+- Linux: `journalctl --user -u ductor -f`
+- macOS/Windows: recent lines from `~/.ductor/logs/agent.log` (fallback newest `*.log`)
 
-`ductor_bot/_home_defaults/` contains the template seeded to `~/.ductor/` at startup. Ruff and mypy skip this directory. Files here are runtime workspace content, not library code.
+## Data Files (`~/.ductor`)
+
+- `config/config.json`
+- `sessions.json`
+- `cron_jobs.json`
+- `webhooks.json`
+- `logs/agent.log`
 
 ## Conventions
 
-- **asyncio_mode = "auto"**: All async test functions run automatically without `@pytest.mark.asyncio`.
-- **Line length 100**, double quotes, Google-style docstrings (enforced by Ruff).
-- **Ruff selects ALL rules** with specific ignores — check `pyproject.toml` `[tool.ruff.lint]` before adding rule suppressions.
-- **mypy strict mode** with overrides for third-party modules (aiogram, cronsim, yaml, questionary) and `_home_defaults`.
-- **Config merge**: User config is deep-merged with Pydantic defaults so new fields are added transparently on update.
-- **Supervisor restart**: Exit code 42 signals the supervisor (`run.py`) to restart immediately.
+- `asyncio_mode = "auto"` in tests
+- line length 100
+- mypy strict mode
+- ruff with strict lint profile
+- config deep-merge adds new defaults without dropping user keys
+- supervisor restart code is `42`

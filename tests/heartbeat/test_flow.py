@@ -226,11 +226,10 @@ async def test_heartbeat_runs_after_cooldown(
         after_cooldown_mock.assert_awaited_once()
 
 
-async def test_heartbeat_syncs_effective_model_for_legacy_session(
+async def test_heartbeat_skips_when_session_provider_differs_from_configured_provider(
     orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Heartbeat should persist effective model for legacy sessions without model tracking."""
-    # Simulate runtime fallback: configured "opus", only Codex available.
+    """Heartbeat should skip when active session provider does not match current provider target."""
     object.__setattr__(orch, "_available_providers", frozenset({"codex"}))
 
     session, _ = await orch._sessions.resolve_session(1, provider="codex", model="opus")
@@ -250,5 +249,5 @@ async def test_heartbeat_syncs_effective_model_for_legacy_session(
     session_after = await orch._sessions.get_active(1)
     assert session_after is not None
     assert session_after.provider == "codex"
-    assert session_after.model == "gpt-5.2-codex"
+    assert session_after.model == "opus"
     assert session_after.message_count == count_before

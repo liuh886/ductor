@@ -175,7 +175,7 @@ async def test_normal_sigkill_recovers_once_then_asks_user_retry(orch: Orchestra
     mock_reset_provider.assert_called_once_with(1, provider="claude", model="opus")
 
 
-async def test_normal_resolves_effective_model_for_available_provider(orch: Orchestrator) -> None:
+async def test_normal_does_not_auto_fallback_provider(orch: Orchestrator) -> None:
     mock_execute = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute", mock_execute)
     object.__setattr__(orch, "_available_providers", frozenset({"codex"}))
@@ -183,13 +183,81 @@ async def test_normal_resolves_effective_model_for_available_provider(orch: Orch
     await normal(orch, 1, "Hello")
 
     request = mock_execute.call_args[0][0]
-    assert request.model_override == "gpt-5.2-codex"
-    assert request.provider_override == "codex"
+    assert request.model_override == "opus"
+    assert request.provider_override == "claude"
 
     session = await orch._sessions.get_active(1)
     assert session is not None
-    assert session.provider == "codex"
-    assert session.model == "gpt-5.2-codex"
+    assert session.provider == "claude"
+    assert session.model == "opus"
+
+
+async def test_normal_preserves_existing_session_target_on_restart(orch: Orchestrator) -> None:
+    object.__setattr__(orch, "_available_providers", frozenset({"codex"}))
+    await orch._sessions.reset_session(
+        1,
+        provider="gemini",
+        model="gemini-3-pro-preview",
+    )
+    existing = await orch._sessions.get_active(1)
+    assert existing is not None
+    existing.session_id = "sess-gemini-1"
+    await orch._sessions.sync_session_target(
+        existing,
+        provider="gemini",
+        model="gemini-3-pro-preview",
+    )
+
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    orch._gemini_api_key_mode = False
+    await normal(orch, 1, "Hello")
+
+    request = mock_execute.call_args[0][0]
+    assert request.provider_override == "gemini"
+    assert request.model_override == "gemini-3-pro-preview"
+
+
+async def test_normal_warns_for_gemini_api_key_mode_without_ductor_key(
+    orch: Orchestrator,
+) -> None:
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    orch._config.gemini_api_key = "null"
+
+    orch._gemini_api_key_mode = True
+    result = await normal(orch, 1, "Hello", model_override="gemini-3-pro-preview")
+
+    assert "Gemini is set to API-key auth mode" in result.text
+    assert "gemini_api_key" in result.text
+    mock_execute.assert_not_awaited()
+
+
+async def test_streaming_warns_for_gemini_api_key_mode_without_ductor_key(
+    orch: Orchestrator,
+) -> None:
+    mock_streaming = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
+    orch._config.gemini_api_key = "null"
+
+    orch._gemini_api_key_mode = True
+    result = await normal_streaming(orch, 1, "Hello", model_override="gemini-3-pro-preview")
+
+    assert "Gemini is set to API-key auth mode" in result.text
+    mock_streaming.assert_not_awaited()
+
+
+async def test_normal_allows_gemini_api_key_mode_with_configured_key(orch: Orchestrator) -> None:
+    mock_execute = AsyncMock(return_value=_mock_response(result="Gemini OK"))
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    orch._config.gemini_api_key = "cfg-key-123"
+
+    orch._gemini_api_key_mode = True
+    result = await normal(orch, 1, "Hello", model_override="gemini-3-pro-preview")
+
+    assert result.text == "Gemini OK"
+    mock_execute.assert_awaited_once()
 
 
 # -- streaming flow --

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -200,3 +201,32 @@ class TestHeartbeatObserverTick:
 
         with time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)):
             await obs._tick()
+
+    async def test_tick_propagates_cancelled_from_stale_cleanup(self) -> None:
+        config = _make_config()
+        obs = HeartbeatObserver(config)
+        obs.set_heartbeat_handler(AsyncMock(return_value=None))
+        obs.set_stale_cleanup(AsyncMock(side_effect=asyncio.CancelledError()))
+
+        with (
+            time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await obs._tick()
+
+    async def test_run_for_chat_propagates_cancelled_from_handler(self) -> None:
+        config = _make_config()
+        obs = HeartbeatObserver(config)
+        obs.set_heartbeat_handler(AsyncMock(side_effect=asyncio.CancelledError()))
+
+        with pytest.raises(asyncio.CancelledError):
+            await obs._run_for_chat(100)
+
+    async def test_run_for_chat_propagates_cancelled_from_result_handler(self) -> None:
+        config = _make_config()
+        obs = HeartbeatObserver(config)
+        obs.set_heartbeat_handler(AsyncMock(return_value="alert"))
+        obs.set_result_handler(AsyncMock(side_effect=asyncio.CancelledError()))
+
+        with pytest.raises(asyncio.CancelledError):
+            await obs._run_for_chat(100)

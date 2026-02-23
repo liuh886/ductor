@@ -11,7 +11,7 @@ import time_machine
 
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.param_resolver import TaskOverrides
-from ductor_bot.config import AgentConfig, HeartbeatConfig, ModelRegistry, WebhookConfig
+from ductor_bot.config import AgentConfig, HeartbeatConfig, WebhookConfig
 from ductor_bot.webhook.manager import WebhookManager
 from ductor_bot.webhook.models import WebhookEntry
 from ductor_bot.webhook.observer import WebhookObserver
@@ -45,10 +45,6 @@ def _make_config(**overrides: Any) -> AgentConfig:
     return AgentConfig(**defaults)
 
 
-def _make_models() -> ModelRegistry:
-    return ModelRegistry()
-
-
 def _make_codex_cache() -> CodexModelCache:
     return CodexModelCache(last_updated=datetime.now(UTC).isoformat(), models=[])
 
@@ -62,7 +58,6 @@ def _make_observer(
         paths,
         mgr,
         config=_make_config(**config_overrides),
-        models=_make_models(),
         codex_cache=_make_codex_cache(),
     )
 

@@ -1,7 +1,7 @@
 """Cross-platform skill directory sync between ductor workspace and CLI tools.
 
-Provides three-way symlink synchronization so skills installed via Claude Code,
-Codex CLI, or the ductor workspace are visible to all agents.
+Provides multi-way symlink synchronization so skills installed via Claude Code,
+Codex CLI, Gemini CLI, or the ductor workspace are visible to all agents.
 
 Includes bundled-skill linking (package → workspace), sync-time external-symlink
 protection, and cleanup of ductor-created links on shutdown.
@@ -86,6 +86,9 @@ def _cli_skill_dirs() -> dict[str, Path]:
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     if codex_home.is_dir():
         dirs["codex"] = codex_home / "skills"
+    gemini_home = Path.home() / ".gemini"
+    if gemini_home.is_dir():
+        dirs["gemini"] = gemini_home / "skills"
     return dirs
 
 
@@ -96,20 +99,18 @@ def _cli_skill_dirs() -> dict[str, Path]:
 
 def _resolve_canonical(
     name: str,
-    ductor: dict[str, Path],
-    claude: dict[str, Path],
-    codex: dict[str, Path],
+    *registries: dict[str, Path],
 ) -> Path | None:
     """Find the canonical (real, non-symlink) path for a skill.
 
-    Priority: ductor > claude > codex.
+    Priority follows argument order (typically ductor > claude > codex > gemini).
     Falls back to resolving the first valid symlink if no real dir exists.
     """
-    for registry in (ductor, claude, codex):
+    for registry in registries:
         entry = registry.get(name)
         if entry is not None and not entry.is_symlink():
             return entry
-    for registry in (ductor, claude, codex):
+    for registry in registries:
         entry = registry.get(name)
         if entry is not None and entry.is_symlink() and entry.exists():
             return entry.resolve()
@@ -276,7 +277,10 @@ def _link_skill_everywhere(
 
 
 def sync_skills(paths: DuctorPaths, *, docker_active: bool = False) -> None:
-    """Three-way skill directory sync: ductor workspace <-> CLI skill dirs.
+    """Multi-way skill directory sync: ductor workspace <-> CLI skill dirs.
+
+    Syncs between ductor workspace, ~/.claude/skills, ~/.codex/skills,
+    and ~/.gemini/skills.
 
     When *docker_active* is ``True``, copies are used instead of symlinks
     so skills resolve inside the Docker container.
@@ -295,12 +299,12 @@ def sync_skills(paths: DuctorPaths, *, docker_active: bool = False) -> None:
     for reg in registries.values():
         all_names.update(reg.keys())
 
+    # Priority order: ductor > claude > codex > gemini
+    priority = ("ductor", "claude", "codex", "gemini")
     for skill_name in sorted(all_names):
         canonical = _resolve_canonical(
             skill_name,
-            registries.get("ductor", {}),
-            registries.get("claude", {}),
-            registries.get("codex", {}),
+            *(registries.get(n, {}) for n in priority),
         )
         if canonical is not None:
             _link_skill_everywhere(skill_name, canonical, all_dirs, use_copies=docker_active)

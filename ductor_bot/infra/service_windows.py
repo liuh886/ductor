@@ -12,6 +12,8 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from rich.panel import Panel
 
+from ductor_bot.infra.service_common import ensure_console
+from ductor_bot.infra.service_logs import print_recent_logs
 from ductor_bot.workspace.paths import resolve_paths
 
 if TYPE_CHECKING:
@@ -159,10 +161,7 @@ def install_service(console: Console | None = None) -> bool:
 
     Returns True on success.
     """
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_available():
         console.print(
@@ -239,10 +238,7 @@ def install_service(console: Console | None = None) -> bool:
 
 def uninstall_service(console: Console | None = None) -> bool:
     """Stop and remove the ductor scheduled task."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]No service installed.[/dim]")
@@ -265,10 +261,7 @@ def uninstall_service(console: Console | None = None) -> bool:
 
 def start_service(console: Console | None = None) -> None:
     """Start the scheduled task."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed. Run [bold]ductor service install[/bold].[/dim]")
@@ -283,10 +276,7 @@ def start_service(console: Console | None = None) -> None:
 
 def stop_service(console: Console | None = None) -> None:
     """Stop the scheduled task."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_running():
         console.print("[dim]Service is not running.[/dim]")
@@ -301,10 +291,7 @@ def stop_service(console: Console | None = None) -> None:
 
 def print_service_status(console: Console | None = None) -> None:
     """Print the scheduled task status."""
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed. Run [bold]ductor service install[/bold].[/dim]")
@@ -322,36 +309,11 @@ def print_service_logs(console: Console | None = None) -> None:
 
     Windows has no journalctl equivalent, so we tail the ductor log file.
     """
-    if console is None:
-        from rich.console import Console
-
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed.[/dim]")
         return
 
     paths = resolve_paths()
-    agent_log = paths.logs_dir / "agent.log"
-    if agent_log.exists():
-        latest_log = agent_log
-    else:
-        log_files = sorted(
-            paths.logs_dir.glob("*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if not log_files:
-            console.print("[dim]No log files found.[/dim]")
-            return
-        latest_log = log_files[0]
-    console.print(f"[dim]Showing last 50 lines from {latest_log.name}[/dim]\n")
-
-    try:
-        lines = latest_log.read_text(encoding="utf-8", errors="replace").splitlines()
-        for line in lines[-50:]:
-            console.print(line)
-    except OSError as exc:
-        console.print(f"[red]Could not read log file: {exc}[/red]")
-
-    console.print(f"\n[dim]Full log: {latest_log}[/dim]")
+    print_recent_logs(console, paths.logs_dir)

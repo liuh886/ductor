@@ -1,8 +1,8 @@
 # Developer Quickstart
 
-This is the fastest onboarding path for contributors and junior devs.
+Fast onboarding path for contributors and junior devs.
 
-## 1) Local Setup (5 minutes)
+## 1) Local setup
 
 ```bash
 python -m venv .venv
@@ -10,22 +10,20 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Optional but recommended if you test full runtime behavior:
+Optional for full runtime validation:
 
-- Install and authenticate at least one provider CLI (`claude` or `codex`).
-- Create a Telegram bot token and user ID.
+- install/auth at least one provider CLI (`claude`, `codex`, or `gemini`)
+- create Telegram bot token + user ID
 
-## 2) Run the Bot
+## 2) Run the bot
 
 ```bash
 ductor
 ```
 
-First run starts onboarding automatically and writes config to:
+First run auto-starts onboarding and writes config to `~/.ductor/config/config.json`.
 
-- `~/.ductor/config/config.json`
-
-Key runtime paths:
+Primary runtime files:
 
 - `~/.ductor/sessions.json`
 - `~/.ductor/cron_jobs.json`
@@ -33,7 +31,7 @@ Key runtime paths:
 - `~/.ductor/workspace/`
 - `~/.ductor/logs/agent.log`
 
-## 3) Quality Gates
+## 3) Quality gates
 
 ```bash
 pytest
@@ -42,77 +40,79 @@ ruff check .
 mypy ductor_bot
 ```
 
-Expected standard: zero warnings, zero errors.
+Expected: zero warnings, zero errors.
 
-## 4) Core Mental Model
-
-Runtime flow:
+## 4) Core mental model
 
 ```text
 Telegram update
   -> bot layer (handlers + middleware)
   -> orchestrator (routing + flows)
-  -> CLI service (Claude/Codex subprocess)
-  -> streamed/non-streamed response back to Telegram
+  -> CLI service (claude/codex/gemini subprocess)
+  -> streamed/non-streamed response to Telegram
 ```
 
-Background observers run in the same process:
+Background observers run in-process:
 
 - cron
 - heartbeat
 - webhook
 - cleanup
 - codex model cache
-- update checker
+- gemini model cache
 - rule sync
 - skill sync
+- update check (upgradeable installs only)
 
-## 5) Where to Start Reading Code
+## 5) Read order in code
 
 Entry points:
 
-- `ductor_bot/__main__.py` (CLI dispatch + process start)
-- `ductor_bot/bot/app.py` (Telegram handlers + callback routing)
-- `ductor_bot/orchestrator/core.py` (main routing + observer wiring)
+- `ductor_bot/__main__.py`
+- `ductor_bot/bot/app.py`
+- `ductor_bot/orchestrator/core.py`
 
-Hot modules by responsibility:
+Hot paths:
 
-- Chat UX and queueing: `ductor_bot/bot/middleware.py`
-- Message flows: `ductor_bot/orchestrator/flows.py`
-- Command handlers: `ductor_bot/orchestrator/commands.py`
-- CLI wrappers: `ductor_bot/cli/service.py`, `ductor_bot/cli/claude_provider.py`, `ductor_bot/cli/codex_provider.py`
-- Workspace/rules/skill sync: `ductor_bot/workspace/init.py`, `ductor_bot/workspace/rules_selector.py`, `ductor_bot/workspace/skill_sync.py`
+- queue/lock behavior: `ductor_bot/bot/middleware.py`
+- message flows: `ductor_bot/orchestrator/flows.py`
+- command handling: `ductor_bot/orchestrator/commands.py`
+- provider execution: `ductor_bot/cli/service.py`
+- provider wrappers: `ductor_bot/cli/claude_provider.py`, `ductor_bot/cli/codex_provider.py`, `ductor_bot/cli/gemini_provider.py`
+- workspace/rules/skills: `ductor_bot/workspace/init.py`, `ductor_bot/workspace/rules_selector.py`, `ductor_bot/workspace/skill_sync.py`
 
-## 6) Most Common Debug Paths
+## 6) Common debug paths
 
-If a message is not handled correctly:
+If message handling is wrong:
 
-1. Check `ductor_bot/bot/middleware.py` (auth, quick-command bypass, lock/queue).
-2. Check `ductor_bot/bot/app.py` route (`_on_message`, `_on_command`, `_on_callback_query`).
-3. Check `ductor_bot/orchestrator/core.py::_route_message`.
-4. Check provider execution in `ductor_bot/cli/service.py`.
+1. `ductor_bot/bot/middleware.py`
+2. `ductor_bot/bot/app.py`
+3. `ductor_bot/orchestrator/core.py`
+4. `ductor_bot/cli/service.py`
 
 If automation is not firing:
 
-1. Cron: `ductor_bot/cron/observer.py` + `~/.ductor/cron_jobs.json`
-2. Webhooks: `ductor_bot/webhook/server.py` + `ductor_bot/webhook/observer.py` + `~/.ductor/webhooks.json`
-3. Heartbeat: `ductor_bot/heartbeat/observer.py`
-4. Quiet-hour checks: `ductor_bot/utils/quiet_hours.py`
-5. Dependency locking: `ductor_bot/cron/dependency_queue.py`
+1. cron: `ductor_bot/cron/observer.py`
+2. webhooks: `ductor_bot/webhook/server.py`, `ductor_bot/webhook/observer.py`
+3. heartbeat: `ductor_bot/heartbeat/observer.py`
+4. quiet-hour logic: `ductor_bot/utils/quiet_hours.py`
+5. dependency locking: `ductor_bot/cron/dependency_queue.py`
 
-If rules/skills look wrong:
+If rules/skills drift:
 
 1. `ductor_bot/workspace/init.py`
 2. `ductor_bot/workspace/rules_selector.py`
 3. `ductor_bot/workspace/skill_sync.py`
 
-## 7) Important Behavior Details
+## 7) Behavior details to remember
 
-- `/stop` abort handling and queue draining are middleware-level behavior (`SequentialMiddleware`) before normal message routing.
-- `/new` resets only the active provider bucket for that chat (other provider history is kept); when routed via orchestrator `cmd_reset`, active processes are also killed first.
-- Cron jobs and webhook `cron_task` runs can be gated by quiet hours and serialized via shared dependency keys.
-- Zone 2 sync in workspace init always overwrites:
-  - `CLAUDE.md`, `AGENTS.md`
-  - framework tool scripts: `workspace/tools/cron_tools/*.py`, `workspace/tools/webhook_tools/*.py`
+- `/stop` is middleware-level abort handling before normal command routing.
+- `/new` resets only the active provider bucket in that chat.
+- cron/webhook `cron_task` runs support provider/model/reasoning/CLI-arg overrides.
+- rule sync updates existing `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` siblings by mtime.
+- Zone 2 overwrite in workspace init includes:
+  - `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
+  - `workspace/tools/cron_tools/*.py`
+  - `workspace/tools/webhook_tools/*.py`
 
-For deeper module-level docs, continue with `docs/architecture.md` and `docs/modules/*.md`.
+Continue with `docs/architecture.md` and `docs/modules/*.md` for subsystem details.

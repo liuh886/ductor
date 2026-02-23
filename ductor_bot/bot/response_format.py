@@ -60,7 +60,9 @@ def session_error_text(model: str, cli_detail: str = "") -> str:
 
 def new_session_text(provider: str) -> str:
     """Build /new response for provider-local reset."""
-    provider_label = {"claude": "Claude", "codex": "Codex"}.get(provider.lower(), provider)
+    provider_label = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}.get(
+        provider.lower(), provider
+    )
     return fmt(
         "**Session Reset**",
         SEP,

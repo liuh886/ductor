@@ -170,12 +170,17 @@ class DockerManager:
             uid = os.getuid()
             gid = os.getgid()
             cmd += ["--user", f"{uid}:{gid}"]
+            # Explicit HOME so CLIs find their config dirs (~/.claude, ~/.codex,
+            # ~/.gemini) even when the host UID has no passwd entry inside the
+            # container.
+            cmd += ["-e", "HOME=/home/node"]
 
         # Auth directories -- mount only if they exist on the host.
         home = Path.home()
         for auth_dir, target, mode in [
             (home / ".claude", "/home/node/.claude", "rw"),
             (home / ".codex", "/home/node/.codex", "rw"),
+            (home / ".gemini", "/home/node/.gemini", "rw"),
         ]:
             if auth_dir.is_dir():
                 cmd += ["-v", f"{auth_dir}:{target}:{mode}"]

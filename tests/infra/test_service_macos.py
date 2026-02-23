@@ -66,6 +66,17 @@ class TestGeneratePlistData:
         assert "/opt/homebrew/bin" in path_value
         assert "/usr/local/bin" in path_value
 
+    def test_path_includes_all_nvm_bins(self, tmp_path: Path) -> None:
+        (tmp_path / ".nvm" / "versions" / "node" / "v24.0.0" / "bin").mkdir(parents=True)
+        (tmp_path / ".nvm" / "versions" / "node" / "v22.0.0" / "bin").mkdir(parents=True)
+
+        with patch("ductor_bot.infra.service_macos.Path.home", return_value=tmp_path):
+            data = _generate_plist_data("ductor")
+
+        path_value = data["EnvironmentVariables"]["PATH"]
+        assert f"{tmp_path}/.nvm/versions/node/v24.0.0/bin" in path_value
+        assert f"{tmp_path}/.nvm/versions/node/v22.0.0/bin" in path_value
+
     def test_has_log_paths(self) -> None:
         data = _generate_plist_data("ductor")
         assert "StandardOutPath" in data

@@ -11,18 +11,19 @@ from pathlib import Path
 from ductor_bot.workspace.init import sync_rule_files, watch_rule_files
 
 
-def test_sync_claude_to_agents_created(tmp_path: Path) -> None:
-    """CLAUDE.md exists, AGENTS.md missing -> AGENTS.md created."""
+def test_sync_does_not_create_missing_files(tmp_path: Path) -> None:
+    """_sync_group only syncs existing files, does not create missing ones."""
     (tmp_path / "CLAUDE.md").write_text("# Rules")
     sync_rule_files(tmp_path)
-    assert (tmp_path / "AGENTS.md").read_text() == "# Rules"
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert not (tmp_path / "GEMINI.md").exists()
 
 
-def test_sync_agents_to_claude_created(tmp_path: Path) -> None:
-    """AGENTS.md exists, CLAUDE.md missing -> CLAUDE.md created."""
+def test_sync_does_not_create_claude_from_agents(tmp_path: Path) -> None:
+    """AGENTS.md exists alone -> CLAUDE.md is NOT created."""
     (tmp_path / "AGENTS.md").write_text("# Codex Rules")
     sync_rule_files(tmp_path)
-    assert (tmp_path / "CLAUDE.md").read_text() == "# Codex Rules"
+    assert not (tmp_path / "CLAUDE.md").exists()
 
 
 def test_sync_newer_claude_overwrites_agents(tmp_path: Path) -> None:
@@ -72,11 +73,15 @@ def test_sync_identical_no_write(tmp_path: Path) -> None:
 
 
 def test_sync_recursive_subdirs(tmp_path: Path) -> None:
-    """Sync works across nested subdirectories."""
+    """Sync works across nested subdirectories when both files exist."""
     sub1 = tmp_path / "sub1"
     sub2 = tmp_path / "sub1" / "sub2"
     sub2.mkdir(parents=True)
 
+    # Create both files in each subdir, CLAUDE.md newer
+    (sub1 / "AGENTS.md").write_text("old")
+    (sub2 / "AGENTS.md").write_text("old")
+    time.sleep(0.05)
     (sub1 / "CLAUDE.md").write_text("# Sub1 Rules")
     (sub2 / "CLAUDE.md").write_text("# Sub2 Rules")
 
@@ -84,6 +89,18 @@ def test_sync_recursive_subdirs(tmp_path: Path) -> None:
 
     assert (sub1 / "AGENTS.md").read_text() == "# Sub1 Rules"
     assert (sub2 / "AGENTS.md").read_text() == "# Sub2 Rules"
+
+
+def test_sync_recursive_does_not_create_missing(tmp_path: Path) -> None:
+    """Sync in subdirectories does not create missing files."""
+    sub = tmp_path / "sub1"
+    sub.mkdir()
+    (sub / "CLAUDE.md").write_text("# Rules")
+
+    sync_rule_files(tmp_path)
+
+    assert not (sub / "AGENTS.md").exists()
+    assert not (sub / "GEMINI.md").exists()
 
 
 def test_sync_skips_venv_and_dotdirs(tmp_path: Path) -> None:
@@ -106,14 +123,19 @@ def test_sync_skips_venv_and_dotdirs(tmp_path: Path) -> None:
 
 
 async def test_watch_rule_files_syncs_after_change(tmp_path: Path) -> None:
-    """Watcher picks up a new CLAUDE.md and creates AGENTS.md."""
+    """Watcher syncs existing AGENTS.md when CLAUDE.md is updated."""
+    # Both files must exist; watcher only syncs existing files
+    claude = tmp_path / "CLAUDE.md"
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text("old content")
+    # Make CLAUDE.md newer via explicit mtime
+    claude.write_text("# Synced")
+    os.utime(agents, (0, 0))
+
     task = asyncio.create_task(watch_rule_files(tmp_path, interval=0.1))
     try:
-        # Write CLAUDE.md while watcher is running
-        (tmp_path / "CLAUDE.md").write_text("# Synced")
-        # Give watcher time to fire
         await asyncio.sleep(0.3)
-        assert (tmp_path / "AGENTS.md").read_text() == "# Synced"
+        assert agents.read_text() == "# Synced"
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -121,15 +143,34 @@ async def test_watch_rule_files_syncs_after_change(tmp_path: Path) -> None:
 
 
 async def test_watch_rule_files_syncs_subdirs(tmp_path: Path) -> None:
-    """Watcher syncs CLAUDE.md -> AGENTS.md in subdirectories."""
+    """Watcher syncs AGENTS.md -> CLAUDE.md in subdirectories when both exist."""
     sub = tmp_path / "cron_tasks" / "daily"
     sub.mkdir(parents=True)
 
+    # Both files must exist; AGENTS.md newer
+    (sub / "CLAUDE.md").write_text("old content")
+    (sub / "AGENTS.md").write_text("# Updated by Codex")
+    os.utime(sub / "CLAUDE.md", (0, 0))
+
     task = asyncio.create_task(watch_rule_files(tmp_path, interval=0.1))
     try:
-        (sub / "AGENTS.md").write_text("# Updated by Codex")
         await asyncio.sleep(0.3)
         assert (sub / "CLAUDE.md").read_text() == "# Updated by Codex"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_watch_does_not_create_missing_files(tmp_path: Path) -> None:
+    """Watcher does not create missing files from a single existing one."""
+    (tmp_path / "CLAUDE.md").write_text("# Rules")
+
+    task = asyncio.create_task(watch_rule_files(tmp_path, interval=0.1))
+    try:
+        await asyncio.sleep(0.3)
+        assert not (tmp_path / "AGENTS.md").exists()
+        assert not (tmp_path / "GEMINI.md").exists()
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

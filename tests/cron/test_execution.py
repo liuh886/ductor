@@ -11,6 +11,8 @@ from ductor_bot.cron.execution import (
     indent,
     parse_claude_result,
     parse_codex_result,
+    parse_gemini_result,
+    parse_result,
 )
 
 
@@ -75,6 +77,39 @@ class TestBuildCmd:
         with patch("ductor_bot.cron.execution.which", return_value=None):
             assert build_cmd(exec_config, "hello") is None
 
+    def test_gemini_provider(self) -> None:
+        exec_config = TaskExecutionConfig(
+            provider="gemini",
+            model="gemini-2.5-pro",
+            reasoning_effort="",
+            cli_parameters=[],
+            permission_mode="bypassPermissions",
+            working_dir="/tmp",
+            file_access="all",
+        )
+        with patch("ductor_bot.cron.execution.find_gemini_cli", return_value="/usr/bin/gemini"):
+            cmd = build_cmd(exec_config, "hello")
+        assert cmd is not None
+        assert cmd[0] == "/usr/bin/gemini"
+        assert "--approval-mode" in cmd
+        assert "yolo" in cmd
+
+    def test_gemini_returns_none_when_cli_missing(self) -> None:
+        exec_config = TaskExecutionConfig(
+            provider="gemini",
+            model="gemini-2.5-pro",
+            reasoning_effort="",
+            cli_parameters=[],
+            permission_mode="plan",
+            working_dir="/tmp",
+            file_access="all",
+        )
+        with patch(
+            "ductor_bot.cron.execution.find_gemini_cli",
+            side_effect=FileNotFoundError("not found"),
+        ):
+            assert build_cmd(exec_config, "hello") is None
+
     def test_unknown_provider_falls_back_to_claude(self) -> None:
         exec_config = TaskExecutionConfig(
             provider="unknown",
@@ -121,6 +156,30 @@ class TestParseClaude:
 class TestParseCodex:
     def test_empty_bytes(self) -> None:
         assert parse_codex_result(b"") == ""
+
+
+class TestParseGemini:
+    def test_empty_bytes(self) -> None:
+        assert parse_gemini_result(b"") == ""
+
+    def test_json_response(self) -> None:
+        import json
+
+        data = json.dumps([{"type": "message", "role": "model", "content": "Result text"}])
+        result = parse_gemini_result(data.encode())
+        assert "Result text" in result
+
+    def test_non_json_returns_raw(self) -> None:
+        raw = b"Raw gemini output"
+        assert parse_gemini_result(raw) == "Raw gemini output"
+
+
+class TestParseResult:
+    def test_dispatches_to_gemini_parser(self) -> None:
+        assert parse_result("gemini", b'{"result":"ok"}') == "ok"
+
+    def test_unknown_provider_falls_back_to_claude(self) -> None:
+        assert parse_result("unknown", b'{"result":"fallback"}') == "fallback"
 
 
 class TestIndent:

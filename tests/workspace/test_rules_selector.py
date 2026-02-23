@@ -28,11 +28,12 @@ def mock_paths(tmp_path: Path) -> DuctorPaths:
     for d in [config_dir, cron_dir, webhook_dir]:
         d.mkdir(parents=True)
 
-    # Create all 3 template variants for each directory
+    # Create all 4 template variants for each directory
     for d in [config_dir, cron_dir, webhook_dir]:
         (d / "RULES-claude-only.md").write_text("# Claude Only Template")
         (d / "RULES-codex-only.md").write_text("# Codex Only Template")
-        (d / "RULES-claude-and-codex.md").write_text("# Claude and Codex Template")
+        (d / "RULES-gemini-only.md").write_text("# Gemini Only Template")
+        (d / "RULES-all-clis.md").write_text("# All CLIs Template")
 
     paths = MagicMock(spec=DuctorPaths)
     paths.home_defaults = home_defaults
@@ -74,7 +75,7 @@ def test_variant_selection_both(mock_paths: DuctorPaths) -> None:
 
     with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
         selector = RulesSelector(mock_paths)
-        assert selector.get_variant_suffix() == "claude-and-codex"
+        assert selector.get_variant_suffix() == "all-clis"
 
 
 def test_template_discovery(mock_paths: DuctorPaths) -> None:
@@ -159,8 +160,8 @@ def test_deploy_both_with_both_files(mock_paths: DuctorPaths) -> None:
         claude_content = config_claude.read_text()
         agents_content = config_agents.read_text()
 
-        assert "Claude and Codex Template" in claude_content
-        assert "Claude and Codex Template" in agents_content
+        assert "All CLIs Template" in claude_content
+        assert "All CLIs Template" in agents_content
         assert claude_content == agents_content  # Same content
 
 
@@ -308,3 +309,114 @@ def test_cleanup_keeps_both_when_both_authenticated(mock_paths: DuctorPaths) -> 
 
         assert config_claude.exists()
         assert config_agents.exists()
+
+
+def test_variant_selection_gemini_only(mock_paths: DuctorPaths) -> None:
+    """Test variant selection when only Gemini is authenticated."""
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.NOT_FOUND),
+        "codex": AuthResult(provider="codex", status=AuthStatus.NOT_FOUND),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.AUTHENTICATED),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        assert selector.get_variant_suffix() == "gemini-only"
+
+
+def test_variant_selection_claude_and_gemini(mock_paths: DuctorPaths) -> None:
+    """Test variant when Claude + Gemini authenticated (2+ providers = all-clis)."""
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.AUTHENTICATED),
+        "codex": AuthResult(provider="codex", status=AuthStatus.NOT_FOUND),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.AUTHENTICATED),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        assert selector.get_variant_suffix() == "all-clis"
+
+
+def test_variant_selection_all_three(mock_paths: DuctorPaths) -> None:
+    """Test variant when all three providers authenticated."""
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.AUTHENTICATED),
+        "codex": AuthResult(provider="codex", status=AuthStatus.AUTHENTICATED),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.AUTHENTICATED),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        assert selector.get_variant_suffix() == "all-clis"
+
+
+def test_variant_selection_codex_and_gemini(mock_paths: DuctorPaths) -> None:
+    """Test variant when Codex + Gemini authenticated (2+ = all-clis)."""
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.NOT_FOUND),
+        "codex": AuthResult(provider="codex", status=AuthStatus.AUTHENTICATED),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.AUTHENTICATED),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        assert selector.get_variant_suffix() == "all-clis"
+
+
+def test_deploy_with_gemini_creates_gemini_md(mock_paths: DuctorPaths) -> None:
+    """Test that GEMINI.md is deployed when Gemini is authenticated."""
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.NOT_FOUND),
+        "codex": AuthResult(provider="codex", status=AuthStatus.NOT_FOUND),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.AUTHENTICATED),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        selector.deploy_rules()
+
+        gemini_md = mock_paths.ductor_home / "config" / "GEMINI.md"
+        assert gemini_md.exists()
+        assert "Gemini Only Template" in gemini_md.read_text()
+
+        # CLAUDE.md and AGENTS.md should NOT exist
+        assert not (mock_paths.ductor_home / "config" / "CLAUDE.md").exists()
+        assert not (mock_paths.ductor_home / "config" / "AGENTS.md").exists()
+
+
+def test_deploy_all_three_providers(mock_paths: DuctorPaths) -> None:
+    """Test that all three rule files are deployed when all providers authenticated."""
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.AUTHENTICATED),
+        "codex": AuthResult(provider="codex", status=AuthStatus.AUTHENTICATED),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.AUTHENTICATED),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        selector.deploy_rules()
+
+        config_dir = mock_paths.ductor_home / "config"
+        assert (config_dir / "CLAUDE.md").exists()
+        assert (config_dir / "AGENTS.md").exists()
+        assert (config_dir / "GEMINI.md").exists()
+
+
+def test_cleanup_removes_gemini_md_when_not_authenticated(mock_paths: DuctorPaths) -> None:
+    """Test that stale GEMINI.md files are removed when Gemini is not authenticated."""
+    old_gemini = mock_paths.ductor_home / "config" / "GEMINI.md"
+    old_gemini.parent.mkdir(parents=True, exist_ok=True)
+    old_gemini.write_text("# Old Gemini File")
+
+    auth = {
+        "claude": AuthResult(provider="claude", status=AuthStatus.AUTHENTICATED),
+        "codex": AuthResult(provider="codex", status=AuthStatus.NOT_FOUND),
+        "gemini": AuthResult(provider="gemini", status=AuthStatus.NOT_FOUND),
+    }
+
+    with patch("ductor_bot.workspace.rules_selector.check_all_auth", return_value=auth):
+        selector = RulesSelector(mock_paths)
+        selector.deploy_rules()
+
+        assert not old_gemini.exists()
+        assert (mock_paths.ductor_home / "config" / "CLAUDE.md").exists()

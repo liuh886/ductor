@@ -52,7 +52,6 @@ def test_resolve_execution_config_no_overrides(
         paths=MagicMock(),
         manager=MagicMock(),
         config=base_config,
-        models=MagicMock(),
         codex_cache=codex_cache,
     )
 
@@ -77,7 +76,6 @@ def test_resolve_execution_config_with_overrides(
         paths=MagicMock(),
         manager=MagicMock(),
         config=base_config,
-        models=MagicMock(),
         codex_cache=codex_cache,
     )
 
@@ -107,7 +105,6 @@ def test_dispatch_with_cli_parameters(
         paths=MagicMock(),
         manager=MagicMock(),
         config=base_config,
-        models=MagicMock(),
         codex_cache=codex_cache,
     )
 

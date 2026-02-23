@@ -1,196 +1,160 @@
 # orchestrator/
 
-Routing layer between Telegram bot UI and CLI providers. Owns command dispatch, directive parsing, session-flow orchestration, hooks, model switching, and cron/heartbeat/webhook/cleanup/cache wiring.
+Central routing layer between Telegram UI and CLI execution.
 
 ## Files
 
-- `core.py`: `Orchestrator` lifecycle, routing, error boundary, `active_provider_name`.
-- `registry.py`: `CommandRegistry`, `OrchestratorResult`.
-- `commands.py`: slash command handlers.
-- `flows.py`: `normal`, `normal_streaming`, `heartbeat_flow`.
-- `directives.py`: leading `@...` parser.
-- `hooks.py`: hook model and built-in `MAINMEMORY_REMINDER` hook.
-- `model_selector.py`: `/model` wizard callbacks and model switch logic.
+- `core.py`: `Orchestrator` lifecycle, routing, observer wiring, shutdown
+- `registry.py`: `CommandRegistry`, `OrchestratorResult`
+- `commands.py`: command handlers (`/status`, `/model`, `/cron`, `/diagnose`, `/upgrade`, ...)
+- `flows.py`: normal flow, streaming flow, heartbeat flow, error/sigkill handling
+- `directives.py`: leading `@...` directive parser
+- `hooks.py`: hook registry + `MAINMEMORY_REMINDER`
+- `model_selector.py`: interactive model/provider switch wizard (`ms:*`)
+- `cron_selector.py`: interactive cron toggles (`crn:*`)
 
-## Creation (`Orchestrator.create`)
+## Startup (`Orchestrator.create`)
 
-1. Resolve paths from configured `ductor_home`.
-2. `init_workspace(paths)` in a thread.
-3. Set `DUCTOR_HOME` env var.
-4. If Docker is enabled: `DockerManager.setup()` and container fallback wiring.
-5. Inject runtime environment notice into workspace rule files (`inject_runtime_environment`).
-6. Check provider auth (`check_all_auth`).
-7. Set authenticated providers in `CLIService`.
-8. Initialize `CodexCacheObserver` (`~/.ductor/config/codex_models.json`) and load cache.
-9. Create `CronObserver` and `WebhookObserver` with the shared cache (fallback empty cache if unavailable).
-10. Start `CronObserver`.
-11. Start `HeartbeatObserver`.
-12. Start `WebhookObserver`.
-13. Start `CleanupObserver`.
-14. Start rule-sync task (`watch_rule_files(paths.workspace)`).
-15. Start skill-sync task (`watch_skill_sync(paths)`).
+1. `init_workspace(paths)`
+2. set `DUCTOR_HOME`
+3. optional Docker setup (`DockerManager.setup`)
+4. if Docker active: re-sync skills in copy mode (`docker_active=True`)
+5. inject runtime environment notice into workspace rule files
+6. construct orchestrator instance
+7. detect provider auth (`check_all_auth`) and update available providers
+8. start model caches (`_init_model_caches`):
+   - `GeminiCacheObserver` (`gemini_models.json`) with refresh callback to `set_gemini_models`
+   - `CodexCacheObserver` (`codex_models.json`)
+9. construct/start `CronObserver`, `HeartbeatObserver`, `WebhookObserver`, `CleanupObserver`
+10. start rule sync watcher (`watch_rule_files`)
+11. start skill sync watcher (`watch_skill_sync`)
 
-## Routing Entry Points
+## Routing entry points
 
-- `handle_message(chat_id, text)` (non-streaming)
-- `handle_message_streaming(chat_id, text, on_text_delta, on_tool_activity, on_system_status)`
+- `handle_message(chat_id, text)`
+- `handle_message_streaming(chat_id, text, callbacks...)`
 
-Both flow through `_handle_message_impl()`:
+Shared path:
 
-1. clear abort flag (`ProcessRegistry.clear_abort`),
-2. scan input for suspicious patterns (log-only),
-3. route via `_route_message()`,
-4. catch domain/infrastructure exceptions and return generic internal error text.
+- clear abort flag
+- log suspicious input patterns (no hard block here)
+- command dispatch first
+- fallback to directive + normal/streaming flow
+- domain/unexpected exception boundary returns generic error text
 
-## Command Dispatch
+## Command registry
 
 Registered commands:
 
 - `/new`
 - `/status`
 - `/model`
-- `/model ` (prefix form, supports `/model <name>`)
+- `/model ` (prefix form)
 - `/memory`
 - `/cron`
-- `/upgrade`
 - `/diagnose`
+- `/upgrade`
 
-`CommandRegistry` supports exact and prefix matching (`name.endswith(" ")`).
-
-Routing note:
-
-- In normal Telegram command handling, `/new` and `/stop` are handled in the bot layer.
-- `/new` resets only the active provider bucket for that chat (via `Orchestrator.reset_active_provider_session`).
-- `/stop` is intentionally not registered in orchestrator `CommandRegistry`; abort handling is middleware/bot-local before normal routing.
-
-`/diagnose` includes Codex cache status (`loaded/not loaded`, `last_updated`, cached model count, default model).
-
-`/cron` now returns an interactive panel with inline callbacks for paging, refresh, per-job enable/disable toggles, and bulk `All ON` / `All OFF`.
+`/stop` is intentionally not registered here; abort is middleware/bot-level behavior.
 
 ## Directives
 
-`parse_directives(text, known_models)` consumes only the beginning of a message.
+`parse_directives(text, known_models)` parses only leading `@...` tokens.
 
-- model directive: `@<model-id>` if `<model-id>` is in `known_models`.
-- raw directives: any other leading `@key` or `@key=value`.
+Known model IDs are refreshed from:
 
-Current behavior:
+- Claude set (`haiku`, `sonnet`, `opus`)
+- Gemini aliases (`auto`, `pro`, `flash`, `flash-lite`)
+- discovered Gemini models from runtime cache
 
-- `known_models` is `_CLAUDE_MODELS` (`haiku`, `sonnet`, `opus`).
-- Codex IDs are not recognized as inline model directives.
+Codex IDs are not included in inline directive-known set.
 
-If a message is only a model directive (`@sonnet` with no prompt text), orchestrator returns instructional text instead of executing.
+Directive-only model messages return guidance text instead of executing.
 
-## Normal Flow (`flows.py`)
+## Normal/streaming flow (`flows.py`)
 
 `_prepare_normal()`:
 
-1. resolve requested model/provider,
-2. resolve session for provider,
-3. new session -> append `MAINMEMORY.md` as `append_system_prompt`,
-4. apply hooks (`MessageHookRegistry.apply`),
-5. build `AgentRequest`.
+- resolve runtime model/provider target
+- resolve or create session with provider-isolated buckets
+- new session: append `MAINMEMORY.md` as system appendix
+- apply hooks
+- build `AgentRequest`
 
-`normal()`:
+Gemini safeguard:
 
-- run `CLIService.execute()`.
-- no automatic retry on non-SIGKILL errors.
-- on normal CLI error: kill processes, preserve session state, return `SESSION_ERROR_TEXT` (with `/new` hint).
-- on SIGKILL (`returncode == -SIGKILL`): reset only active provider session and retry once.
+- if target provider is Gemini,
+- and Gemini auth mode is API-key,
+- and `gemini_api_key` in config is empty/`"null"`,
+- return warning result without spawning CLI.
 
-`normal_streaming()`:
+Error behavior:
 
-- run `CLIService.execute_streaming()` with `on_system_status` callback for system indicators (`thinking`, `compacting`, clear).
-- same non-SIGKILL behavior as `normal()` (no auto-retry, session preserved on error).
-- SIGKILL path resets only active provider session and retries once.
+- SIGKILL: reset only active provider bucket and retry once
+- other errors: kill processes, preserve session, return session-error guidance
 
-On success both paths call `_finish_normal()`:
+Success behavior:
 
-- update stored session ID when provider returns a new one,
-- increment message count and usage metrics,
-- append session age warning when session exceeds `session_age_warning_hours` and message count is a multiple of 10.
+- persist returned session ID
+- increment counters/cost/tokens
+- optional session-age note every 10 messages after threshold
 
-Session-target sync detail:
+## Heartbeat flow
 
-- `_prepare_normal()` always calls `SessionManager.sync_session_target(...)` so provider/model changes persist without touching counters.
+`heartbeat_flow` is read-only until non-ACK output:
 
-## Message Hooks
+- skip when no active session or no `session_id`
+- skip when provider mismatch or cooldown not reached
+- run heartbeat prompt in existing session
+- strip ACK token (`HEARTBEAT_OK` by default)
+- only non-ACK responses update session and trigger delivery
 
-Built-in hook: `MAINMEMORY_REMINDER`.
+Observer wiring in `Orchestrator.__init__`:
 
-- condition: every 6th outgoing message (`message_count + 1`).
-- action: appends a memory-check suffix to prompt.
+- busy check callback -> `ProcessRegistry.has_active` (heartbeat skips while chat has active CLI process)
+- stale cleanup callback -> `ProcessRegistry.kill_stale(config.cli_timeout * 2)` (run before heartbeat ticks)
 
-## Heartbeat Flow
+## Model selector (`model_selector.py`)
 
-`heartbeat_flow(orch, chat_id)`:
-
-1. read-only session check via `SessionManager.get_active()` (never creates/destroys sessions),
-2. skip if no active session or no `session_id`,
-3. skip on provider mismatch (session provider != current config provider),
-4. skip when user activity is within cooldown window,
-5. send heartbeat prompt via `CLIService.execute()` with `resume_session`,
-6. strip configured ACK token,
-7. ACK-only -> return `None` (suppressed),
-8. non-ACK -> update session metrics and return alert text.
-
-## Model Selector (`model_selector.py`)
-
-Wizard callback namespace: `ms:`.
+Callback namespace: `ms:`
 
 - provider step: `ms:p:<provider>`
-- model step: `ms:m:<model_id>`
-- reasoning step (Codex): `ms:r:<effort>:<model_id>`
-- back: `ms:b:root` or `ms:b:<provider>`
+- model step: `ms:m:<model>`
+- codex reasoning step: `ms:r:<effort>:<model>`
+- back: `ms:b:*`
 
-`/model` is a quick command (middleware lock bypass). If chat is busy (active process or queued messages), bot returns immediate "agent is working"; when idle it acquires lock for atomic switch.
+Behavior:
 
-Model list behavior:
+- provider buttons shown only for authenticated providers
+- model list sources:
+  - Claude static list
+  - Codex cache
+  - Gemini discovered models
+- switch updates config + CLIService defaults
+- provider session buckets are preserved across switches
 
-- Claude list is static (`haiku`, `sonnet`, `opus`).
-- Codex list comes from `CodexCacheObserver.get_cache()`.
-- if no cache models are available, wizard shows "No Codex models available."
+## Cron selector (`cron_selector.py`)
 
-`switch_model()` behavior:
+Callback namespace: `crn:`
 
-- if model changes: kill active processes but keep provider session buckets intact,
-- if target provider already has history: switch response includes a resume hint (session id, prior message count, `/new` hint),
-- if only reasoning effort changes on same Codex model: no reset, only config update,
-- update in-memory config + CLIService default model,
-- when provider changes: update config provider,
-- when effort provided: update `reasoning_effort`,
-- persist changes to `config.json`.
+- supports paging, refresh, per-job toggle, bulk all-on/all-off
+- toggles persist in `CronManager` and call `CronObserver.reschedule_now()`
 
-## Webhook Wiring
+## Webhook wiring
 
-`Orchestrator` owns webhook observer wiring:
+`Orchestrator` only wires handlers; wake execution remains in bot layer:
 
-- `set_webhook_result_handler(handler)` -> forwards `WebhookResult`.
-- `set_webhook_wake_handler(handler)` -> injects bot-layer wake handler.
+- `set_webhook_result_handler`
+- `set_webhook_wake_handler`
 
-Wake execution stays in bot layer (`TelegramBot._handle_webhook_wake`) so it reuses the same per-chat lock as normal chat updates.
-
-## Upgrade Command (`cmd_upgrade`)
-
-`/upgrade` Telegram command flow:
-
-1. Calls `check_pypi()` for latest version info.
-2. If unreachable: returns error message.
-3. Shows changelog button (`upg:cl:<version>`), even when already up to date.
-4. If update available: shows version diff + inline keyboard (`upg:yes:<version>` / `upg:no`).
-
-Callback handling is in `TelegramBot` (bot layer), not orchestrator.
+This keeps wake dispatch behind the same per-chat lock as normal messages.
 
 ## Shutdown
 
 `Orchestrator.shutdown()`:
 
-1. cancel and await rule-sync task,
-2. cancel and await skill-sync task,
-3. cleanup ductor-created symlinks from CLI skill directories (`cleanup_ductor_links`),
-4. stop heartbeat observer,
-5. stop webhook observer,
-6. stop cron observer,
-7. stop cleanup observer,
-8. stop Codex cache observer,
-9. teardown Docker container (if managed by this orchestrator instance).
+1. cancel rule/skill watcher tasks
+2. `cleanup_ductor_links(paths)`
+3. stop heartbeat/webhook/cron/cleanup observers
+4. stop codex and gemini cache observers
+5. teardown Docker container (if managed)

@@ -82,17 +82,19 @@ class CLIServiceConfig:
     max_budget_usd: float | None
     permission_mode: str
     reasoning_effort: str = "medium"
+    gemini_api_key: str | None = None
     docker_container: str = ""
     claude_cli_parameters: tuple[str, ...] = ()
     codex_cli_parameters: tuple[str, ...] = ()
+    gemini_cli_parameters: tuple[str, ...] = ()
 
     def cli_parameters_for_provider(self, provider: str) -> list[str]:
         """Return CLI parameters for the given provider."""
-        return (
-            list(self.codex_cli_parameters)
-            if provider == "codex"
-            else list(self.claude_cli_parameters)
-        )
+        if provider == "codex":
+            return list(self.codex_cli_parameters)
+        if provider == "gemini":
+            return list(self.gemini_cli_parameters)
+        return list(self.claude_cli_parameters)
 
 
 class CLIService:
@@ -271,10 +273,6 @@ class CLIService:
         if request.provider_override:
             model = model_name
             provider = request.provider_override
-        elif self._available_providers:
-            model, provider = self._models.resolve_for_provider(
-                model_name, self._available_providers
-            )
         else:
             model = model_name
             provider = self._models.provider_for(model_name)
@@ -290,6 +288,7 @@ class CLIService:
                 max_budget_usd=self._config.max_budget_usd,
                 permission_mode=self._config.permission_mode,
                 reasoning_effort=self._config.reasoning_effort,
+                gemini_api_key=self._config.gemini_api_key,
                 docker_container=self._config.docker_container,
                 process_registry=self._process_registry,
                 chat_id=request.chat_id,

@@ -9,6 +9,8 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn
@@ -18,7 +20,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ductor_bot.config import AgentConfig, deep_merge_config
+from ductor_bot.config import DEFAULT_EMPTY_GEMINI_API_KEY, AgentConfig, deep_merge_config
 from ductor_bot.infra.restart import EXIT_RESTART
 from ductor_bot.logging_config import setup_logging
 from ductor_bot.workspace.init import init_workspace
@@ -32,17 +34,10 @@ _IS_WINDOWS = sys.platform == "win32"
 
 
 def _re_exec_bot() -> NoReturn:
-    """Re-exec the bot process (cross-platform).
-
-    On POSIX: replaces current process via ``os.execv``.
-    On Windows: spawns new process and exits (``os.execv`` doesn't truly replace).
-    """
+    """Restart the bot process by spawning a fresh interpreter and exiting."""
     args = [sys.executable, "-m", "ductor_bot"]
-    if _IS_WINDOWS:
-        subprocess.Popen(args)
-        sys.exit(0)
-    else:
-        os.execv(sys.executable, args)  # noqa: S606
+    subprocess.Popen(args)
+    sys.exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +84,7 @@ def load_config() -> AgentConfig:
             logger.info("Created config from config.example.json at %s", config_path)
         else:
             defaults = AgentConfig().model_dump(mode="json")
+            defaults["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
             config_path.write_text(
                 json.dumps(defaults, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
@@ -100,8 +96,16 @@ def load_config() -> AgentConfig:
     except (json.JSONDecodeError, OSError):
         logger.exception("Failed to parse config at %s", config_path)
         sys.exit(1)
+
+    normalized_existing = False
+    if user_data.get("gemini_api_key") is None:
+        user_data["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
+        normalized_existing = True
+
     defaults = AgentConfig().model_dump(mode="json")
+    defaults["gemini_api_key"] = DEFAULT_EMPTY_GEMINI_API_KEY
     merged, changed = deep_merge_config(user_data, defaults)
+    changed = changed or normalized_existing
 
     if changed:
         config_path.write_text(
@@ -286,31 +290,36 @@ def _print_usage() -> None:
     _console.print()
 
 
-def _build_status_lines(  # noqa: PLR0913
-    *,
-    bot_running: bool,
-    bot_pid: int | None,
-    bot_uptime: str,
-    provider: str,
-    model: str,
-    docker_enabled: bool,
-    docker_name: str | None,
-    error_count: int,
-    paths: DuctorPaths,
-) -> list[str]:
+@dataclass(slots=True)
+class _StatusSummary:
+    """Runtime status inputs needed by the status panel renderer."""
+
+    bot_running: bool
+    bot_pid: int | None
+    bot_uptime: str
+    provider: str
+    model: str
+    docker_enabled: bool
+    docker_name: str | None
+    error_count: int
+
+
+def _build_status_lines(status: _StatusSummary, *, paths: DuctorPaths) -> list[str]:
     """Assemble the status panel content lines."""
     lines: list[str] = []
-    if bot_running:
-        lines.append(f"[bold green]Running[/bold green]  pid={bot_pid}  uptime: {bot_uptime}")
+    if status.bot_running:
+        lines.append(
+            f"[bold green]Running[/bold green]  pid={status.bot_pid}  uptime: {status.bot_uptime}"
+        )
     else:
         lines.append("[dim]Not running[/dim]")
-    lines.append(f"Provider:  [cyan]{provider}[/cyan] ({model})")
-    if docker_enabled:
-        lines.append(f"Docker:    [green]enabled[/green] ({docker_name})")
+    lines.append(f"Provider:  [cyan]{status.provider}[/cyan] ({status.model})")
+    if status.docker_enabled:
+        lines.append(f"Docker:    [green]enabled[/green] ({status.docker_name})")
     else:
         lines.append("Docker:    [dim]disabled[/dim]")
-    if error_count > 0:
-        lines.append(f"Errors:    [bold red]{error_count}[/bold red] in latest log")
+    if status.error_count > 0:
+        lines.append(f"Errors:    [bold red]{status.error_count}[/bold red] in latest log")
     else:
         lines.append("Errors:    [green]0[/green]")
     lines.append("")
@@ -366,7 +375,7 @@ def _print_status() -> None:
     error_count = _count_log_errors(paths.logs_dir)
 
     # Build status lines
-    lines = _build_status_lines(
+    summary = _StatusSummary(
         bot_running=bot_running,
         bot_pid=bot_pid,
         bot_uptime=bot_uptime,
@@ -375,8 +384,8 @@ def _print_status() -> None:
         docker_enabled=docker_enabled,
         docker_name=str(docker_name) if docker_name else None,
         error_count=error_count,
-        paths=paths,
     )
+    lines = _build_status_lines(summary, paths=paths)
 
     _console.print(
         Panel(
@@ -616,6 +625,7 @@ _COMMANDS: dict[str, str] = {
 }
 
 _SERVICE_SUBCOMMANDS = frozenset({"install", "status", "stop", "start", "logs", "uninstall"})
+_Action = Callable[[], None]
 
 
 def _parse_service_subcommand(args: list[str]) -> str | None:
@@ -666,16 +676,34 @@ def _cmd_service(args: list[str]) -> None:
         _print_service_help()
         return
 
-    dispatch: dict[str, object] = {
-        "install": lambda: install_service(_console),
-        "status": lambda: print_service_status(_console),
-        "start": lambda: start_service(_console),
-        "stop": lambda: stop_service(_console),
-        "logs": lambda: print_service_logs(_console),
-        "uninstall": lambda: uninstall_service(_console),
+    def _install() -> None:
+        install_service(_console)
+
+    def _status() -> None:
+        print_service_status(_console)
+
+    def _start() -> None:
+        start_service(_console)
+
+    def _stop() -> None:
+        stop_service(_console)
+
+    def _logs() -> None:
+        print_service_logs(_console)
+
+    def _uninstall_service_cmd() -> None:
+        uninstall_service(_console)
+
+    dispatch: dict[str, _Action] = {
+        "install": _install,
+        "status": _status,
+        "start": _start,
+        "stop": _stop,
+        "logs": _logs,
+        "uninstall": _uninstall_service_cmd,
     }
     _console.print()
-    dispatch[sub]()  # type: ignore[operator]
+    dispatch[sub]()
     _console.print()
 
 
@@ -702,7 +730,7 @@ def main() -> None:
     # Resolve first matching command
     action = next((_COMMANDS[c] for c in commands if c in _COMMANDS), None)
 
-    dispatch: dict[str, object] = {
+    dispatch: dict[str, _Action] = {
         "help": _print_usage,
         "status": _cmd_status,
         "stop": _stop_bot,
@@ -715,7 +743,7 @@ def main() -> None:
 
     handler = dispatch.get(action) if action else None
     if handler is not None:
-        handler()  # type: ignore[operator]
+        handler()
     else:
         _default_action(verbose)
 

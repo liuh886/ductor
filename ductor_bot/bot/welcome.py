@@ -52,7 +52,7 @@ def build_welcome_text(
     return (
         f"**Welcome to ductor.dev{name}!**\n\n"
         "Deploy from your pocket. Automate from your couch.\n"
-        "Claude Code & OpenAI Codex -- straight from Telegram.\n\n"
+        "Claude Code, Codex & Gemini -- straight from Telegram.\n\n"
         f"{SEP}\n\n"
         f"{auth_block}\n\n"
         f"{SEP}\n\n"
@@ -90,18 +90,25 @@ def get_welcome_button_label(data: str) -> str | None:
 def _build_auth_block(auth_results: dict[str, AuthResult], config: AgentConfig) -> str:
     claude = auth_results.get("claude")
     codex = auth_results.get("codex")
+    gemini = auth_results.get("gemini")
 
     claude_ok = claude is not None and claude.is_authenticated
     codex_ok = codex is not None and codex.is_authenticated
+    gemini_ok = gemini is not None and gemini.is_authenticated
 
     providers: list[str] = []
     if claude_ok:
         providers.append("Claude Code")
     if codex_ok:
         providers.append("Codex")
+    if gemini_ok:
+        providers.append("Gemini")
 
     if not providers:
-        return "No CLI authenticated yet. Run `claude auth` or `codex auth` to get started."
+        return (
+            "No CLI authenticated yet. "
+            "Run `claude auth`, `codex auth`, or authenticate in `gemini` to get started."
+        )
 
     auth_line = " + ".join(providers) + " authenticated."
     model_name = config.model.capitalize() if config.provider == "claude" else config.model

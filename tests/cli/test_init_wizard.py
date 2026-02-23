@@ -41,6 +41,27 @@ def test_write_config_ignores_corrupt_existing_json(tmp_path: Path) -> None:
     assert data["telegram_token"] == "123456789:abcdefghijklmnopqrstuvwxyzABCDE"
     assert data["allowed_user_ids"] == [1234]
     assert data["user_timezone"] == "UTC"
+    assert data["gemini_api_key"] == "null"
+
+
+def test_write_config_normalizes_existing_null_gemini_api_key(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.config_path.write_text('{"gemini_api_key": null}', encoding="utf-8")
+
+    with (
+        patch("ductor_bot.cli.init_wizard.resolve_paths", return_value=paths),
+        patch("ductor_bot.cli.init_wizard.init_workspace"),
+    ):
+        _write_config(
+            telegram_token="123456789:abcdefghijklmnopqrstuvwxyzABCDE",
+            allowed_user_ids=[1234],
+            user_timezone="UTC",
+            docker_enabled=False,
+        )
+
+    data = json.loads(paths.config_path.read_text(encoding="utf-8"))
+    assert data["gemini_api_key"] == "null"
 
 
 def test_run_onboarding_returns_false_when_service_install_fails(tmp_path: Path) -> None:

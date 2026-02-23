@@ -1,182 +1,101 @@
-# Setup Wizard & CLI
+# Setup Wizard and CLI Entry
 
-Interactive onboarding, CLI lifecycle commands, and the in-bot auto-update system.
+Covers `ductor` CLI command behavior, onboarding wizard, and upgrade/restart/uninstall flows.
 
 ## Files
 
-- `ductor_bot/__main__.py`: CLI entry point, command dispatch, help/status/stop/restart/upgrade/uninstall/service.
-- `ductor_bot/cli/init_wizard.py`: onboarding wizard (banner, disclaimer, prompts, config write), smart reset.
-- `ductor_bot/infra/version.py`: PyPI version check, `VersionInfo` model.
-- `ductor_bot/infra/updater.py`: `UpdateObserver` background task, `perform_upgrade()`, upgrade sentinel.
-- `ductor_bot/infra/service.py`: platform-dispatching service wrapper (Linux systemd / macOS launchd / Windows Task Scheduler).
-- `ductor_bot/infra/service_linux.py`: Linux systemd backend.
-- `ductor_bot/infra/service_macos.py`: macOS launchd backend.
-- `ductor_bot/infra/service_windows.py`: Windows Task Scheduler backend.
-- `ductor_bot/orchestrator/commands.py`: `/upgrade` Telegram command.
+- `ductor_bot/__main__.py`: CLI command dispatch + process lifecycle
+- `ductor_bot/cli/init_wizard.py`: onboarding wizard + smart reset
+- `ductor_bot/infra/service*.py`: background service backends
+- `ductor_bot/infra/version.py`, `infra/updater.py`: version check + upgrade helpers
+- `ductor_bot/orchestrator/commands.py`: Telegram `/upgrade` command
 
-## CLI Commands
+## CLI commands
 
-| Command | Behavior |
-|---|---|
-| `ductor` | Start bot. If unconfigured, runs onboarding first. |
-| `ductor onboarding` | Run setup wizard. If already configured, runs smart reset first, then starts bot in foreground. |
-| `ductor reset` | Same as `onboarding` (alias). |
-| `ductor stop` | Stop running bot (PID kill) and Docker container if active. |
-| `ductor restart` | Stop bot, re-exec process. |
-| `ductor upgrade` | Stop bot, upgrade package (`pipx` or `pip`), re-exec. On dev/source installs: show `git pull` guidance instead of self-upgrade. |
-| `ductor uninstall` | Full removal: stop bot, remove Docker, delete `~/.ductor/`, uninstall package. |
-| `ductor status` | Show running state, provider/model, Docker, error count, all paths. |
-| `ductor service ...` | Manage background service (`install`, `status`, `start`, `stop`, `logs`, `uninstall`) using systemd on Linux, launchd on macOS, or Task Scheduler on Windows. |
-| `ductor help` | Command reference + status panel (if configured). |
-| `-v`, `--verbose` | Verbose logging (combinable with any command). |
+- `ductor`: start bot (auto-onboarding if not configured)
+- `ductor onboarding` / `ductor reset`: run onboarding (smart reset first if configured)
+- `ductor status`: show status panel
+- `ductor stop`: stop bot + docker container (if enabled)
+- `ductor restart`: stop and re-exec
+- `ductor upgrade`: CLI-side upgrade + restart (non-dev installs)
+- `ductor uninstall`: full removal workflow
+- `ductor service <install|status|start|stop|logs|uninstall>`: service control
+- `ductor help`: command table + status hint
 
-`ductor help` uses a platform-specific service hint:
+Command resolution in `main()` takes the first matching non-flag command token.
 
-- Windows: `Task Scheduler`
-- macOS: `launchd`
-- Linux: `systemd`
+## Onboarding flow (`run_onboarding`)
 
-Dispatch behavior:
+1. banner
+2. provider detection (`claude`, `codex`, `gemini`) and auth status panel
+3. require at least one authenticated provider
+4. disclaimer confirmation
+5. Telegram bot token prompt + validation
+6. Telegram user ID prompt + validation
+7. Docker detection + opt-in prompt
+8. timezone prompt + validation
+9. write merged config and run `init_workspace`
+10. optional service install prompt
 
-- `_COMMANDS` maps CLI tokens to action names.
-- `main()` keeps command arguments as an ordered list (not a set) and resolves the first matching command from left to right.
-- `--help` / `-h` append `help`.
-- unknown commands fall through to default (auto-onboard + start).
+Return semantics:
 
-Ordering matters for mixed commands like `ductor service uninstall`: it must resolve to `service` and not trigger the global bot uninstaller.
+- returns `True` only when service install was requested and installation succeeded
+- returns `False` otherwise
 
-## Onboarding Wizard (`run_onboarding`)
+Caller behavior:
 
-Interactive flow using Rich panels and Questionary prompts:
+- `ductor` default path: exits after successful service install; otherwise starts foreground bot
+- `ductor onboarding` / `ductor reset`: same behavior (no forced foreground start after successful service install)
 
-1. **ASCII Banner** -- "DUCTOR" in cyan.
-2. **CLI Detection** -- checks `claude` and `codex` CLI auth status via `check_claude_auth()` / `check_codex_auth()`. Requires at least one authenticated provider. Blocks setup if none found.
-3. **Disclaimer** -- risk warning (bypass permissions mode, Docker recommendation). Must confirm to proceed.
-4. **Telegram Bot Token** -- step-by-step BotFather instructions. Validated with regex (`digits:alphanumeric`).
-5. **Telegram User ID** -- step-by-step @userinfobot instructions. Validated as positive integer.
-6. **Docker Detection** -- if `docker` binary found, offer to enable sandboxing (default: yes). If not found, show info panel and skip.
-7. **Timezone Selection** -- grouped list of common IANA zones + manual entry option. Validated via `zoneinfo.ZoneInfo`.
-8. **Write Config** -- merges wizard values into `AgentConfig` defaults, writes `config.json`, runs `init_workspace()`.
-9. **Success Panel** -- shows all file paths (Home, Config, Workspace, Logs), then either installs service (systemd on Linux, launchd on macOS, Task Scheduler on Windows) or returns control to caller.
+## Smart reset (`run_smart_reset`)
 
-Service prompt wording is platform-specific:
+If already configured and onboarding/reset is requested:
 
-- Linux: "systemd service" + start on "boot"
-- macOS: "launch agent" + start on "login"
-- Windows: "scheduled task" + start on "login"
+1. read current Docker settings
+2. show destructive reset warning
+3. optionally remove Docker container/image
+4. require final confirmation
+5. delete `~/.ductor`
 
-Return value semantics:
+## Configured check
 
-- `True`: user chose service install.
-- `False`: onboarding completed without service install.
+`_is_configured()` requires:
 
-Caller behavior in `__main__.py`:
+- valid non-placeholder `telegram_token`
+- non-empty `allowed_user_ids`
 
-- `ductor` (default action): skips foreground start when return value is `True`.
-- `ductor onboarding` / `ductor reset`: always starts foreground bot after onboarding.
+## Status panel (`ductor status`)
 
-Any `None` response from Questionary (Ctrl+C) calls `_abort()` -> `sys.exit(0)`.
+Shows:
 
-## Smart Reset (`run_smart_reset`)
+- running state / PID / uptime
+- configured provider + model
+- Docker enabled state
+- error count from newest `ductor*.log`
+- key paths (home/config/workspace/logs/sessions)
 
-Triggered when `onboarding` or `reset` is run on an already-configured system:
+Note: runtime file logger writes `agent.log`; status counter still scans `ductor*.log`.
 
-1. Read existing `config.json` for Docker settings (container name, image name).
-2. Warning panel: explains full reset consequences (data loss).
-3. If Docker was enabled + `docker` binary exists: offer to remove container and image.
-4. Final confirmation (default: No).
-5. `shutil.rmtree(ductor_home)` removes `~/.ductor/` entirely.
-6. Onboarding wizard runs fresh.
+## Service command wiring
 
-## Configuration Detection
+`ductor service ...` delegates to platform backend via `infra/service.py`:
 
-`_is_configured()` in `__main__.py`:
+- Linux: systemd user service
+- macOS: launchd Launch Agent
+- Windows: Task Scheduler
 
-- reads `config.json` directly (no `AgentConfig` load),
-- checks `telegram_token` is non-empty and not `YOUR_*` placeholder,
-- checks `allowed_user_ids` is non-empty.
+`ductor service logs` behavior:
 
-This drives the auto-onboarding behavior: `ductor` with no arguments runs onboarding if unconfigured, otherwise starts the bot directly.
+- Linux: live journalctl stream
+- macOS/Windows: recent lines from `agent.log` (fallback newest `*.log`)
 
-## Status Display
+## Telegram upgrade flow
 
-`ductor status` and the status panel in `help`:
+`/upgrade` command path:
 
-- **Running state**: reads PID from `bot.pid`, checks process alive, computes uptime from PID file mtime.
-- **Provider/Model**: reads from `config.json`.
-- **Docker**: enabled/disabled + container name.
-- **Error count**: counts ` ERROR ` occurrences in latest `ductor*.log` file.
-- **Paths**: Home, Config, Workspace, Logs, Sessions.
+1. check PyPI version
+2. if update available, send inline buttons
+3. callback `upg:yes:<version>` runs upgrade, writes sentinel, exits with restart code
+4. startup consumes sentinel and sends completion message
 
-Note: runtime file logs are written to `agent.log`; the current status error counter scans `ductor*.log`.
-
-## Auto-Update System
-
-### Background Check (`UpdateObserver`)
-
-Pattern follows `CronObserver` / `HeartbeatObserver`:
-
-1. Started in `TelegramBot._on_startup()` only when install mode is upgradeable (`pipx`/`pip`, not dev/source).
-2. Initial delay: 60 seconds after startup.
-3. Check interval: 60 minutes.
-4. Calls `check_pypi()` -> `VersionInfo` (current, latest, update_available, summary).
-5. On new version: sends Telegram notification to all `allowed_user_ids` with inline buttons.
-6. Deduplicates by version string (notifies once per version).
-
-### PyPI Version Check (`check_pypi`)
-
-- HTTP GET `https://pypi.org/pypi/ductor/json` via aiohttp (10s timeout).
-- Compares installed version (`importlib.metadata.version`) against latest PyPI version.
-- Version comparison uses parsed int tuples (handles dotted version strings).
-
-### Telegram `/upgrade` Command
-
-In `orchestrator/commands.py`:
-
-1. Calls `check_pypi()`.
-2. If no update: shows "Already up to date" with version info.
-3. Shows inline changelog button (`upg:cl:<version>`).
-4. If update is available: shows upgrade buttons:
-   - `[Yes, upgrade now]` -> callback `upg:yes:<version>`
-   - `[Not now]` -> callback `upg:no`
-
-### Upgrade Callback Flow
-
-In `TelegramBot._handle_upgrade_callback()`:
-
-1. `upg:cl:<version>`: fetch changelog from GitHub Releases and send it.
-2. `upg:yes:<version>`: remove keyboard, send "Upgrading..." message, run `perform_upgrade()`, write upgrade sentinel, exit with code 42 (restart path).
-3. `upg:no`: remove keyboard and edit message to "Upgrade skipped.".
-
-### Upgrade Execution (`perform_upgrade`)
-
-- Refuses dev/source installs (`detect_install_mode() == "dev"`).
-- Otherwise uses `pipx upgrade --force ductor` or falls back to `python -m pip install --upgrade ductor`.
-- Returns `(success, output)`.
-
-### Post-Restart Notification
-
-Upgrade sentinel (`upgrade-sentinel.json`) in `ductor_home`:
-
-- Written before restart: contains `chat_id`, `old_version`, `new_version`.
-- Consumed on next startup in `_on_startup()`.
-- Sends "Upgrade complete" message to recorded chat with old -> new version.
-
-## CLI Upgrade (`ductor upgrade`)
-
-Separate from the Telegram flow. For users who prefer terminal:
-
-1. Stop running bot gracefully.
-2. If install mode is dev/source: print guidance to update with `git pull` and stop.
-3. Otherwise run `pipx upgrade ductor` (or `python -m pip install --upgrade ductor`).
-4. `os.execv()` to re-exec with new version.
-
-## Uninstall (`ductor uninstall`)
-
-1. Warning panel listing all actions.
-2. Questionary confirm (default: No).
-3. Stop bot + Docker container.
-4. Remove Docker image if Docker was enabled.
-5. `shutil.rmtree(ductor_home)`.
-6. `pipx uninstall` or `pip uninstall -y`.
-7. Success panel.
+`UpdateObserver` runs in bot startup only for upgradeable installs (`pipx`/`pip`, not dev mode).

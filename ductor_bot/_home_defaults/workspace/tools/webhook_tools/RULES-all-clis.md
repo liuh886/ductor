@@ -2,17 +2,19 @@
 
 Scripts for managing incoming HTTP webhook endpoints.
 
-## ⚠️ MANDATORY: Ask Before Creating cron_task Webhooks
+## MANDATORY: Ask Before Creating cron_task Webhooks
 
 **When creating a webhook in `cron_task` mode, you MUST ask:**
 
 1. **Which CLI provider?**
    - `claude` - Standard Claude models
    - `codex` - OpenAI Codex models with extended thinking
+   - `gemini` - Google Gemini models
 
 2. **Which model?**
    - **If Claude:** `haiku`, `sonnet` (recommended), `opus`
    - **If Codex:** `gpt-5.2-codex` (recommended), `gpt-5.3-codex`, `gpt-5.1-codex-max`, `gpt-5.2`, `gpt-5.1-codex-mini`
+   - **If Gemini:** `gemini-2.5-pro` (recommended), `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`
 
 3. **If Codex: Which thinking level?**
    - `low`, `medium` (default), `high`, `xhigh`
@@ -130,10 +132,19 @@ python3 tools/webhook_tools/webhook_add.py \
   --provider codex \
   --model gpt-5.2-codex \
   --reasoning-effort high
+
+# cron_task mode - Gemini example
+python3 tools/webhook_tools/webhook_add.py \
+  --name "data-summarizer" --title "Data Summary" \
+  --description "Summarize incoming data" \
+  --mode "cron_task" --task-folder "data-summarizer" \
+  --prompt-template "Summarize: {{data}}" \
+  --provider gemini \
+  --model gemini-2.5-pro
 ```
 
 **Available parameters for cron_task mode:**
-- `--provider` - CLI provider: `claude` or `codex` (optional)
+- `--provider` - CLI provider: `claude`, `codex`, or `gemini` (optional)
 - `--model` - Model choice (optional)
 - `--reasoning-effort` - Codex only: thinking level (optional)
 - `--cli-parameters` - Advanced: JSON array (only if user explicitly requests)
@@ -152,8 +163,8 @@ python3 tools/webhook_tools/webhook_edit.py "hook-id" --disable
 python3 tools/webhook_tools/webhook_edit.py "hook-id" --prompt-template "..."
 python3 tools/webhook_tools/webhook_edit.py "hook-id" --auth-mode "hmac"
 python3 tools/webhook_tools/webhook_edit.py "hook-id" --regenerate-token
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --provider "codex"
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --model "gpt-5.2-codex"
+python3 tools/webhook_tools/webhook_edit.py "hook-id" --provider "gemini"
+python3 tools/webhook_tools/webhook_edit.py "hook-id" --model "gemini-2.5-pro"
 python3 tools/webhook_tools/webhook_edit.py "hook-id" --reasoning-effort "high"
 python3 tools/webhook_tools/webhook_edit.py "hook-id" --cli-parameters '["--verbose"]'
 ```
@@ -235,7 +246,7 @@ silently with inferred user workflow preferences and interests.
 
 Webhooks in `cron_task` mode can override global config settings in `webhooks.json`:
 
-- `provider`: `"claude"` or `"codex"` (optional, defaults to global config)
+- `provider`: `"claude"`, `"codex"`, or `"gemini"` (optional, defaults to global config)
 - `model`: Model name (optional, defaults to global config)
   - Claude models: `"haiku"`, `"sonnet"`, `"opus"`
   - Codex models:
@@ -244,6 +255,13 @@ Webhooks in `cron_task` mode can override global config settings in `webhooks.js
     - `"gpt-5.1-codex-max"` - Codex-optimized for deep and fast reasoning
     - `"gpt-5.2"` - Latest frontier model
     - `"gpt-5.1-codex-mini"` - Cheaper, faster (limited reasoning)
+  - Gemini models:
+    - `"gemini-2.5-pro"` - Balanced, most capable
+    - `"gemini-2.5-flash"` - Fast and cost-effective
+    - `"gemini-2.5-flash-lite"` - Cheapest, fastest
+    - `"gemini-3-pro-preview"` - Next-gen preview
+    - `"gemini-3-flash-preview"` - Next-gen fast preview
+    - `"gemini-3.1-pro-preview"` - Latest preview
 - `reasoning_effort`: Thinking level (Codex only, optional, defaults to `"medium"`)
   - Most models: `"low"`, `"medium"`, `"high"`, `"xhigh"`
   - `gpt-5.1-codex-mini`: `"medium"`, `"high"` only
@@ -281,8 +299,20 @@ Codex webhook:
 }
 ```
 
+Gemini webhook:
+```json
+{
+  "id": "report-generator",
+  "mode": "cron_task",
+  "task_folder": "reports",
+  "prompt_template": "Generate report: {{topic}}",
+  "provider": "gemini",
+  "model": "gemini-2.5-pro"
+}
+```
+
 **Use cases:**
 - High-reasoning analysis: `"reasoning_effort": "high"` (Codex only)
-- Provider-specific webhook: `"provider": "codex"` while main agent uses Claude
+- Provider-specific webhook: `"provider": "gemini"` while main agent uses Claude
 - Webhook-specific model: Different model per webhook
 - Advanced CLI flags: `"cli_parameters": [...]` (only if explicitly needed)

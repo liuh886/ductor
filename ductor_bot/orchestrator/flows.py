@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.bot.response_format import session_error_text
 from ductor_bot.cli.types import AgentRequest, AgentResponse
+from ductor_bot.config import NULLISH_TEXT_VALUES
 from ductor_bot.log_context import set_log_context
 from ductor_bot.orchestrator.hooks import HookContext
 from ductor_bot.orchestrator.registry import OrchestratorResult
@@ -41,7 +42,10 @@ async def _prepare_normal(
         chat_id,
         provider=req_provider,
         model=req_model,
+        preserve_existing_target=model_override is None,
     )
+    req_model = session.model
+    req_provider = session.provider
     await orch._sessions.sync_session_target(
         session,
         provider=req_provider,
@@ -164,6 +168,34 @@ def _request_target(orch: Orchestrator, request: AgentRequest) -> tuple[str, str
     return model_name, provider_name
 
 
+async def _gemini_missing_config_key_warning(
+    orch: Orchestrator,
+    request: AgentRequest,
+) -> OrchestratorResult | None:
+    """Warn when Gemini API-key mode is selected but Ductor config key is empty."""
+    _model_name, provider_name = _request_target(orch, request)
+    if provider_name != "gemini":
+        return None
+
+    api_key_mode = orch.gemini_api_key_mode
+    if not api_key_mode:
+        return None
+
+    key = (orch._config.gemini_api_key or "").strip()
+    if key and key.lower() not in NULLISH_TEXT_VALUES:
+        return None
+
+    return OrchestratorResult(
+        text=(
+            "Gemini is set to API-key auth mode, but `gemini_api_key` in "
+            '`~/.ductor/config/config.json` is `"null"` or empty.\n'
+            "Why this is required: when ductor calls Gemini CLI as an external process, "
+            "Gemini CLI does not expose an internally entered API key to that caller.\n"
+            "Set a real API key in `gemini_api_key` and restart `ductor`."
+        ),
+    )
+
+
 async def normal(
     orch: Orchestrator,
     chat_id: int,
@@ -174,6 +206,11 @@ async def normal(
     """Handle normal conversation with session resume."""
     logger.info("Normal flow starting")
     request, session = await _prepare_normal(orch, chat_id, text, model_override=model_override)
+    warning = await _gemini_missing_config_key_warning(orch, request)
+    if warning is not None:
+        logger.warning("Gemini API-key mode without configured ductor key")
+        return warning
+
     response = await orch._cli_service.execute(request)
     if orch._process_registry.was_aborted(chat_id):
         logger.info("Normal flow aborted by user")
@@ -215,6 +252,11 @@ async def normal_streaming(  # noqa: PLR0913
     """Handle normal conversation with streaming output."""
     logger.info("Streaming flow starting")
     request, session = await _prepare_normal(orch, chat_id, text, model_override=model_override)
+    warning = await _gemini_missing_config_key_warning(orch, request)
+    if warning is not None:
+        logger.warning("Gemini API-key mode without configured ductor key")
+        return warning
+
     response = await orch._cli_service.execute_streaming(
         request,
         on_text_delta=on_text_delta,

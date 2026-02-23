@@ -17,6 +17,63 @@ from ductor_bot.config import AgentConfig, resolve_user_timezone
 logger = logging.getLogger(__name__)
 
 
+def _as_mapping(value: object) -> Mapping[str, object] | None:
+    """Return value as string-key mapping when possible."""
+    if isinstance(value, Mapping):
+        return value
+    return None
+
+
+def _as_str(value: object, *, default: str) -> str:
+    """Return value as string (or default for ``None``)."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _as_optional_str(value: object) -> str | None:
+    """Return optional value as string."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _as_optional_int(value: object) -> int | None:
+    """Return optional value coerced to int (best effort)."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _as_optional_float(value: object) -> float | None:
+    """Return optional value coerced to float (best effort)."""
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return value
+    if isinstance(value, int):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 @dataclass
 class ProviderSessionData:
     """Provider-local session state."""
@@ -38,21 +95,20 @@ class SessionData:
     last_active: str
     provider_sessions: dict[str, ProviderSessionData] = field(default_factory=dict)
 
-    def __init__(  # noqa: PLR0913
-        self,
-        chat_id: int,
-        provider: str = "claude",
-        model: str = "opus",
-        created_at: str = "",
-        last_active: str = "",
-        provider_sessions: Mapping[str, object] | None = None,
-        *,
+    def __init__(self, chat_id: int, **raw: object) -> None:
+        """Create session data from current or legacy serialized fields."""
+        provider = _as_str(raw.pop("provider", "claude"), default="claude")
+        model = _as_str(raw.pop("model", "opus"), default="opus")
+        created_at = _as_str(raw.pop("created_at", ""), default="")
+        last_active = _as_str(raw.pop("last_active", ""), default="")
+        provider_sessions = _as_mapping(raw.pop("provider_sessions", None))
+
         # Backward compatibility for old JSON/tests.
-        session_id: str | None = None,
-        message_count: int | None = None,
-        total_cost_usd: float | None = None,
-        total_tokens: int | None = None,
-    ) -> None:
+        session_id = _as_optional_str(raw.pop("session_id", None))
+        message_count = _as_optional_int(raw.pop("message_count", None))
+        total_cost_usd = _as_optional_float(raw.pop("total_cost_usd", None))
+        total_tokens = _as_optional_int(raw.pop("total_tokens", None))
+
         self.chat_id = chat_id
         self.provider = provider
         self.model = model
@@ -73,6 +129,9 @@ class SessionData:
                 total_tokens=total_tokens or 0,
             )
         self.provider_sessions = migrated
+
+        if raw:
+            logger.warning("SessionData: unknown keys ignored: %s", list(raw.keys()))
 
     @property
     def session_id(self) -> str:
@@ -195,6 +254,7 @@ class SessionManager:
         *,
         provider: str | None = None,
         model: str | None = None,
+        preserve_existing_target: bool = False,
     ) -> tuple[SessionData, bool]:
         """Returns (session, is_new). Reuses if fresh, creates if stale."""
         sessions = await self._load()
@@ -205,6 +265,12 @@ class SessionManager:
         model_name = model or self._config.model
 
         if existing and self._is_fresh(existing):
+            if (
+                preserve_existing_target
+                and bool(existing.provider.strip())
+                and bool(existing.model.strip())
+            ):
+                return existing, not bool(existing.session_id)
             changed = False
             if existing.provider != prov:
                 logger.info("Provider switch %s -> %s", existing.provider, prov)
@@ -478,7 +544,7 @@ class SessionManager:
             try:
                 tmp.write_text(content, encoding="utf-8")
                 tmp.replace(self._path)
-            except Exception:
+            except OSError:
                 tmp.unlink(missing_ok=True)
                 raise
 

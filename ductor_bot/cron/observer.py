@@ -7,7 +7,9 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cronsim import CronSim, CronSimError
@@ -17,8 +19,7 @@ from ductor_bot.config import resolve_user_timezone
 from ductor_bot.cron.execution import (
     build_cmd,
     enrich_instruction,
-    parse_claude_result,
-    parse_codex_result,
+    execute_one_shot,
 )
 from ductor_bot.cron.manager import CronManager
 from ductor_bot.log_context import set_log_context
@@ -27,13 +28,35 @@ from ductor_bot.utils.quiet_hours import check_quiet_hour
 if TYPE_CHECKING:
     from ductor_bot.cli.codex_cache import CodexModelCache
     from ductor_bot.cli.param_resolver import TaskExecutionConfig
-    from ductor_bot.config import AgentConfig, ModelRegistry
+    from ductor_bot.config import AgentConfig
+    from ductor_bot.cron.manager import CronJob
     from ductor_bot.workspace.paths import DuctorPaths
 
 logger = logging.getLogger(__name__)
 
 # Callback signature: (job_title, result_text, status)
 CronResultCallback = Callable[[str, str, str], Awaitable[None]]
+
+
+@dataclass(slots=True)
+class _ScheduledJob:
+    """Scheduling payload for one cron entry."""
+
+    id: str
+    schedule: str
+    instruction: str
+    task_folder: str
+    timezone: str
+
+
+@dataclass(slots=True)
+class _PreparedCronExecution:
+    """Resolved execution inputs for one cron run."""
+
+    folder: Path
+    exec_config: TaskExecutionConfig
+    cmd: list[str]
+    timeout: float
 
 
 class CronObserver:
@@ -50,13 +73,11 @@ class CronObserver:
         manager: CronManager,
         *,
         config: AgentConfig,
-        models: ModelRegistry,
         codex_cache: CodexModelCache,
     ) -> None:
         self._paths = paths
         self._manager = manager
         self._config = config
-        self._models = models
         self._codex_cache = codex_cache
         self._on_result: CronResultCallback | None = None
         self._scheduled: dict[str, asyncio.Task[None]] = {}
@@ -186,8 +207,15 @@ class CronObserver:
                 next_aware = next_naive.replace(tzinfo=tz)
                 delay = (next_aware - datetime.now(tz)).total_seconds()
             delay = max(delay, 0)
+            scheduled_job = _ScheduledJob(
+                id=job_id,
+                schedule=schedule,
+                instruction=instruction,
+                task_folder=task_folder,
+                timezone=job_timezone,
+            )
             task = asyncio.create_task(
-                self._run_at(delay, job_id, instruction, task_folder, schedule, job_timezone),
+                self._run_at(delay, scheduled_job),
             )
             self._scheduled[job_id] = task
             logger.debug(
@@ -200,24 +228,26 @@ class CronObserver:
         except (CronSimError, StopIteration):
             logger.warning("Invalid cron expression for job %s: %s", job_id, schedule)
 
-    async def _run_at(  # noqa: PLR0913
-        self,
-        delay: float,
-        job_id: str,
-        instruction: str,
-        task_folder: str,
-        schedule: str,
-        job_timezone: str = "",
-    ) -> None:
+    async def _run_at(self, delay: float, scheduled_job: _ScheduledJob) -> None:
         """Wait for delay, execute the job, then reschedule for next occurrence."""
         try:
             await asyncio.sleep(delay)
-            await self._execute_job(job_id, instruction, task_folder)
+            await self._execute_job(
+                scheduled_job.id,
+                scheduled_job.instruction,
+                scheduled_job.task_folder,
+            )
         except asyncio.CancelledError:
-            logger.debug("Cron job %s cancelled during execution", job_id)
+            logger.debug("Cron job %s cancelled during execution", scheduled_job.id)
             return
         if self._running:
-            self._schedule_job(job_id, schedule, instruction, task_folder, job_timezone)
+            self._schedule_job(
+                scheduled_job.id,
+                scheduled_job.schedule,
+                scheduled_job.instruction,
+                scheduled_job.task_folder,
+                scheduled_job.timezone,
+            )
 
     # -- Execution --
 
@@ -232,7 +262,7 @@ class CronObserver:
             task_overrides=task_overrides,
         )
 
-    async def _execute_job(  # noqa: PLR0915
+    async def _execute_job(
         self,
         job_id: str,
         instruction: str,
@@ -252,98 +282,56 @@ class CronObserver:
         async with dep_queue.acquire(job_id, job_title, dependency):
             logger.info("Cron job starting job=%s", job_title)
 
-            # Check quiet hours (use job-specific or global defaults)
-            is_quiet, now_hour, tz = check_quiet_hour(
-                quiet_start=job.quiet_start if job else None,
-                quiet_end=job.quiet_end if job else None,
-                user_timezone=self._config.user_timezone,
-                global_quiet_start=self._config.heartbeat.quiet_start,
-                global_quiet_end=self._config.heartbeat.quiet_end,
-            )
-            if is_quiet:
-                logger.debug(
-                    "Cron job skipped: quiet hours (%d:00 %s) job=%s",
-                    now_hour,
-                    tz.key,
-                    job_title,
-                )
+            if self._is_quiet_hours(job, job_title):
                 return
 
             t0 = time.monotonic()
-            folder = self._paths.cron_tasks_dir / task_folder
-            if not await asyncio.to_thread(folder.is_dir):
-                logger.error("Cron task folder missing: %s", folder)
-                self._manager.update_run_status(job_id, status="error:folder_missing")
-                return
-
-            # Build TaskOverrides from job
-            overrides = TaskOverrides(
-                provider=job.provider if job else None,
-                model=job.model if job else None,
-                reasoning_effort=job.reasoning_effort if job else None,
-                cli_parameters=job.cli_parameters if job else [],
+            prepared = await self._prepare_execution(
+                job_id=job_id,
+                instruction=instruction,
+                task_folder=task_folder,
+                job=job,
             )
-
-            exec_config = self._resolve_execution_config(overrides)
-            enriched = enrich_instruction(instruction, task_folder)
-            cmd = build_cmd(exec_config, enriched)
-
-            if cmd is None:
-                logger.error("%s CLI not found for cron job %s", exec_config.provider, job_id)
-                self._manager.update_run_status(
-                    job_id,
-                    status=f"error:cli_not_found_{exec_config.provider}",
-                )
+            if prepared is None:
                 return
 
-            timeout = self._config.cli_timeout
             logger.debug(
                 "Cron subprocess cmd=%s cwd=%s provider=%s model=%s timeout=%.0fs",
-                " ".join(cmd[:3]),
-                folder,
-                exec_config.provider,
-                exec_config.model,
-                timeout,
+                " ".join(prepared.cmd[:3]),
+                prepared.folder,
+                prepared.exec_config.provider,
+                prepared.exec_config.model,
+                prepared.timeout,
             )
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(folder),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            timed_out = False
             try:
-                async with asyncio.timeout(timeout):
-                    stdout, stderr = await proc.communicate()
-            except TimeoutError:
-                timed_out = True
-                logger.warning(
-                    "Cron job %s timed out after %.0fs, killing process", job_id, timeout
+                execution = await execute_one_shot(
+                    prepared.cmd,
+                    cwd=prepared.folder,
+                    provider=prepared.exec_config.provider,
+                    timeout_seconds=prepared.timeout,
+                    timeout_label="Cron job",
                 )
-                proc.kill()
-                stdout, stderr = await proc.communicate()
             except asyncio.CancelledError:
-                logger.debug("Cron job %s cancelled, killing subprocess", job_id)
-                proc.kill()
-                await proc.wait()
+                logger.debug("Cron job %s cancelled, subprocess terminated", job_id)
                 raise
 
-            if stderr:
-                logger.debug("Cron stderr (%s): %s", job_id, stderr.decode(errors="replace")[:500])
-
-            if timed_out:
-                status = "error:timeout"
-                result_text = f"[Cron job timed out after {timeout:.0f}s]"
-            else:
-                result_text = (
-                    parse_codex_result(stdout)
-                    if exec_config.provider == "codex"
-                    else parse_claude_result(stdout)
+            if execution.timed_out:
+                logger.warning(
+                    "Cron job %s timed out after %.0fs, killing process",
+                    job_id,
+                    prepared.timeout,
                 )
-                status = "success" if proc.returncode == 0 else f"error:exit_{proc.returncode}"
+
+            if execution.stderr:
+                logger.debug(
+                    "Cron stderr (%s): %s",
+                    job_id,
+                    execution.stderr.decode(errors="replace")[:500],
+                )
+
+            result_text = execution.result_text
+            status = execution.status
 
             self._manager.update_run_status(job_id, status=status)
             # Refresh our mtime baseline so the file-watcher doesn't treat the
@@ -356,7 +344,7 @@ class CronObserver:
                 job_title,
                 status,
                 elapsed_ms,
-                len(stdout),
+                len(execution.stdout),
                 len(result_text),
             )
 
@@ -365,6 +353,66 @@ class CronObserver:
                     await self._on_result(job.title, result_text, status)
                 except Exception:
                     logger.exception("Error in cron result handler for job %s", job_id)
+
+    def _is_quiet_hours(self, job: CronJob | None, job_title: str) -> bool:
+        """Return True when the job must be skipped due to quiet-hour settings."""
+        is_quiet, now_hour, tz = check_quiet_hour(
+            quiet_start=job.quiet_start if job else None,
+            quiet_end=job.quiet_end if job else None,
+            user_timezone=self._config.user_timezone,
+            global_quiet_start=self._config.heartbeat.quiet_start,
+            global_quiet_end=self._config.heartbeat.quiet_end,
+        )
+        if not is_quiet:
+            return False
+
+        logger.debug(
+            "Cron job skipped: quiet hours (%d:00 %s) job=%s",
+            now_hour,
+            tz.key,
+            job_title,
+        )
+        return True
+
+    async def _prepare_execution(
+        self,
+        *,
+        job_id: str,
+        instruction: str,
+        task_folder: str,
+        job: CronJob | None,
+    ) -> _PreparedCronExecution | None:
+        """Resolve command, provider config, timeout, and folder for one cron run."""
+        folder = self._paths.cron_tasks_dir / task_folder
+        if not await asyncio.to_thread(folder.is_dir):
+            logger.error("Cron task folder missing: %s", folder)
+            self._manager.update_run_status(job_id, status="error:folder_missing")
+            return None
+
+        overrides = TaskOverrides(
+            provider=job.provider if job else None,
+            model=job.model if job else None,
+            reasoning_effort=job.reasoning_effort if job else None,
+            cli_parameters=job.cli_parameters if job else [],
+        )
+        exec_config = self._resolve_execution_config(overrides)
+        enriched = enrich_instruction(instruction, task_folder)
+        cmd = build_cmd(exec_config, enriched)
+
+        if cmd is None:
+            logger.error("%s CLI not found for cron job %s", exec_config.provider, job_id)
+            self._manager.update_run_status(
+                job_id,
+                status=f"error:cli_not_found_{exec_config.provider}",
+            )
+            return None
+
+        return _PreparedCronExecution(
+            folder=folder,
+            exec_config=exec_config,
+            cmd=cmd,
+            timeout=self._config.cli_timeout,
+        )
 
     async def _update_mtime(self) -> None:
         """Cache the current mtime of the jobs file."""

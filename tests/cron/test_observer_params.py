@@ -36,7 +36,6 @@ def mock_codex_cache() -> CodexModelCache:
 @pytest.fixture
 def observer(tmp_path: Path, mock_codex_cache: CodexModelCache) -> CronObserver:
     """Create a CronObserver with mock dependencies."""
-    from ductor_bot.config import ModelRegistry
     from ductor_bot.workspace.paths import DuctorPaths
 
     # Mock paths
@@ -56,12 +55,10 @@ def observer(tmp_path: Path, mock_codex_cache: CodexModelCache) -> CronObserver:
     )
 
     # Create observer
-    models = ModelRegistry()
     return CronObserver(
         paths=paths,
         manager=manager,
         config=config,
-        models=models,
         codex_cache=mock_codex_cache,
     )
 

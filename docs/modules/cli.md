@@ -1,210 +1,153 @@
 # cli/
 
-Provider-agnostic CLI layer for Claude Code and Codex. Owns subprocess execution, stream normalization, auth checks, process tracking, provider-specific CLI parameter routing, and Codex model-cache primitives.
+Provider-agnostic CLI execution layer for Claude Code, Codex, and Gemini.
 
 ## Files
 
-- `types.py`: `AgentRequest`, `AgentResponse`, `CLIResponse`.
-- `base.py`: `BaseCLI` interface, `CLIConfig`, `docker_wrap()`, Windows stdin helpers (`_IS_WINDOWS`, `_win_stdin_pipe()`, `_win_feed_stdin()`).
-- `factory.py`: provider factory (`ClaudeCodeCLI` or `CodexCLI`).
-- `service.py`: `CLIService` gateway used by orchestrator.
-- `claude_provider.py`: async Claude CLI wrapper.
-- `codex_provider.py`: async Codex CLI wrapper.
-- `stream_events.py`: normalized stream events + Claude stream-json parser.
-- `codex_events.py`: Codex JSONL parsing + normalized stream event conversion.
-- `coalescer.py`: stream text coalescing helper.
-- `process_registry.py`: active subprocess tracking and termination.
-- `auth.py`: provider auth-state detection.
-- `param_resolver.py`: `TaskOverrides` + `TaskExecutionConfig` resolution for cron/webhook `cron_task` runs.
-- `codex_cache.py`: persistent Codex model cache (`CodexModelCache`).
-- `codex_cache_observer.py`: background cache lifecycle (`CodexCacheObserver`).
-- `codex_discovery.py`: low-level Codex discovery via `codex app-server` JSON-RPC.
+- `types.py`: `AgentRequest`, `AgentResponse`, `CLIResponse`
+- `base.py`: `BaseCLI`, `CLIConfig`, `docker_wrap()`, Windows helpers
+- `factory.py`: provider factory (`claude` / `codex` / `gemini`)
+- `service.py`: `CLIService` gateway for orchestrator
+- `claude_provider.py`: Claude subprocess wrapper
+- `codex_provider.py`: Codex subprocess wrapper
+- `gemini_provider.py`: Gemini subprocess wrapper
+- `stream_events.py`: normalized stream events + Claude stream parser
+- `codex_events.py`: Codex JSONL parser
+- `gemini_events.py`: Gemini NDJSON + JSON parser
+- `coalescer.py`: streaming text coalescing buffer used by bot streaming dispatch
+- `gemini_utils.py`: Gemini CLI discovery, trusted folder, model discovery helpers
+- `codex_discovery.py`: Codex model discovery via `codex app-server` JSON-RPC
+- `process_registry.py`: subprocess tracking/abort/kill
+- `auth.py`: provider auth detection
+- `param_resolver.py`: task override resolution for cron/webhook one-shot runs
+- `codex_cache.py`, `codex_cache_observer.py`: Codex model cache + observer
+- `gemini_cache.py`, `gemini_cache_observer.py`: Gemini model cache + observer
 
-## Public API (`cli/__init__.py`)
-
-- service: `CLIService`, `CLIServiceConfig`
-- providers/base: `BaseCLI`, `CLIConfig`, `create_cli`
-- request/response: `AgentRequest`, `AgentResponse`, `CLIResponse`
-- streaming helper: `StreamCoalescer`, `CoalesceConfig`
-- process/auth: `ProcessRegistry`, `check_all_auth`, `AuthResult`, `AuthStatus`
-
-## Request Path (main chat, non-streaming)
+## Execution path
 
 1. Orchestrator builds `AgentRequest`.
-2. `CLIService._make_cli()` resolves `(model, provider)` from request + available providers.
-3. Service maps provider to CLI parameters via `CLIServiceConfig.cli_parameters_for_provider(provider)`.
-4. Factory creates provider wrapper with `CLIConfig`.
-5. Provider executes subprocess and returns `CLIResponse`.
-6. Service converts to `AgentResponse`.
+2. `CLIService._make_cli()` resolves model/provider.
+3. `CLIServiceConfig` injects provider-specific global CLI args.
+4. `create_cli()` selects provider wrapper.
+5. provider executes subprocess and returns `CLIResponse`.
+6. service converts to `AgentResponse`.
 
-## CLI Parameter Routing
+## Main-chat CLI parameters
 
-Main-agent CLI flags are configured per provider:
+Configured globally in `config.json`:
 
-- `CLIServiceConfig.claude_cli_parameters`
-- `CLIServiceConfig.codex_cli_parameters`
+- `cli_parameters.claude`
+- `cli_parameters.codex`
+- `cli_parameters.gemini`
 
-`CLIService._make_cli()` injects them into `CLIConfig.cli_parameters`. Both providers append `cli_parameters` **before** the `--` separator.
+`CLIService` forwards them per provider.
 
-## Task Execution Resolution (cron/webhook)
+## Task execution resolution (`param_resolver.py`)
 
-`param_resolver.py` provides a shared resolution path for unattended task runs:
+Used by cron and webhook `cron_task` runs.
 
-- `TaskOverrides`: optional per-task fields (`provider`, `model`, `reasoning_effort`, `cli_parameters`).
-- `TaskExecutionConfig`: resolved immutable execution settings.
-- `resolve_cli_config(base_config, codex_cache, task_overrides=...)`:
-  - provider/model fallback to global config when override is missing,
-  - Claude model validation against hardcoded set (`haiku`, `sonnet`, `opus`),
-  - Codex model validation against `CodexModelCache`,
-  - reasoning effort allowed only for Codex models that support it,
-  - task `cli_parameters` passed through to command builders.
+- input: `TaskOverrides(provider, model, reasoning_effort, cli_parameters)`
+- output: immutable `TaskExecutionConfig`
+- validation:
+  - Claude model in `haiku|sonnet|opus`
+  - Codex model validated against `CodexModelCache`
+  - Gemini model validated against aliases/discovered IDs or `gemini-*` patterns
+- Codex reasoning effort applied only when supported by model
+- task `cli_parameters` are task-level only (no merge with global provider args)
 
-Current behavior: task-level `cli_parameters` are task-specific (no merge with global `AgentConfig.cli_parameters`).
+## Streaming model
 
-## Codex Model Cache
+Normalized events in `stream_events.py` include:
 
-`CodexModelCache` (`codex_cache.py`):
+- `AssistantTextDelta`
+- `ToolUseEvent`
+- `ToolResultEvent`
+- `ThinkingEvent`
+- `SystemStatusEvent`
+- `CompactBoundaryEvent`
+- `SystemInitEvent`
+- `ResultEvent`
 
-- persisted as JSON (`last_updated`, model metadata, supported efforts, defaults),
-- `load_or_refresh(cache_path)` uses cache when fresh (`<24h`) and re-discovers when missing/stale/corrupt,
-- `_refresh_and_save()` writes atomically (`.tmp` + replace),
-- discovery source: `discover_codex_models()` in `codex_discovery.py`.
+`CLIService.execute_streaming()` behavior:
 
-`CodexCacheObserver` (`codex_cache_observer.py`):
+- routes deltas/events to callbacks,
+- checks `ProcessRegistry.was_aborted(chat_id)` on each event,
+- if stream fails or lacks final result event:
+  - aborted -> empty result,
+  - non-error with accumulated text -> use accumulated text,
+  - else retry non-streaming and mark `stream_fallback=True`.
 
-- loads cache at startup with `force_refresh=True`,
-- runs an hourly loop and re-runs `load_or_refresh()`,
-- exposes `get_cache()` for orchestrator/model-selector/diagnose paths.
+`bot/message_dispatch.py` wraps delta delivery with `StreamCoalescer` (`coalescer.py`) so Telegram edits flush at readable boundaries (paragraph/sentence/idle/full flush).
 
-## Stream Event Types
+SIGKILL retry is orchestrator-managed (`flows._recover_after_sigkill`), not CLIService-managed.
 
-Normalized events parsed from Claude `stream-json` output (`stream_events.py`):
+## Provider specifics
 
-- `AssistantTextDelta`: text content chunks.
-- `ToolUseEvent`: tool invocation indicator.
-- `ResultEvent`: final result with session ID, cost, usage.
-- `SystemInitEvent`: session initialization with `session_id`.
-- `SystemStatusEvent`: status changes (e.g. `status="compacting"` for context compaction start, `status=null` for end).
-- `CompactBoundaryEvent`: context compaction boundary marker with `trigger` (`auto`/`manual`) and `pre_tokens`.
-- `ThinkingEvent`: reasoning/thinking block events.
+### Claude
 
-Codex emits no client-side compaction events (handled server-side). Codex streaming applies `CodexThinkingFilter`: text emitted directly before tool events is buffered/dropped to reduce noisy stream output.
+- non-streaming uses `--output-format json`
+- streaming uses `--output-format stream-json`
+- respects `--max-turns`, `--max-budget-usd`, session resume/continue
 
-## Streaming Path
+### Codex
 
-`CLIService.execute_streaming()`:
+- uses `codex exec --json --color never --skip-git-repo-check`
+- sandbox/approval flag selection from `permission_mode`
+- reasoning effort via `-c model_reasoning_effort=...`
+- `continue_session=True` is ignored for Codex
 
-1. consume provider stream events via `_StreamCallbacks`,
-2. check `ProcessRegistry.was_aborted()` on each event -- breaks out immediately on `/stop` (cross-platform),
-3. forward text deltas/tool events/system status to callbacks,
-4. capture final `ResultEvent`.
+### Gemini
 
-Fallback handling:
+- command via `gemini` (or `node <index.js>` when resolved)
+- non-streaming `--output-format json`, streaming `--output-format stream-json`
+- permission bypass maps to `--approval-mode yolo`
+- always includes `--include-directories .`
+- trusts workspace path in `~/.gemini/trustedFolders.json`
+- may inject `GEMINI_API_KEY` from ductor config when Gemini settings indicate API-key mode and no env key is set
 
-- if stream exception or no `ResultEvent`:
-  - aborted chat (`ProcessRegistry.was_aborted`) -> empty result,
-  - accumulated text without stream error -> return accumulated text,
-  - otherwise retry non-streaming `execute()` and mark `stream_fallback=True`.
+## Auth detection (`auth.py`)
 
-SIGKILL recovery note:
+Statuses: `AUTHENTICATED`, `INSTALLED`, `NOT_FOUND`.
 
-- SIGKILL retry is orchestrator-managed (`flows._recover_after_sigkill`), not a CLIService fallback branch. On SIGKILL, orchestrator resets only the active provider session bucket, emits `recovering` status, and retries once.
+- Claude: `~/.claude/.credentials.json`
+- Codex: `$CODEX_HOME/auth.json` (fallback install marker: `version.json`)
+- Gemini:
+  - CLI presence (`find_gemini_cli`)
+  - OAuth creds (`~/.gemini/oauth_creds.json`)
+  - env/.env/API-key/Vertex markers
+  - `settings.json` selected auth mode
+  - optional fallback to `~/.ductor/config/config.json` `gemini_api_key`
 
-## Provider Command Behavior
+## Model caches
 
-### Windows stdin mode
+### Codex cache
 
-On Windows, CLI executables are `.cmd` wrappers that mangle special characters in command-line arguments. Both providers pass the prompt via stdin instead of as a trailing argument. Shared helpers in `base.py`:
+- file: `~/.ductor/config/codex_models.json`
+- discovery source: `discover_codex_models()` (`codex_discovery.py`) via `codex app-server` (`initialize` + `model/list`)
+- loaded on startup with force refresh
+- hourly refresh loop
 
-- `_IS_WINDOWS`: platform check (`sys.platform == "win32"`).
-- `_win_stdin_pipe()`: returns `asyncio.subprocess.PIPE` on Windows, `None` on POSIX.
-- `_win_feed_stdin(process, data)`: writes prompt to stdin and closes it on Windows; no-op on POSIX.
+### Gemini cache
 
-### Claude (`ClaudeCodeCLI`)
+- file: `~/.ductor/config/gemini_models.json`
+- loaded on startup (uses cache when fresh, refreshes when stale/missing)
+- hourly refresh loop
+- refresh callback updates runtime Gemini model registry (`set_gemini_models`)
 
-Base command:
+## Process registry
 
-```bash
-claude -p --output-format json \
-  --permission-mode <mode> \
-  --model <model> \
-  [--system-prompt ...] [--append-system-prompt ...] \
-  [--max-turns ...] [--max-budget-usd ...] \
-  [--resume <session_id> | --continue] \
-  [<cli_parameters...>] \
-  -- <prompt>
-```
+`ProcessRegistry` provides:
 
-On Windows, the prompt is omitted from the command line and piped via stdin instead.
+- registration/unregistration by chat
+- abort markers (`was_aborted`, `clear_abort`)
+- `kill_all(chat_id)`
+- stale wall-clock cleanup (`kill_stale`)
 
-Streaming mode:
+Windows uses process-tree termination (`taskkill /F /T`) to avoid orphaned child processes.
 
-- switches `--output-format` to `stream-json`,
-- adds `--verbose`.
+## Docker wrapping
 
-### Codex (`CodexCLI`)
+`docker_wrap(cmd, container, chat_id, working_dir)`:
 
-Base command:
-
-```bash
-codex exec --json --color never --skip-git-repo-check \
-  <sandbox_flags> [--model ...] [-c model_reasoning_effort=...] \
-  [--instructions ...] [--image ...] [<cli_parameters...>] \
-  -- <final_prompt>
-```
-
-Prompt composition for Codex:
-
-- `system_prompt` + user prompt + `append_system_prompt` are merged into one prompt body.
-
-Resume behavior:
-
-- resume uses `codex exec resume ...`.
-- `continue_session=True` is ignored for Codex (debug-log only).
-
-## Process Registry
-
-`ProcessRegistry` responsibilities:
-
-- `register(chat_id, process, label)` / `unregister(...)`
-- `kill_all(chat_id)` with SIGTERM -> grace period -> SIGKILL -> reap
-- abort marker API: `was_aborted()` / `clear_abort()`
-- activity check: `has_active(chat_id)`
-- `kill_stale(max_age_seconds)`: kills wall-clock-stale processes (`time.time()`), used by heartbeat after suspend/resume scenarios.
-
-Each `TrackedProcess` records `registered_at` (wall clock).
-
-### Windows process tree kill
-
-On Windows, CLI processes spawn as `cmd.exe` with a child `node.exe`. A plain `process.terminate()` only kills `cmd.exe`, leaving the child orphaned. `_kill_process_tree(pid)` uses `taskkill /F /T /PID <pid>` to kill the entire tree. This is called instead of the POSIX SIGTERM/SIGKILL sequence when running on Windows.
-
-## Auth Detection (`auth.py`)
-
-- Claude authenticated: `~/.claude/.credentials.json`
-- Codex authenticated: `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`)
-- Codex installed fallback check: `$CODEX_HOME/version.json`
-
-Status enum:
-
-- `AUTHENTICATED`
-- `INSTALLED`
-- `NOT_FOUND`
-
-## Docker Wrapping
-
-`docker_wrap(cmd, docker_container, chat_id, working_dir)`:
-
-- no container: run locally with `cwd=working_dir`.
-- with container: `docker exec -e DUCTOR_CHAT_ID=<id> <container> ...`, `cwd=None`.
-
-## Model Discovery Note
-
-`codex_discovery.py` is now a low-level source for cache refresh. The `/model` wizard reads models from `CodexModelCache` (through orchestrator), not from live discovery per request.
-
-## Key Design Choices
-
-- Single service boundary (`CLIService`) for orchestrator calls.
-- Normalized stream events decouple bot/orchestrator from provider JSON formats.
-- Shared `param_resolver` keeps unattended execution logic in one place.
-- Cached Codex model metadata removes repeated discovery latency from the model selector.
-- Centralized subprocess control (`ProcessRegistry`) supports robust abort and stale-process cleanup.
+- no container: execute with local cwd
+- container: `docker exec -e DUCTOR_CHAT_ID=<id> <container> ...`, cwd unset

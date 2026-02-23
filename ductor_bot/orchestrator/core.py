@@ -7,13 +7,23 @@ import contextlib
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ductor_bot.cleanup import CleanupObserver
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_cache_observer import CodexCacheObserver
+from ductor_bot.cli.gemini_cache_observer import GeminiCacheObserver
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.service import CLIService, CLIServiceConfig
-from ductor_bot.config import _CLAUDE_MODELS, AgentConfig, ModelRegistry
+from ductor_bot.config import (
+    _CLAUDE_MODELS,
+    _GEMINI_ALIASES,
+    AgentConfig,
+    ModelRegistry,
+    get_gemini_models,
+    set_gemini_models,
+)
 from ductor_bot.cron.manager import CronManager
 from ductor_bot.cron.observer import CronObserver
 from ductor_bot.errors import (
@@ -61,7 +71,27 @@ from ductor_bot.workspace.skill_sync import (
     watch_skill_sync,
 )
 
+if TYPE_CHECKING:
+    from ductor_bot.cli.auth import AuthResult, AuthStatus
+
 logger = logging.getLogger(__name__)
+
+
+_TextCallback = Callable[[str], Awaitable[None]]
+_SystemStatusCallback = Callable[[str | None], Awaitable[None]]
+
+
+@dataclass(slots=True)
+class _MessageDispatch:
+    """Normalized input for one orchestrator message routing pass."""
+
+    chat_id: int
+    text: str
+    cmd: str
+    streaming: bool = False
+    on_text_delta: _TextCallback | None = None
+    on_tool_activity: _TextCallback | None = None
+    on_system_status: _SystemStatusCallback | None = None
 
 
 def _docker_skill_resync(paths: DuctorPaths) -> None:
@@ -84,7 +114,8 @@ class Orchestrator:
         self._paths: DuctorPaths = paths
         self._docker: DockerManager | None = None
         self._models = ModelRegistry()
-        self._known_model_ids: frozenset[str] = _CLAUDE_MODELS
+        self._known_model_ids: frozenset[str] = frozenset()
+        self._refresh_known_model_ids()
         self._sessions = SessionManager(paths.sessions_path, config)
         self._process_registry = ProcessRegistry()
         self._available_providers: frozenset[str] = frozenset()
@@ -97,9 +128,11 @@ class Orchestrator:
                 max_budget_usd=config.max_budget_usd,
                 permission_mode=config.permission_mode,
                 reasoning_effort=config.reasoning_effort,
+                gemini_api_key=config.gemini_api_key,
                 docker_container=docker_container,
                 claude_cli_parameters=tuple(config.cli_parameters.claude),
                 codex_cli_parameters=tuple(config.cli_parameters.codex),
+                gemini_cli_parameters=tuple(config.cli_parameters.gemini),
             ),
             models=self._models,
             available_providers=frozenset(),
@@ -118,8 +151,10 @@ class Orchestrator:
         )
         self._cleanup_observer = CleanupObserver(config, paths)
         self._codex_cache_observer: CodexCacheObserver | None = None
+        self._gemini_cache_observer: GeminiCacheObserver | None = None
         self._rule_sync_task: asyncio.Task[None] | None = None
         self._skill_sync_task: asyncio.Task[None] | None = None
+        self._gemini_api_key_mode: bool | None = None
         self._hook_registry = MessageHookRegistry()
         self._hook_registry.register(MAINMEMORY_REMINDER)
         self._command_registry = CommandRegistry()
@@ -161,49 +196,26 @@ class Orchestrator:
         from ductor_bot.cli.auth import AuthStatus, check_all_auth
 
         auth_results = await asyncio.to_thread(check_all_auth)
-        for provider, result in auth_results.items():
-            if result.status == AuthStatus.AUTHENTICATED:
-                logger.info("Provider [%s]: authenticated", provider)
-            elif result.status == AuthStatus.INSTALLED:
-                logger.warning("Provider [%s]: installed but NOT authenticated", provider)
-            else:
-                logger.info("Provider [%s]: not found", provider)
-
-        orch._available_providers = frozenset(
-            name for name, res in auth_results.items() if res.is_authenticated
-        )
-        orch._cli_service.update_available_providers(orch._available_providers)
+        orch._apply_auth_results(auth_results, auth_status_enum=AuthStatus)
 
         if not orch._available_providers:
             logger.error("No authenticated providers found! CLI calls will fail.")
         else:
             logger.info("Available providers: %s", ", ".join(sorted(orch._available_providers)))
 
-        # Initialize Codex cache observer
-        codex_cache_path = paths.config_path.parent / "codex_models.json"
-        codex_cache_observer = CodexCacheObserver(codex_cache_path)
-        await codex_cache_observer.start()
-        orch._codex_cache_observer = codex_cache_observer
-        codex_cache = codex_cache_observer.get_cache()
+        await asyncio.to_thread(orch._init_gemini_state)
 
-        if not codex_cache or not codex_cache.models:
-            logger.warning("Codex cache is empty after startup (Codex may not be authenticated)")
-
-        # Create observers that need the cache
-        # Use empty cache if load failed (they'll use global config fallback)
-        safe_codex_cache = codex_cache or CodexModelCache("", [])
+        safe_codex_cache = await orch._init_model_caches(paths)
         orch._cron_observer = CronObserver(
             paths,
             orch._cron_manager,
             config=config,
-            models=orch._models,
             codex_cache=safe_codex_cache,
         )
         orch._webhook_observer = WebhookObserver(
             paths,
             orch._webhook_manager,
             config=config,
-            models=orch._models,
             codex_cache=safe_codex_cache,
         )
 
@@ -212,7 +224,7 @@ class Orchestrator:
         await orch._webhook_observer.start()
         await orch._cleanup_observer.start()
         orch._rule_sync_task = asyncio.create_task(watch_rule_files(paths.workspace))
-        logger.info("Rule file watcher started (CLAUDE.md <-> AGENTS.md)")
+        logger.info("Rule file watcher started (CLAUDE.md <-> AGENTS.md <-> GEMINI.md)")
         orch._skill_sync_task = asyncio.create_task(
             watch_skill_sync(paths, docker_active=bool(docker_container))
         )
@@ -220,57 +232,117 @@ class Orchestrator:
 
         return orch
 
+    async def _init_model_caches(self, paths: DuctorPaths) -> CodexModelCache:
+        """Start Gemini and Codex cache observers, return Codex cache."""
+        # Gemini cache observer
+        gemini_cache_path = paths.config_path.parent / "gemini_models.json"
+
+        def _on_gemini_refresh(models: tuple[str, ...]) -> None:
+            set_gemini_models(frozenset(models))
+            self._refresh_known_model_ids()
+            self._gemini_api_key_mode = None  # Invalidate to re-check on next access
+
+        gemini_observer = GeminiCacheObserver(gemini_cache_path, on_refresh=_on_gemini_refresh)
+        await gemini_observer.start()
+        self._gemini_cache_observer = gemini_observer
+
+        if not get_gemini_models():
+            logger.warning("Gemini cache is empty after startup (Gemini may not be installed)")
+
+        # Codex cache observer
+        codex_cache_path = paths.config_path.parent / "codex_models.json"
+        codex_observer = CodexCacheObserver(codex_cache_path)
+        await codex_observer.start()
+        self._codex_cache_observer = codex_observer
+        codex_cache = codex_observer.get_cache()
+
+        if not codex_cache or not codex_cache.models:
+            logger.warning("Codex cache is empty after startup (Codex may not be authenticated)")
+
+        return codex_cache or CodexModelCache("", [])
+
+    def _refresh_known_model_ids(self) -> None:
+        """Refresh directive-known model IDs from dynamic provider registries."""
+        self._known_model_ids = _CLAUDE_MODELS | _GEMINI_ALIASES | get_gemini_models()
+
+    def _apply_auth_results(
+        self,
+        auth_results: dict[str, AuthResult],
+        *,
+        auth_status_enum: type[AuthStatus],
+    ) -> None:
+        """Log provider auth states and update the runtime provider set."""
+        authenticated = auth_status_enum.AUTHENTICATED
+        installed = auth_status_enum.INSTALLED
+
+        for provider, result in auth_results.items():
+            if result.status == authenticated:
+                logger.info("Provider [%s]: authenticated", provider)
+            elif result.status == installed:
+                logger.warning("Provider [%s]: installed but NOT authenticated", provider)
+            else:
+                logger.info("Provider [%s]: not found", provider)
+
+        self._available_providers = frozenset(
+            name for name, res in auth_results.items() if res.is_authenticated
+        )
+        self._cli_service.update_available_providers(self._available_providers)
+
+    def _init_gemini_state(self) -> None:
+        """Cache Gemini API-key mode and trust workspace once at startup."""
+        from ductor_bot.cli.auth import gemini_uses_api_key_mode
+
+        self._gemini_api_key_mode = gemini_uses_api_key_mode()
+        if "gemini" in self._available_providers:
+            from ductor_bot.cli.gemini_utils import trust_workspace
+
+            trust_workspace(self._paths.workspace)
+
+    @property
+    def gemini_api_key_mode(self) -> bool:
+        """Return cached Gemini API-key mode status."""
+        if self._gemini_api_key_mode is None:
+            from ductor_bot.cli.auth import gemini_uses_api_key_mode
+
+            self._gemini_api_key_mode = gemini_uses_api_key_mode()
+        return self._gemini_api_key_mode
+
     async def handle_message(self, chat_id: int, text: str) -> OrchestratorResult:
         """Main entry point: route message to appropriate handler."""
-        return await self._handle_message_impl(chat_id, text)
+        dispatch = _MessageDispatch(chat_id=chat_id, text=text, cmd=text.strip().lower())
+        return await self._handle_message_impl(dispatch)
 
     async def handle_message_streaming(
         self,
         chat_id: int,
         text: str,
         *,
-        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
-        on_tool_activity: Callable[[str], Awaitable[None]] | None = None,
-        on_system_status: Callable[[str | None], Awaitable[None]] | None = None,
+        on_text_delta: _TextCallback | None = None,
+        on_tool_activity: _TextCallback | None = None,
+        on_system_status: _SystemStatusCallback | None = None,
     ) -> OrchestratorResult:
         """Main entry point with streaming support."""
-        return await self._handle_message_impl(
-            chat_id,
-            text,
+        dispatch = _MessageDispatch(
+            chat_id=chat_id,
+            text=text,
+            cmd=text.strip().lower(),
             streaming=True,
             on_text_delta=on_text_delta,
             on_tool_activity=on_tool_activity,
             on_system_status=on_system_status,
         )
+        return await self._handle_message_impl(dispatch)
 
-    async def _handle_message_impl(  # noqa: PLR0913
-        self,
-        chat_id: int,
-        text: str,
-        *,
-        streaming: bool = False,
-        on_text_delta: Callable[[str], Awaitable[None]] | None = None,
-        on_tool_activity: Callable[[str], Awaitable[None]] | None = None,
-        on_system_status: Callable[[str | None], Awaitable[None]] | None = None,
-    ) -> OrchestratorResult:
-        self._process_registry.clear_abort(chat_id)
-        cmd = text.strip().lower()
-        logger.info("Message received text=%s", cmd[:80])
+    async def _handle_message_impl(self, dispatch: _MessageDispatch) -> OrchestratorResult:
+        self._process_registry.clear_abort(dispatch.chat_id)
+        logger.info("Message received text=%s", dispatch.cmd[:80])
 
-        patterns = detect_suspicious_patterns(text)
+        patterns = detect_suspicious_patterns(dispatch.text)
         if patterns:
             logger.warning("Suspicious input patterns: %s", ", ".join(patterns))
 
         try:
-            return await self._route_message(
-                chat_id,
-                text,
-                cmd,
-                streaming=streaming,
-                on_text_delta=on_text_delta,
-                on_tool_activity=on_tool_activity,
-                on_system_status=on_system_status,
-            )
+            return await self._route_message(dispatch)
         except asyncio.CancelledError:
             raise
         except (CLIError, StreamError, SessionError, CronError, WebhookError, WorkspaceError):
@@ -280,24 +352,19 @@ class Orchestrator:
             logger.exception("Unexpected error in handle_message")
             return OrchestratorResult(text="An internal error occurred. Please try again.")
 
-    async def _route_message(  # noqa: PLR0913
-        self,
-        chat_id: int,
-        text: str,
-        cmd: str,
-        *,
-        streaming: bool,
-        on_text_delta: Callable[[str], Awaitable[None]] | None,
-        on_tool_activity: Callable[[str], Awaitable[None]] | None,
-        on_system_status: Callable[[str | None], Awaitable[None]] | None = None,
-    ) -> OrchestratorResult:
-        result = await self._command_registry.dispatch(cmd, self, chat_id, text)
+    async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:
+        result = await self._command_registry.dispatch(
+            dispatch.cmd,
+            self,
+            dispatch.chat_id,
+            dispatch.text,
+        )
         if result is not None:
             return result
 
         await self._ensure_docker()
 
-        directives = parse_directives(text, self._known_model_ids)
+        directives = parse_directives(dispatch.text, self._known_model_ids)
 
         if directives.is_directive_only and directives.has_model:
             return OrchestratorResult(
@@ -305,22 +372,22 @@ class Orchestrator:
                 f"(Send a message with @{directives.model} <text> to use it.)",
             )
 
-        prompt_text = directives.cleaned or text
+        prompt_text = directives.cleaned or dispatch.text
 
-        if streaming:
+        if dispatch.streaming:
             return await normal_streaming(
                 self,
-                chat_id,
+                dispatch.chat_id,
                 prompt_text,
                 model_override=directives.model,
-                on_text_delta=on_text_delta,
-                on_tool_activity=on_tool_activity,
-                on_system_status=on_system_status,
+                on_text_delta=dispatch.on_text_delta,
+                on_tool_activity=dispatch.on_tool_activity,
+                on_system_status=dispatch.on_system_status,
             )
 
         return await normal(
             self,
-            chat_id,
+            dispatch.chat_id,
             prompt_text,
             model_override=directives.model,
         )
@@ -367,8 +434,6 @@ class Orchestrator:
     def resolve_runtime_target(self, requested_model: str | None = None) -> tuple[str, str]:
         """Resolve requested model to the effective ``(model, provider)`` pair."""
         model_name = requested_model or self._config.model
-        if self._available_providers:
-            return self._models.resolve_for_provider(model_name, self._available_providers)
         return model_name, self._models.provider_for(model_name)
 
     def set_cron_result_handler(
@@ -411,7 +476,11 @@ class Orchestrator:
     def active_provider_name(self) -> str:
         """Human-readable name for the active CLI provider."""
         _model, provider = self.resolve_runtime_target(self._config.model)
-        return "Claude Code" if provider == "claude" else "Codex"
+        if provider == "claude":
+            return "Claude Code"
+        if provider == "gemini":
+            return "Gemini"
+        return "Codex"
 
     def is_chat_busy(self, chat_id: int) -> bool:
         """Check if a chat has active CLI processes."""
@@ -445,6 +514,9 @@ class Orchestrator:
         if self._codex_cache_observer:
             await self._codex_cache_observer.stop()
             self._codex_cache_observer = None
+        if self._gemini_cache_observer:
+            await self._gemini_cache_observer.stop()
+            self._gemini_cache_observer = None
         if self._docker:
             await self._docker.teardown()
         logger.info("Orchestrator shutdown")

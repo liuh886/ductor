@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import time_machine
 
 from ductor_bot.cli.codex_cache import CodexModelCache
-from ductor_bot.config import AgentConfig, HeartbeatConfig, ModelRegistry
+from ductor_bot.config import AgentConfig, HeartbeatConfig
 from ductor_bot.cron.manager import CronJob, CronManager
 from ductor_bot.cron.observer import CronObserver
 from ductor_bot.workspace.paths import DuctorPaths
@@ -39,10 +39,6 @@ def _make_config(**overrides: Any) -> AgentConfig:
     return AgentConfig(**overrides)
 
 
-def _make_models() -> ModelRegistry:
-    return ModelRegistry()
-
-
 def _make_codex_cache() -> CodexModelCache:
     return CodexModelCache(last_updated=datetime.now(UTC).isoformat(), models=[])
 
@@ -56,7 +52,6 @@ def _make_observer(
         paths,
         mgr,
         config=_make_config(**config_overrides),
-        models=_make_models(),
         codex_cache=_make_codex_cache(),
     )
 

@@ -3,16 +3,17 @@
 This directory contains isolated task folders used by scheduled jobs.
 For cron tool commands (add/edit/remove/list), see `tools/cron_tools/CLAUDE.md`.
 
-## ⚠️ MANDATORY WORKFLOW: Creating Cron Jobs
+## MANDATORY WORKFLOW: Creating Cron Jobs
 
 **CRITICAL: When creating a new cron job, you MUST ALWAYS ask the user these questions:**
 
-1. **Which CLI provider?** (`--provider claude` or `--provider codex`)
+1. **Which CLI provider?** (`--provider claude`, `--provider codex`, or `--provider gemini`)
    - Default if user doesn't specify: Use global config provider
 
 2. **Which model?** (`--model <name>`)
    - Claude models: `haiku`, `sonnet`, `opus`
    - Codex models: `gpt-5.2-codex`, `gpt-5.3-codex`, `gpt-5.1-codex-max`, `gpt-5.2`, `gpt-5.1-codex-mini`
+   - Gemini models: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`
    - Default if user doesn't specify: Use global config model
 
 3. **If Codex provider: Which thinking level?** (`--reasoning-effort <level>`)
@@ -35,10 +36,12 @@ You: "I'll create a cron job to check weather every 3 minutes. Let me configure 
 1. **Provider**: Which CLI should execute this task?
    - `claude` (standard Claude models)
    - `codex` (OpenAI Codex models with extended thinking)
+   - `gemini` (Google Gemini models)
 
 2. **Model**: Which model?
    - If Claude: `haiku` (fast), `sonnet` (balanced), `opus` (most capable)
    - If Codex: `gpt-5.2-codex` (recommended), `gpt-5.3-codex`, `gpt-5.1-codex-max`, etc.
+   - If Gemini: `gemini-2.5-pro` (recommended), `gemini-2.5-flash`, `gemini-2.5-flash-lite`, etc.
 
 3. **Thinking level** (Codex only): How deeply should it reason?
    - `low`, `medium` (default), `high`, `xhigh`
@@ -58,6 +61,7 @@ That sub-agent has no Telegram chat history and no main-session context.
 cron_tasks/<name>/
   CLAUDE.md            # fixed task rules (do not edit)
   AGENTS.md            # mirror of CLAUDE.md (do not edit)
+  GEMINI.md            # mirror of CLAUDE.md (do not edit)
   TASK_DESCRIPTION.md  # task instructions (edit this)
   <name>_MEMORY.md     # task-local memory
   scripts/             # task-specific helpers
@@ -67,7 +71,7 @@ cron_tasks/<name>/
 
 - Edit behavior in `TASK_DESCRIPTION.md`.
 - Keep jobs edited in place (`cron_edit.py`), do not recreate unless required.
-- Do not edit task-folder `CLAUDE.md` or `AGENTS.md` manually.
+- Do not edit task-folder `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md` manually.
 - Do not manually delete task folders; use `cron_remove.py`.
 
 ## Memory During Setup
@@ -79,7 +83,7 @@ While creating/editing cron or webhook-triggered tasks, update
 
 Each cron task can override global config settings in `cron_jobs.json`:
 
-- `provider`: `"claude"` or `"codex"` (optional, defaults to global config)
+- `provider`: `"claude"`, `"codex"`, or `"gemini"` (optional, defaults to global config)
 - `model`: Model name (optional, defaults to global config)
   - Claude models: `"haiku"`, `"sonnet"`, `"opus"`
   - Codex models:
@@ -88,6 +92,13 @@ Each cron task can override global config settings in `cron_jobs.json`:
     - `"gpt-5.1-codex-max"` - Codex-optimized for deep and fast reasoning
     - `"gpt-5.2"` - Latest frontier model
     - `"gpt-5.1-codex-mini"` - Cheaper, faster (limited reasoning)
+  - Gemini models:
+    - `"gemini-2.5-pro"` - Balanced, most capable
+    - `"gemini-2.5-flash"` - Fast and cost-effective
+    - `"gemini-2.5-flash-lite"` - Cheapest, fastest
+    - `"gemini-3-pro-preview"` - Next-gen preview
+    - `"gemini-3-flash-preview"` - Next-gen fast preview
+    - `"gemini-3.1-pro-preview"` - Latest preview
 - `reasoning_effort`: Thinking level (Codex only, optional, defaults to `"medium"`)
   - Most models: `"low"`, `"medium"`, `"high"`, `"xhigh"`
   - `gpt-5.1-codex-mini`: `"medium"`, `"high"` only
@@ -125,8 +136,20 @@ Codex task:
 }
 ```
 
+Gemini task:
+```json
+{
+  "id": "report-generator",
+  "schedule": "0 8 * * *",
+  "task_folder": "reports",
+  "agent_instruction": "Generate daily report",
+  "provider": "gemini",
+  "model": "gemini-2.5-pro"
+}
+```
+
 **Use cases:**
 - High-reasoning analysis (Codex only): `"reasoning_effort": "high"`
-- Provider-specific task: `"provider": "codex"` while main agent uses Claude
+- Provider-specific task: `"provider": "gemini"` while main agent uses Claude
 - Task-specific model: Different model per cron job
 - Advanced CLI flags: `"cli_parameters": [...]` (only if user explicitly requests)

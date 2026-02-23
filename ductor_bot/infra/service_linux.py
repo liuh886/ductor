@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import getpass
 import logging
-import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from rich.console import Console
 from rich.panel import Panel
+
+from ductor_bot.infra.service_common import collect_nvm_bin_dirs, ensure_console
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +65,11 @@ def _generate_service_unit(binary_path: str) -> str:
         "/usr/bin",
         "/bin",
     ]
-    nvm_dir = home / ".nvm"
-    if nvm_dir.is_dir():
-        for node_dir in sorted(nvm_dir.glob("versions/node/*/bin"), reverse=True):
-            path_dirs.insert(0, str(node_dir))
-            break
+    nvm_bins = collect_nvm_bin_dirs(home)
+    if nvm_bins:
+        path_dirs = [*nvm_bins, *path_dirs]
+
+    path_dirs = list(dict.fromkeys(path_dirs))
 
     path_value = ":".join(path_dirs)
 
@@ -111,8 +115,7 @@ def install_service(console: Console | None = None) -> bool:
 
     Returns True on success.
     """
-    if console is None:
-        console = Console()
+    console = ensure_console(console)
 
     if not _has_systemd():
         console.print(
@@ -179,8 +182,7 @@ def install_service(console: Console | None = None) -> bool:
 
 def uninstall_service(console: Console | None = None) -> bool:
     """Stop, disable, and remove the ductor service."""
-    if console is None:
-        console = Console()
+    console = ensure_console(console)
 
     if not _has_systemd():
         console.print("[dim]systemd not available.[/dim]")
@@ -201,8 +203,7 @@ def uninstall_service(console: Console | None = None) -> bool:
 
 def start_service(console: Console | None = None) -> None:
     """Start the service."""
-    if console is None:
-        console = Console()
+    console = ensure_console(console)
 
     if not _has_systemd():
         console.print("[dim]systemd not available.[/dim]")
@@ -221,8 +222,7 @@ def start_service(console: Console | None = None) -> None:
 
 def stop_service(console: Console | None = None) -> None:
     """Stop the service."""
-    if console is None:
-        console = Console()
+    console = ensure_console(console)
     if is_service_running():
         _run_systemctl("stop", _SERVICE_NAME)
         console.print("[green]Service stopped.[/green]")
@@ -232,8 +232,7 @@ def stop_service(console: Console | None = None) -> None:
 
 def print_service_status(console: Console | None = None) -> None:
     """Print the service status."""
-    if console is None:
-        console = Console()
+    console = ensure_console(console)
 
     if not _has_systemd():
         console.print("[dim]systemd not available.[/dim]")
@@ -249,8 +248,7 @@ def print_service_status(console: Console | None = None) -> None:
 
 def print_service_logs(console: Console | None = None) -> None:
     """Show live journal logs for the service."""
-    if console is None:
-        console = Console()
+    console = ensure_console(console)
 
     if not is_service_installed():
         console.print("[dim]Service not installed.[/dim]")
@@ -258,9 +256,11 @@ def print_service_logs(console: Console | None = None) -> None:
 
     console.print("[dim]Showing logs (Ctrl+C to stop)...[/dim]\n")
     try:
-        os.execvp(  # noqa: S606
-            "journalctl",
+        subprocess.run(
             ["journalctl", "--user", "-u", _SERVICE_NAME, "-f", "--no-hostname"],
+            check=False,
         )
     except FileNotFoundError:
         console.print("[bold red]journalctl not found.[/bold red]")
+    except KeyboardInterrupt:
+        pass

@@ -76,6 +76,20 @@ class TestBuildWelcomeText:
         assert "Codex authenticated" in text
         assert "gpt-5.2-codex" in text
 
+    def test_only_gemini_authenticated(self) -> None:
+        from ductor_bot.bot.welcome import build_welcome_text
+
+        auth_results = {
+            "claude": _auth("claude", authenticated=False),
+            "codex": _auth("codex", authenticated=False),
+            "gemini": _auth("gemini"),
+        }
+        cfg = _config(model="gemini-2.5-pro", provider="gemini")
+        text = build_welcome_text("Gina", auth_results, cfg)
+
+        assert "Gemini authenticated" in text
+        assert "gemini-2.5-pro" in text
+
     def test_no_providers_authenticated(self) -> None:
         from ductor_bot.bot.welcome import build_welcome_text
 

@@ -131,6 +131,8 @@ class HeartbeatObserver:
                 killed = await self._stale_cleanup()
                 if killed:
                     logger.info("Cleaned up %d stale process(es)", killed)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Stale process cleanup failed")
 
@@ -157,6 +159,8 @@ class HeartbeatObserver:
 
         try:
             alert_text = await self._handle_heartbeat(chat_id)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("Heartbeat execution error")
             return
@@ -167,6 +171,8 @@ class HeartbeatObserver:
         if self._on_result:
             try:
                 await self._on_result(chat_id, alert_text)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Heartbeat result delivery error")
 

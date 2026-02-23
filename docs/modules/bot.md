@@ -1,186 +1,125 @@
 # bot/
 
-Telegram interface layer (aiogram 3.x). Handles incoming updates, middleware, welcome/help UX, streaming output, callback routing, and rich file/text delivery.
+Telegram interface layer (`aiogram`): handlers, middleware, streaming delivery, callbacks, and rich sender.
 
 ## Files
 
-- `app.py`: `TelegramBot` lifecycle, handler registration, startup/shutdown, restart watcher, webhook wake bridge.
-- `handlers.py`: helper handlers for abort, orchestrator command routing, provider-local `/new` reset.
-- `middleware.py`: `AuthMiddleware`, `SequentialMiddleware`, quick-command bypass, per-chat lock, queue entry tracking with cancel buttons.
-- `welcome.py`: `/start` welcome text + quick-start keyboard (`w:*` callbacks).
-- `file_browser.py`: interactive `~/.ductor/` navigator via inline keyboard (`sf:` / `sf!` callbacks).
-- `response_format.py`: shared formatting primitives (`SEP`, `fmt()`, `new_session_text()`, `SESSION_ERROR_TEXT`, `stop_text()`).
-- `streaming.py`: append-mode stream editor + `create_stream_editor()` factory.
-- `edit_streaming.py`: default in-place edit stream editor.
-- `sender.py`: `send_rich()`, `send_file()`, `<file:...>` extraction, keyboard attachment.
-- `formatting.py`: Markdown -> Telegram HTML conversion (bold, italic, code, tables, blockquotes) + chunk splitting.
-- `buttons.py`: `[button:...]` parsing/stripping and inline keyboard generation.
-- `media.py`: Telegram media download, `_index.yaml` rebuild, media prompt composition.
-- `abort.py`: `/stop` and bare-word abort trigger detection.
-- `dedup.py`: short-lived dedupe cache by `chat_id:message_id`.
-- `topic.py`: `get_thread_id(message)` utility for forum topic `message_thread_id` extraction.
-- `typing.py`: typing-indicator context manager.
+- `app.py`: `TelegramBot` lifecycle, handler registration, callback routing, observer bridges
+- `message_dispatch.py`: shared streaming/non-streaming execution paths
+- `handlers.py`: command helper handlers (`/new`, `/stop`, generic command path)
+- `response_format.py`: shared command/error text builders (`/new`, `/stop`, session error hints)
+- `middleware.py`: `AuthMiddleware`, `SequentialMiddleware`, quick-command bypass, queue tracking
+- `welcome.py`: `/start` text + quick action callbacks (`w:*`)
+- `file_browser.py`: interactive `~/.ductor/` browser (`sf:`/`sf!`)
+- `streaming.py`, `edit_streaming.py`: stream editors
+- `sender.py`: rich text/file sending (`send_rich`, `<file:...>` handling)
+- `formatting.py`: markdown-to-Telegram HTML conversion/chunking
+- `buttons.py`: `[button:...]` parsing
+- `media.py`: media download/index/prompt conversion
+- `abort.py`, `dedup.py`, `typing.py`, `topic.py`: shared runtime helpers
 
-## Handler and Command Ownership
+## Command ownership
 
-Registered in `TelegramBot._register_handlers()`:
+Bot-level handlers (`app.py`):
 
-- direct bot handlers: `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/restart`, `/new`
-- command route to orchestrator: `/status`, `/memory`, `/model`, `/cron`, `/diagnose`, `/upgrade`
-- fallback message handler: all other messages
-- callback query handler: all inline keyboard callbacks
+- `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/restart`, `/new`
 
-`/restart` is bot-local (`app.py`), not an orchestrator command.
+Orchestrator-routed commands:
 
-## Middleware Behavior
+- `/status`, `/memory`, `/model`, `/cron`, `/diagnose`, `/upgrade`
 
-`AuthMiddleware`:
+## Middleware behavior
 
-- drops updates from users outside `allowed_user_ids`.
+### `AuthMiddleware`
 
-`SequentialMiddleware` order (message updates only):
+- drops message/callback updates from users outside `allowed_user_ids`
 
-1. abort trigger check (exact `/stop` without suffix/args + bare abort words), handled before lock. On abort: kills processes **and** drains the pending message queue (edits all indicators to `[Message discarded.]`).
-2. quick command check (`/status`, `/memory`, `/cron`, `/diagnose`, `/model`, `/showfiles`), bypasses lock. `/showfiles` is handled directly (no orchestrator). `/model` has a busy-check: when agent is active or messages are queued, returns immediate feedback instead of the wizard.
-3. dedupe by `chat_id:message_id`.
-4. per-chat `asyncio.Lock` for regular messages. When the lock is held, queued messages get a `[Message in queue...]` indicator (reply to the user's message) with a "Cancel message" inline button (`mq:<entry_id>` callback).
-5. after lock acquisition: cancelled entries skip handler execution; otherwise the indicator is deleted and the handler runs normally.
+### `SequentialMiddleware`
 
-Queue management methods:
+Message flow order:
 
-- `is_busy(chat_id)`: True if lock is held or pending entries exist.
-- `has_pending(chat_id)`: True if pending entries exist.
-- `cancel_entry(chat_id, entry_id)`: cancel a single queued message, edit indicator to `[Message cancelled.]`.
-- `drain_pending(chat_id)`: cancel all pending messages, edit indicators to `[Message discarded.]`.
+1. abort trigger check (`/stop` and bare abort words) before lock
+2. quick command bypass (`/status`, `/memory`, `/cron`, `/diagnose`, `/model`, `/showfiles`)
+3. dedupe by `chat_id:message_id`
+4. acquire per-chat lock for normal messages
+5. queued messages get indicator + cancel button (`mq:<entry_id>`)
 
-Callback queries are not processed through `SequentialMiddleware.__call__`; lock usage is explicit and path-dependent in `TelegramBot`:
+`/model` special case in quick-command handler: when chat is busy (active process or queued messages), bot returns immediate \"agent is working\" text instead of opening the selector.
 
-- locked: model selector callbacks (`ms:*`), cron selector callbacks (`crn:*`), file browser file-request callbacks (`sf!`), generic callbacks routed through orchestrator.
-- not locked: queue cancel callbacks (`mq:*`), upgrade callbacks (`upg:*`), file browser directory navigation (`sf:`).
+Queue API:
 
-## Message Resolution
+- `is_busy(chat_id)`
+- `has_pending(chat_id)`
+- `cancel_entry(chat_id, entry_id)`
+- `drain_pending(chat_id)`
 
-`TelegramBot._resolve_text()`:
+## Message dispatch (`message_dispatch.py`)
 
-- media messages -> `resolve_media_text()` (download + index + generated prompt text),
-- plain text -> `strip_mention(...)` (removes `@botname` when present),
-- non-text/non-media -> ignored.
+### Non-streaming
 
-Command and message handlers wrap orchestrator calls in `TypingContext`, so Telegram shows typing indicators while provider calls are running.
+`run_non_streaming_message()`:
 
-For media in groups, processing only happens when addressed to the bot (reply or mention in caption).
+- `TypingContext`
+- `orchestrator.handle_message()`
+- `send_rich()`
 
-## Streaming Flow
+### Streaming
 
-`TelegramBot._handle_streaming()`:
+`run_streaming_message()`:
 
-1. build stream editor (`EditStreamEditor` by default, `StreamEditor` in append mode).
-2. create `StreamCoalescer` with config thresholds.
-3. route deltas/tool events/system status from orchestrator callbacks into coalescer/editor.
-4. system status callback:
-   - on `"thinking"` status, flush coalescer and show `[THINKING]`
-   - on `"compacting"` status, flush coalescer and show `[COMPACTING]`
-   - on `"recovering"` status, flush coalescer and show `Please wait, recovering...` (SIGKILL recovery retry path)
-5. on completion: flush + `editor.finalize(full_text)`.
-6. output rules:
-   - if stream fallback or no content streamed: send full text via `send_rich()`,
-   - otherwise send only `<file:...>` tags via `send_files_from_text()`.
+- create stream editor
+- use `StreamCoalescer` for text batching
+- forward callbacks:
+  - text delta
+  - tool activity
+  - system status (`thinking`, `compacting`, `recovering`)
+- finalize editor
+- fallback path:
+  - `stream_fallback` or empty stream -> `send_rich(full_text)`
+  - otherwise only send extracted files via `send_files_from_text()`
 
-Both `EditStreamEditor` and `StreamEditor` support `append_system(text)` for rendering system indicators as italic HTML.
+## Callback routing
 
-## Forum Topic Support
+Handled namespaces in `TelegramBot._route_special_callback`:
 
-All handler and sender functions propagate `message_thread_id` so the bot works in Telegram groups with forum topics enabled. The flow:
+- `mq:*` queue cancel
+- `upg:*` upgrade callbacks
+- `ms:*` model selector
+- `crn:*` cron selector
+- `sf:*` / `sf!` file browser
 
-1. `get_thread_id(message)` extracts `message_thread_id` when `message.is_topic_message is True`, otherwise returns `None`.
-2. Handlers (`app.py`, `handlers.py`) extract `thread_id` at entry points and pass it through to `TypingContext`, `send_rich`, `send_file`, `send_files_from_text`, and stream editors.
-3. `SequentialMiddleware._send_indicator()` passes `message_thread_id` to queue indicator messages.
-4. Background systems (cron, heartbeat, webhook, update notifications) always send to private chats, so `thread_id` is `None` -- no special handling needed.
+Lock behavior:
 
-Sessions remain keyed by `chat_id` (no per-topic isolation).
+- model selector, cron selector, and `sf!` file-request callbacks acquire per-chat lock
+- queue cancel, upgrade callbacks, and `sf:` directory navigation do not
 
-## Buttons
+Generic callbacks are converted to user answer text and routed through normal message flow.
 
-Syntax in model output:
+## Forum topic support
 
-```text
-[button:Label]
-```
+All send paths propagate `message_thread_id` from topic messages via `get_thread_id()`.
 
-Behavior (`buttons.py`):
+Sessions remain keyed by `chat_id` (no per-topic session split).
 
-- markers inside code blocks/inline code are ignored.
-- same line => same keyboard row.
-- callback data is UTF-8 truncated to 64 bytes.
-- markers are stripped from visible text.
+## File safety and `file_access`
 
-## Rich Sending and File Safety
+`send_file()` validates paths against allowed roots.
 
-`send_rich()`:
+`file_access` mapping:
 
-1. extract `<file:...>` tags,
-2. strip file tags from text,
-3. resolve keyboard (`reply_markup` override or `[button:...]` extraction),
-4. send text chunks,
-5. attach keyboard to last text message,
-6. send referenced files.
+- `all` -> unrestricted
+- `home` -> only under home directory
+- `workspace` -> only under `~/.ductor/workspace`
 
-`send_file()`:
+## Observer bridges in bot layer
 
-- checks `allowed_roots` (via `is_path_safe`) before sending.
-- if blocked: sends a user-visible block message.
-- image-like files -> `send_photo`, others -> `send_document`.
+`TelegramBot._on_startup()` wires:
 
-Bot passes roots from `config.file_access`:
+- cron result handler
+- heartbeat result handler
+- webhook result handler
+- webhook wake handler
 
-- `"all"` -> no root restriction (`None`)
-- `"home"` -> `[Path.home()]`
-- `"workspace"` -> `[paths.workspace]`
+Wake handler path (`_handle_webhook_wake`) acquires per-chat lock, routes prompt through orchestrator, then sends response.
 
-## Callback Queries
-
-`TelegramBot._on_callback_query()`:
-
-- always calls `answer()`.
-- `w:*` callbacks -> resolved via `welcome.py` into full prompt text.
-- `mq:*` callbacks -> queue cancel: parses entry ID and calls `SequentialMiddleware.cancel_entry()`.
-- `upg:*` callbacks -> upgrade flow:
-  - `upg:cl:<version>` -> fetch/send changelog
-  - `upg:yes:<version>` -> upgrade + restart
-  - `upg:no` -> dismiss
-- `ms:*` callbacks -> model selector wizard (edits message in place).
-- `sf:*` / `sf!` callbacks -> file browser: `sf:<rel_path>` navigates directories (edit message in place), `sf!<rel_path>` sends file-request prompt to orchestrator.
-- all other callbacks:
-  - append `[USER ANSWER] <label>` to original message when possible (fallback: keyboard-only removal),
-  - run callback text through normal message pipeline under per-chat lock.
-
-## Webhook Wake Bridge
-
-`TelegramBot._handle_webhook_wake(chat_id, prompt)`:
-
-1. acquires `SequentialMiddleware.get_lock(chat_id)`.
-2. calls `Orchestrator.handle_message(chat_id, prompt)`.
-3. sends result via `send_rich()`.
-
-`_on_webhook_result()` only forwards `cron_task` webhook results. `wake` responses are already sent by `_handle_webhook_wake()`.
-
-## Heartbeat Delivery
-
-`_on_heartbeat_result(chat_id, text)` receives non-ACK heartbeat alerts and delivers them via `send_rich()`. Logs at `DEBUG` on entry and `INFO` on successful delivery for end-to-end observability.
-
-## Update System Integration
-
-- `UpdateObserver` starts in `_on_startup()` only for upgradeable installs (`pipx`/`pip`, not dev/source), and stops in `shutdown()`.
-- On new version detected: `_on_update_available(info)` sends notification with inline buttons to all `allowed_user_ids`.
-- `_handle_upgrade_callback(chat_id, message_id, data)` handles:
-  - `upg:cl:<version>` (fetch changelog),
-  - `upg:yes:<version>` (run upgrade, write sentinel, exit 42),
-  - `upg:no` (dismiss).
-- On startup: `consume_upgrade_sentinel()` reads and deletes sentinel, sends "Upgrade complete" message.
-
-## Restart Behavior in Bot
-
-- `/restart`: write restart sentinel + set exit code `42` + stop polling.
-- `/upgrade` (via callback): write upgrade sentinel + set exit code `42` + stop polling.
-- background watcher polls `restart-requested` every 2s and triggers same restart path.
-- startup consumes restart sentinel and upgrade sentinel, sends confirmations to recorded chat.
+Webhook result forwarding sends only `cron_task` results because wake responses are sent directly by wake handler.

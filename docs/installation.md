@@ -1,35 +1,32 @@
-# Installation guide
+# Installation Guide
 
-## What you need
+## Requirements
 
-1. Python 3.11 or newer
-2. pipx (or pip)
-3. At least one CLI installed and authenticated:
-   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code): `npm install -g @anthropic-ai/claude-code && claude auth`
-   - [Codex CLI](https://github.com/openai/codex): `npm install -g @openai/codex && codex auth`
-4. A Telegram bot token from [@BotFather](https://t.me/BotFather)
-5. Your Telegram user ID from [@userinfobot](https://t.me/userinfobot)
-6. Docker (optional, but good to have for sandboxing)
+1. Python 3.11+
+2. `pipx` (recommended) or `pip`
+3. At least one authenticated provider CLI:
+   - Claude Code CLI: `npm install -g @anthropic-ai/claude-code && claude auth`
+   - Codex CLI: `npm install -g @openai/codex && codex auth`
+   - Gemini CLI: `npm install -g @google/gemini-cli` and authenticate in `gemini`
+4. Telegram bot token from [@BotFather](https://t.me/BotFather)
+5. Telegram user ID from [@userinfobot](https://t.me/userinfobot)
+6. Docker optional (recommended for sandboxing)
 
----
+## Install
 
-## Install ductor
-
-### With pipx (recommended)
+### pipx (recommended)
 
 ```bash
 pipx install ductor
 ```
 
-This gives you `ductor` as a global command in its own isolated environment.
-
-### With pip
+### pip
 
 ```bash
 pip install ductor
 ```
 
-### From source
+### from source
 
 ```bash
 git clone https://github.com/PleasePrompto/ductor.git
@@ -38,138 +35,79 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### First run
+## First run
 
 ```bash
 ductor
 ```
 
-The setup wizard runs automatically the first time. It detects your CLIs, asks for your Telegram token and user ID, checks for Docker, and sets your timezone. Everything gets saved to `~/.ductor/`.
+On first run, onboarding does:
 
----
+- checks Claude/Codex/Gemini auth status,
+- asks for Telegram token + user ID,
+- asks timezone,
+- offers Docker sandboxing,
+- offers service install,
+- writes config and seeds `~/.ductor/`.
 
-## Platform-specific notes
+If service install succeeds, onboarding returns without starting foreground bot.
 
-### Linux (Ubuntu / Debian)
+## Platform notes
+
+### Linux
 
 ```bash
-# Python 3.11+
-sudo apt update && sudo apt install python3 python3-pip python3-venv
-
-# pipx
+sudo apt update && sudo apt install python3 python3-pip python3-venv nodejs npm
 pip install pipx
 pipx ensurepath
-
-# Node.js (for Claude Code / Codex CLI)
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Claude Code CLI
-npm install -g @anthropic-ai/claude-code
-claude auth
-
-# Docker (optional)
-sudo apt install docker.io
-sudo usermod -aG docker $USER
-# Log out and back in for group changes to take effect
-
-# ductor
 pipx install ductor
 ductor
+```
+
+Optional Docker:
+
+```bash
+sudo apt install docker.io
+sudo usermod -aG docker $USER
 ```
 
 ### macOS
 
 ```bash
-# Python 3.11+ (via Homebrew)
-brew install python@3.11
-
-# pipx
-brew install pipx
+brew install python@3.11 node pipx
 pipx ensurepath
-
-# Node.js
-brew install node
-
-# Claude Code CLI
-npm install -g @anthropic-ai/claude-code
-claude auth
-
-# Docker (optional)
-brew install --cask docker
-# Open Docker Desktop to finish setup
-
-# ductor
 pipx install ductor
 ductor
 ```
-
-### Windows (WSL)
-
-ductor runs on Windows through WSL. This is an alternative to native Windows if you prefer a Linux environment.
-
-```powershell
-# Install WSL (PowerShell as admin)
-wsl --install -d Ubuntu
-```
-
-After restarting and setting up your WSL user:
-
-```bash
-# Inside WSL, same as Linux
-sudo apt update && sudo apt install python3 python3-pip python3-venv nodejs npm
-
-pip install pipx
-pipx ensurepath
-
-npm install -g @anthropic-ai/claude-code
-claude auth
-
-pipx install ductor
-ductor
-```
-
-> **Tip:** Docker Desktop for Windows can share its Docker engine with WSL. Enable "Use the WSL 2 based engine" in Docker Desktop settings.
 
 ### Windows (native)
 
-ductor now runs natively on Windows. The Claude Code and Codex CLIs install as `.cmd` wrappers on Windows, and ductor includes platform-specific handling to work around their limitations (stdin-based prompt passing, process tree termination, timezone detection).
-
 ```powershell
-# Python 3.11+ (winget or python.org)
 winget install Python.Python.3.11
-
-# pipx
+winget install OpenJS.NodeJS
 pip install pipx
 pipx ensurepath
-
-# Node.js
-winget install OpenJS.NodeJS
-
-# Claude Code CLI
-npm install -g @anthropic-ai/claude-code
-claude auth
-
-# ductor
 pipx install ductor
 ductor
 ```
 
-> **Note:** Docker sandboxing on native Windows requires Docker Desktop with Windows containers or WSL 2 backend enabled.
+Native Windows is fully supported, including service management via Task Scheduler.
 
----
+### Windows (WSL)
+
+WSL works too. Install like Linux inside WSL.
+
+```bash
+sudo apt update && sudo apt install python3 python3-pip python3-venv nodejs npm
+pip install pipx
+pipx ensurepath
+pipx install ductor
+ductor
+```
 
 ## Docker sandboxing
 
-Both CLIs have full file system access by default. They can read, write, and delete anything your user can. Docker sandboxing runs the CLI process inside a container image built from `Dockerfile.sandbox`, so it can only touch mounted directories.
-
-### Why bother?
-
-If the agent decides to `rm -rf ~/` or write to `/etc`, the container stops it. For anything that runs unattended (cron jobs, webhooks, heartbeats), this matters.
-
-### Enable it
-
-The setup wizard asks about Docker on first run. To enable it later, edit `~/.ductor/config/config.json`:
+Enable in config:
 
 ```json
 {
@@ -179,219 +117,108 @@ The setup wizard asks about Docker on first run. To enable it later, edit `~/.du
 }
 ```
 
-ductor builds the image on first use. The container sticks around between calls so startup stays fast.
+Notes:
 
-### Requirements
+- Docker image is built on first use when missing.
+- Container is reused between calls.
+- On Linux, ductor maps UID/GID to avoid root-owned files.
+- If Docker setup fails at startup, ductor logs warning and falls back to host execution.
 
-- Docker installed and running
-- Your user in the `docker` group (Linux: `sudo usermod -aG docker $USER`)
-- `docker` commands must work without `sudo`
+## Background service
 
----
-
-## Running 24/7
-
-ductor runs in the foreground by default. For always-on setups, you need something to keep it running after you close the terminal.
-
-### Built-in service manager (recommended on Linux, macOS, and native Windows)
-
-The setup wizard offers this automatically. You can also do it manually:
+Install:
 
 ```bash
 ductor service install
 ```
 
-This creates:
-
-- a **systemd user service** on Linux
-- a **launchd user Launch Agent** on macOS
-- a **Task Scheduler task** on native Windows
-
-Both start automatically (boot/login), restart on failure, and can be controlled with the same `ductor service ...` commands.
-
-Management commands:
+Manage:
 
 ```bash
-ductor service status      # Is it running?
-ductor service stop        # Stop the service
-ductor service start       # Start it again
-ductor service logs        # View service logs (Linux streams live; macOS/Windows show recent lines)
-ductor service uninstall   # Remove the service completely
+ductor service status
+ductor service start
+ductor service stop
+ductor service logs
+ductor service uninstall
 ```
 
-Linux details: creates `~/.config/systemd/user/ductor.service` and enables linger so the service survives logout (`sudo loginctl enable-linger $USER`, handled by installer when possible).
+Backends:
 
-macOS details: creates `~/Library/LaunchAgents/dev.ductor.plist` (`launchd`), sets crash-only restart policy (`KeepAlive.SuccessfulExit=false`), and writes service logs to `~/.ductor/logs/service.log` and `~/.ductor/logs/service.err`.
+- Linux: `systemd --user` service `~/.config/systemd/user/ductor.service`
+- macOS: Launch Agent `~/Library/LaunchAgents/dev.ductor.plist`
+- Windows: Task Scheduler task `ductor`
 
-Current CLI behavior note: `ductor service logs` on macOS/Windows prints recent lines from the newest `~/.ductor/logs/ductor*.log` file.
+Log command behavior:
 
-Windows details: creates a Task Scheduler task named `ductor` via `schtasks.exe`, starts it 10 seconds after login, and prefers `pythonw.exe -m ductor_bot` to avoid opening a console window (falls back to `ductor.exe` if `pythonw.exe` is unavailable).
+- Linux: live `journalctl --user -u ductor -f`
+- macOS/Windows: recent lines from `~/.ductor/logs/agent.log` (fallback newest `*.log`)
 
-If `ductor service install` on native Windows returns access denied, run your terminal as Administrator and retry:
+## VPS notes
 
-```powershell
-ductor service install
-```
-
-### Windows (WSL)
-
-WSL doesn't have a real init system. Two options:
-
-**Option A: Windows Task Scheduler (starts with Windows)**
-
-Create a scheduled task that runs at login:
-
-```powershell
-# PowerShell as admin
-$action = New-ScheduledTaskAction -Execute "wsl" -Argument "-d Ubuntu -- bash -lc ductor"
-$trigger = New-ScheduledTaskTrigger -AtLogon
-Register-ScheduledTask -TaskName "ductor" -Action $action -Trigger $trigger -RunLevel Limited
-```
-
-**Option B: screen inside WSL (survives closing the terminal)**
+Small Linux VPS is enough. Typical path:
 
 ```bash
-screen -dmS ductor ductor    # Start in background
-screen -r ductor             # Reattach to see output
-# Ctrl+A, D to detach again
-```
-
-This survives closing the terminal but not a Windows reboot. Option A handles reboots.
-
-### Quick and dirty (any platform)
-
-If you just need it running temporarily and don't want a proper service:
-
-```bash
-# screen
-screen -S ductor
-ductor
-# Ctrl+A, D to detach
-
-# tmux
-tmux new -s ductor
-ductor
-# Ctrl+B, D to detach
-
-# nohup
-nohup ductor > /tmp/ductor.log 2>&1 &
-```
-
-These survive closing the terminal but not a reboot.
-
----
-
-## Hosting on a VPS
-
-A $5/month VPS with 1 GB RAM is enough. Any Linux VPS works -- Hetzner, DigitalOcean, Vultr, Linode, whatever you have.
-
-```bash
-ssh user@your-vps-ip
-
-# Dependencies
+ssh user@host
 sudo apt update && sudo apt install python3 python3-pip python3-venv nodejs npm docker.io
-sudo usermod -aG docker $USER
-newgrp docker
-
-# Install ductor
 pip install pipx
 pipx ensurepath
-source ~/.bashrc
 pipx install ductor
-
-# Install and authenticate a CLI
-npm install -g @anthropic-ai/claude-code
-claude auth
-
-# Run setup wizard (offers background service at the end)
 ductor
 ```
 
-The wizard asks whether to install the background service. If you skip it, run `ductor service install` later.
+Security basics:
 
-### Security basics
-
-- Only open port 22 (SSH). ductor connects outbound to Telegram, nothing inbound needed. Exception: if you use webhooks, open that port too
-- Disable password auth for SSH, use keys only
-- Enable Docker sandboxing (`docker.enabled: true`)
-- Set `allowed_user_ids` in config so only you can use the bot
-- Update from Telegram with `/upgrade` or via SSH with `pipx upgrade ductor`
-
-### Resource usage
-
-Idle: ~50-100 MB RAM, almost no CPU. During CLI execution the subprocess uses more, but ductor itself stays light. Disk is about 200 MB for the package and dependencies. The workspace grows over time, and a daily cleanup pass removes old top-level files from `telegram_files/` and `output_to_user/` (default retention: 30 days). All network traffic is outbound to Telegram and the AI provider.
-
----
+- keep SSH key-only auth
+- enable Docker sandboxing for unattended automation
+- keep `allowed_user_ids` restricted
+- use `/upgrade` or `pipx upgrade ductor`
 
 ## Troubleshooting
 
-### Bot does not answer in Telegram
+### Bot not responding
 
-1. Check config basics:
-   - `telegram_token` is valid
-   - your numeric ID is in `allowed_user_ids`
-2. Check runtime status:
-
-```bash
-ductor status
-```
-
-3. Check logs:
-   - `~/.ductor/logs/agent.log`
-4. In Telegram, run:
-   - `/diagnose`
+1. check `telegram_token` + `allowed_user_ids`
+2. run `ductor status`
+3. inspect `~/.ductor/logs/agent.log`
+4. run `/diagnose` in Telegram
 
 ### CLI installed but not authenticated
 
-Auth must be valid for at least one provider:
+Authenticate at least one provider and restart:
 
 ```bash
 claude auth
 # or
 codex auth
+# or
+# authenticate in gemini CLI
 ```
 
-Then restart ductor.
-
-### Docker enabled but sandbox not starting
-
-1. Verify Docker works without `sudo`:
+### Docker enabled but not running
 
 ```bash
 docker info
 ```
 
-2. Check `docker.enabled` and container/image names in `~/.ductor/config/config.json`.
-3. If needed, disable Docker temporarily and verify host-mode runtime works.
+Then validate `docker.enabled` + image/container names in config.
 
 ### Webhooks not arriving
 
-1. Ensure webhook server is enabled in config (`webhooks.enabled: true`).
-2. If sender is external, expose `127.0.0.1:8742` with a tunnel or reverse proxy.
-3. Confirm auth mode and token/signature match your webhook definition.
-4. Check `~/.ductor/webhooks.json` trigger/error fields.
+- set `webhooks.enabled: true`
+- expose `127.0.0.1:8742` through tunnel/proxy when external sender is used
+- verify auth settings and hook ID
 
----
+## Upgrade and uninstall
 
-## Upgrading
+Upgrade:
 
-From Telegram:
-```
-/upgrade
-```
-
-From the command line:
 ```bash
 pipx upgrade ductor
 ```
 
-ductor checks PyPI every 60 minutes and pings you in Telegram when there's a new version.
-
-## Uninstalling
+Uninstall:
 
 ```bash
 pipx uninstall ductor
-
-# Optional: remove all data
-rm -rf ~/.ductor
+rm -rf ~/.ductor  # optional data removal
 ```

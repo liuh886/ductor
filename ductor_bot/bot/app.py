@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, FSInputFile, ReplyParameters
 
@@ -29,12 +29,18 @@ from ductor_bot.bot.handlers import (
     strip_mention,
 )
 from ductor_bot.bot.media import has_media, is_media_addressed, resolve_media_text
+from ductor_bot.bot.message_dispatch import (
+    NonStreamingDispatch,
+    StreamingDispatch,
+    run_non_streaming_message,
+    run_streaming_message,
+)
 from ductor_bot.bot.middleware import MQ_PREFIX, AuthMiddleware, SequentialMiddleware
 from ductor_bot.bot.response_format import SEP, fmt
-from ductor_bot.bot.sender import send_files_from_text, send_rich
-from ductor_bot.bot.streaming import create_stream_editor
+from ductor_bot.bot.sender import send_files_from_text as _send_files_from_text
+from ductor_bot.bot.sender import send_rich
 from ductor_bot.bot.topic import get_thread_id
-from ductor_bot.bot.typing import TypingContext
+from ductor_bot.bot.typing import TypingContext as _TypingContext
 from ductor_bot.bot.welcome import (
     build_welcome_keyboard,
     build_welcome_text,
@@ -42,7 +48,6 @@ from ductor_bot.bot.welcome import (
     is_welcome_callback,
     resolve_welcome_callback,
 )
-from ductor_bot.cli.coalescer import CoalesceConfig, StreamCoalescer
 from ductor_bot.commands import BOT_COMMANDS as _COMMAND_DEFS
 from ductor_bot.config import AgentConfig
 from ductor_bot.infra.restart import EXIT_RESTART, consume_restart_marker, consume_restart_sentinel
@@ -65,6 +70,10 @@ logger = logging.getLogger(__name__)
 
 _WELCOME_IMAGE = Path(__file__).resolve().parent / "ductor_images" / "welcome.png"
 _CAPTION_LIMIT = 1024
+
+# Backward-compatible patch points used by tests.
+TypingContext = _TypingContext
+send_files_from_text = _send_files_from_text
 
 _BOT_COMMANDS = [BotCommand(command=cmd, description=desc) for cmd, desc in _COMMAND_DEFS]
 
@@ -286,11 +295,11 @@ class TelegramBot:
                     reply_parameters=ReplyParameters(message_id=reply_to.message_id),
                     message_thread_id=thread_id,
                 )
-            except Exception:
+            except (TelegramAPIError, OSError):
                 logger.exception("Failed to send welcome image")
                 return False
             return False
-        except Exception:
+        except (TelegramAPIError, OSError):
             logger.exception("Failed to send welcome image")
             return False
         return html_caption is not None
@@ -430,7 +439,7 @@ class TelegramBot:
             thread_id=get_thread_id(message),
         )
         self._exit_code = EXIT_RESTART
-        asyncio.create_task(self._dp.stop_polling())  # noqa: RUF006
+        await self._dp.stop_polling()
 
     # -- Callbacks -------------------------------------------------------------
 
@@ -474,16 +483,7 @@ class TelegramBot:
             if self._config.streaming.enabled:
                 await self._handle_streaming(msg, chat_id, data, thread_id=thread_id)
             else:
-                async with TypingContext(self._bot, chat_id, thread_id=thread_id):
-                    result = await self._orch.handle_message(chat_id, data)
-                roots = self._file_roots(self._orch.paths)
-                await send_rich(
-                    self._bot,
-                    chat_id,
-                    result.text,
-                    allowed_roots=roots,
-                    thread_id=thread_id,
-                )
+                await self._handle_non_streaming(msg, chat_id, data, thread_id=thread_id)
 
     async def _route_special_callback(
         self, chat_id: int, message_id: int, data: str, *, thread_id: int | None = None
@@ -571,16 +571,7 @@ class TelegramBot:
                     )
                     await self._handle_streaming(fake_msg, chat_id, prompt, thread_id=thread_id)
                 else:
-                    async with TypingContext(self._bot, chat_id, thread_id=thread_id):
-                        result = await self._orch.handle_message(chat_id, prompt)
-                    roots = self._file_roots(self._orch.paths)
-                    await send_rich(
-                        self._bot,
-                        chat_id,
-                        result.text,
-                        allowed_roots=roots,
-                        thread_id=thread_id,
-                    )
+                    await self._handle_non_streaming(None, chat_id, prompt, thread_id=thread_id)
             return
 
         # Directory navigation: edit message in-place
@@ -645,17 +636,7 @@ class TelegramBot:
         if self._config.streaming.enabled:
             await self._handle_streaming(message, chat_id, text, thread_id=thread_id)
         else:
-            async with TypingContext(self._bot, chat_id, thread_id=thread_id):
-                result = await self._orch.handle_message(chat_id, text)
-            roots = self._file_roots(self._orch.paths)
-            await send_rich(
-                self._bot,
-                chat_id,
-                result.text,
-                reply_to=message,
-                allowed_roots=roots,
-                thread_id=thread_id,
-            )
+            await self._handle_non_streaming(message, chat_id, text, thread_id=thread_id)
 
     async def _resolve_text(self, message: Message) -> str | None:
         """Extract processable text from *message* (plain text or media prompt)."""
@@ -675,80 +656,39 @@ class TelegramBot:
         self, message: Message, chat_id: int, text: str, *, thread_id: int | None = None
     ) -> None:
         """Streaming flow: coalescer -> stream editor -> Telegram."""
-        logger.info("Streaming flow started")
-        cfg = self._config.streaming
-        editor = create_stream_editor(
-            self._bot,
-            chat_id,
-            reply_to=message,
-            cfg=cfg,
-            thread_id=thread_id,
-        )
-        coalescer = StreamCoalescer(
-            config=CoalesceConfig(
-                min_chars=cfg.min_chars,
-                max_chars=cfg.max_chars,
-                idle_ms=cfg.idle_ms,
-                sentence_break=cfg.sentence_break,
+        await run_streaming_message(
+            StreamingDispatch(
+                bot=self._bot,
+                orchestrator=self._orch,
+                message=message,
+                chat_id=chat_id,
+                text=text,
+                streaming_cfg=self._config.streaming,
+                allowed_roots=self._file_roots(self._orch.paths),
+                thread_id=thread_id,
             ),
-            on_flush=editor.append_text,
         )
 
-        async def on_text(delta: str) -> None:
-            await coalescer.feed(delta)
-
-        async def on_tool(tool_name: str) -> None:
-            await coalescer.flush(force=True)
-            await editor.append_tool(tool_name)
-
-        async def on_system(status: str | None) -> None:
-            if status == "thinking":
-                await coalescer.flush(force=True)
-                await editor.append_system("THINKING")
-            elif status == "compacting":
-                await coalescer.flush(force=True)
-                await editor.append_system("COMPACTING")
-            elif status == "recovering":
-                await coalescer.flush(force=True)
-                await editor.append_system("Please wait, recovering...")
-
-        async with TypingContext(self._bot, chat_id, thread_id=thread_id):
-            result = await self._orch.handle_message_streaming(
-                chat_id,
-                text,
-                on_text_delta=on_text,
-                on_tool_activity=on_tool,
-                on_system_status=on_system,
-            )
-
-        await coalescer.flush(force=True)
-        coalescer.stop()
-        await editor.finalize(result.text)
-        logger.info(
-            "Streaming flow completed fallback=%s content=%s",
-            result.stream_fallback,
-            editor.has_content,
+    async def _handle_non_streaming(
+        self,
+        reply_to: Message | None,
+        chat_id: int,
+        text: str,
+        *,
+        thread_id: int | None = None,
+    ) -> None:
+        """Non-streaming flow: one-shot orchestrator call -> Telegram delivery."""
+        await run_non_streaming_message(
+            NonStreamingDispatch(
+                bot=self._bot,
+                orchestrator=self._orch,
+                chat_id=chat_id,
+                text=text,
+                allowed_roots=self._file_roots(self._orch.paths),
+                reply_to=reply_to,
+                thread_id=thread_id,
+            ),
         )
-
-        roots = self._file_roots(self._orch.paths)
-        if result.stream_fallback or not editor.has_content:
-            await send_rich(
-                self._bot,
-                chat_id,
-                result.text,
-                reply_to=message,
-                allowed_roots=roots,
-                thread_id=thread_id,
-            )
-        else:
-            # Streaming sent text already; extract and deliver any <file:...> tags.
-            await send_files_from_text(
-                self._bot,
-                chat_id,
-                result.text,
-                allowed_roots=roots,
-                thread_id=thread_id,
-            )
 
     # -- Background handlers ---------------------------------------------------
 
@@ -890,7 +830,7 @@ class TelegramBot:
             message_thread_id=thread_id,
         )
         self._exit_code = EXIT_RESTART
-        asyncio.create_task(self._dp.stop_polling())  # noqa: RUF006
+        await self._dp.stop_polling()
 
     async def _handle_changelog_callback(
         self, chat_id: int, message_id: int, data: str, *, thread_id: int | None = None

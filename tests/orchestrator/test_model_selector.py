@@ -8,9 +8,12 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_discovery import CodexModelInfo
+from ductor_bot.config import set_gemini_models
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.model_selector import (
     handle_model_callback,
@@ -21,8 +24,10 @@ from ductor_bot.orchestrator.model_selector import (
 
 _AUTHED_CLAUDE = AuthResult("claude", AuthStatus.AUTHENTICATED)
 _AUTHED_CODEX = AuthResult("codex", AuthStatus.AUTHENTICATED)
+_AUTHED_GEMINI = AuthResult("gemini", AuthStatus.AUTHENTICATED)
 _NOT_FOUND_CLAUDE = AuthResult("claude", AuthStatus.NOT_FOUND)
 _NOT_FOUND_CODEX = AuthResult("codex", AuthStatus.NOT_FOUND)
+_NOT_FOUND_GEMINI = AuthResult("gemini", AuthStatus.NOT_FOUND)
 
 _CODEX_MODELS = [
     CodexModelInfo(
@@ -49,6 +54,13 @@ def _patch_auth(auth_map: dict[str, AuthResult]) -> Any:
         "ductor_bot.orchestrator.model_selector.check_all_auth",
         return_value=auth_map,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_gemini_models() -> Any:
+    set_gemini_models(frozenset())
+    yield
+    set_gemini_models(frozenset())
 
 
 @contextmanager
@@ -82,14 +94,18 @@ def test_prefix_detection() -> None:
 
 
 async def test_start_no_providers(orch: Orchestrator) -> None:
-    with _patch_auth({"claude": _NOT_FOUND_CLAUDE, "codex": _NOT_FOUND_CODEX}):
+    with _patch_auth(
+        {"claude": _NOT_FOUND_CLAUDE, "codex": _NOT_FOUND_CODEX, "gemini": _NOT_FOUND_GEMINI}
+    ):
         text, keyboard = await model_selector_start(orch, 1)
     assert "No authenticated providers" in text
     assert keyboard is None
 
 
 async def test_start_one_provider_claude(orch: Orchestrator) -> None:
-    with _patch_auth({"claude": _AUTHED_CLAUDE, "codex": _NOT_FOUND_CODEX}):
+    with _patch_auth(
+        {"claude": _AUTHED_CLAUDE, "codex": _NOT_FOUND_CODEX, "gemini": _NOT_FOUND_GEMINI}
+    ):
         text, keyboard = await model_selector_start(orch, 1)
     assert "Select Claude model" in text
     assert keyboard is not None
@@ -101,7 +117,9 @@ async def test_start_one_provider_claude(orch: Orchestrator) -> None:
 
 async def test_start_one_provider_codex(orch: Orchestrator) -> None:
     with (
-        _patch_auth({"claude": _NOT_FOUND_CLAUDE, "codex": _AUTHED_CODEX}),
+        _patch_auth(
+            {"claude": _NOT_FOUND_CLAUDE, "codex": _AUTHED_CODEX, "gemini": _NOT_FOUND_GEMINI}
+        ),
         _with_codex_cache(orch),
     ):
         text, keyboard = await model_selector_start(orch, 1)
@@ -109,26 +127,52 @@ async def test_start_one_provider_codex(orch: Orchestrator) -> None:
     assert keyboard is not None
 
 
-async def test_start_shows_effective_model_when_fallback_is_active(orch: Orchestrator) -> None:
+async def test_start_shows_configured_model_without_runtime_fallback(orch: Orchestrator) -> None:
     object.__setattr__(orch, "_available_providers", frozenset({"codex"}))
     with (
-        _patch_auth({"claude": _NOT_FOUND_CLAUDE, "codex": _AUTHED_CODEX}),
+        _patch_auth(
+            {"claude": _NOT_FOUND_CLAUDE, "codex": _AUTHED_CODEX, "gemini": _NOT_FOUND_GEMINI}
+        ),
         _with_codex_cache(orch),
     ):
         text, keyboard = await model_selector_start(orch, 1)
     assert keyboard is not None
-    assert "Current: gpt-5.2-codex" in text
-    assert "Configured default: opus" in text
+    assert "Current: opus" in text
+    assert "Configured default:" not in text
 
 
 async def test_start_two_providers(orch: Orchestrator) -> None:
-    with _patch_auth({"claude": _AUTHED_CLAUDE, "codex": _AUTHED_CODEX}):
+    with _patch_auth(
+        {"claude": _AUTHED_CLAUDE, "codex": _AUTHED_CODEX, "gemini": _NOT_FOUND_GEMINI}
+    ):
         text, keyboard = await model_selector_start(orch, 1)
     assert "Model Selector" in text
     assert keyboard is not None
     labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
     assert "CLAUDE" in labels
     assert "CODEX" in labels
+
+
+async def test_start_one_provider_gemini_uses_discovered_models(orch: Orchestrator) -> None:
+    set_gemini_models(
+        frozenset(
+            {
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-3-pro-preview",
+            }
+        )
+    )
+    with _patch_auth(
+        {"claude": _NOT_FOUND_CLAUDE, "codex": _NOT_FOUND_CODEX, "gemini": _AUTHED_GEMINI}
+    ):
+        text, keyboard = await model_selector_start(orch, 1)
+    assert "Select Gemini model" in text
+    assert keyboard is not None
+    labels = [btn.text for row in keyboard.inline_keyboard for btn in row]
+    assert "2.5-pro" in labels
+    assert "2.5-flash" in labels
+    assert "3-pro-preview" in labels
 
 
 # -- handle_model_callback: provider selection --
@@ -208,7 +252,9 @@ async def test_callback_reasoning_switches(orch: Orchestrator) -> None:
 
 
 async def test_callback_back_root(orch: Orchestrator) -> None:
-    with _patch_auth({"claude": _AUTHED_CLAUDE, "codex": _AUTHED_CODEX}):
+    with _patch_auth(
+        {"claude": _AUTHED_CLAUDE, "codex": _AUTHED_CODEX, "gemini": _NOT_FOUND_GEMINI}
+    ):
         _text, keyboard = await handle_model_callback(orch, 1, "ms:b:root")
     assert keyboard is not None
     labels = [btn.text for row in keyboard.inline_keyboard for btn in row]

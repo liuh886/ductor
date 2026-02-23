@@ -15,18 +15,15 @@ Edit only when the user asks for behavior changes.
 
 ### Model and Provider
 
-- `provider`: `claude` or `codex`
+- `provider`: `gemini`
 - `model`: default model id
-  - Claude models: `haiku`, `sonnet`, `opus`
-  - Codex models:
-    - `gpt-5.2-codex` - Frontier agentic coding model
-    - `gpt-5.3-codex` - Latest frontier agentic coding model
-    - `gpt-5.1-codex-max` - Codex-optimized for deep and fast reasoning
-    - `gpt-5.2` - Latest frontier model
-    - `gpt-5.1-codex-mini` - Cheaper, faster (limited reasoning)
-- `reasoning_effort`: `low|medium|high|xhigh` (Codex only)
-  - Most models support: `low`, `medium`, `high`, `xhigh`
-  - `gpt-5.1-codex-mini` only: `medium`, `high`
+  - Available:
+    - `gemini-2.5-pro` - Balanced, most capable (recommended)
+    - `gemini-2.5-flash` - Fast and cost-effective
+    - `gemini-2.5-flash-lite` - Cheapest, fastest
+    - `gemini-3-pro-preview` - Next-gen preview
+    - `gemini-3-flash-preview` - Next-gen fast preview
+    - `gemini-3.1-pro-preview` - Latest preview
 - `permission_mode`: CLI permission behavior
 
 ### Time and Scheduling
@@ -75,18 +72,16 @@ For user-facing schedules, set `user_timezone` explicitly.
 
 ### CLI Parameters
 
-- `cli_parameters.claude`: List of extra CLI flags for Claude main agent (e.g., `["--chrome"]`)
-- `cli_parameters.codex`: List of extra CLI flags for Codex main agent (e.g., `["--chrome"]`)
+- `cli_parameters.gemini`: List of extra CLI flags for Gemini main agent
 
-These parameters are appended to every CLI invocation for the respective provider.
+These parameters are appended to every CLI invocation for the Gemini provider.
 Parameters are inserted before the `--` separator in commands.
 
 **Example:**
 ```json
 {
   "cli_parameters": {
-    "claude": ["--chrome"],
-    "codex": ["--chrome"]
+    "gemini": ["--sandbox"]
   }
 }
 ```

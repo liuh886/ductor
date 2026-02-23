@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import time_machine
 
 from ductor_bot.cli.codex_cache import CodexModelCache
-from ductor_bot.config import AgentConfig, ModelRegistry, WebhookConfig
+from ductor_bot.config import AgentConfig, WebhookConfig
 from ductor_bot.webhook.manager import WebhookManager
 from ductor_bot.webhook.models import WebhookEntry, WebhookResult, render_template
 from ductor_bot.webhook.observer import _SAFETY_END, _SAFETY_START, WebhookObserver
@@ -39,10 +40,6 @@ def _make_config(**overrides: Any) -> AgentConfig:
     return AgentConfig(**defaults)
 
 
-def _make_models() -> ModelRegistry:
-    return ModelRegistry()
-
-
 def _make_codex_cache() -> CodexModelCache:
     """Create a mock Codex cache for tests."""
     return CodexModelCache(last_updated=datetime.now(UTC).isoformat(), models=[])
@@ -64,7 +61,6 @@ def _make_observer(
     paths: DuctorPaths,
     mgr: WebhookManager,
     *,
-    models: ModelRegistry | None = None,
     codex_cache: CodexModelCache | None = None,
     **config_overrides: Any,
 ) -> WebhookObserver:
@@ -72,7 +68,6 @@ def _make_observer(
         paths,
         mgr,
         config=_make_config(**config_overrides),
-        models=models or _make_models(),
         codex_cache=codex_cache or _make_codex_cache(),
     )
 
@@ -87,9 +82,7 @@ class TestWebhookObserverLifecycle:
         paths = _make_paths(tmp_path)
         mgr = _make_manager(paths)
         config = AgentConfig(webhooks=WebhookConfig(enabled=False))
-        observer = WebhookObserver(
-            paths, mgr, config=config, models=_make_models(), codex_cache=_make_codex_cache()
-        )
+        observer = WebhookObserver(paths, mgr, config=config, codex_cache=_make_codex_cache())
 
         await observer.start()
         assert observer._server is None
@@ -218,6 +211,27 @@ class TestDispatchRouting:
         hook = mgr.get_hook("wake-hook")
         assert hook is not None
         assert hook.last_error == "error:no_response"
+
+    async def test_dispatch_propagates_cancelled_from_wake_handler(self, tmp_path: Path) -> None:
+        paths = _make_paths(tmp_path)
+        mgr = _make_manager(paths)
+        mgr.add_hook(_make_hook("wake-hook", mode="wake"))
+        observer = _make_observer(paths, mgr, allowed_user_ids=[100])
+        observer.set_wake_handler(AsyncMock(side_effect=asyncio.CancelledError()))
+
+        with pytest.raises(asyncio.CancelledError):
+            await observer._dispatch("wake-hook", {"msg": "hi"})
+
+    async def test_dispatch_propagates_cancelled_from_result_handler(self, tmp_path: Path) -> None:
+        paths = _make_paths(tmp_path)
+        mgr = _make_manager(paths)
+        mgr.add_hook(_make_hook("wake-hook", mode="wake"))
+        observer = _make_observer(paths, mgr, allowed_user_ids=[100])
+        observer.set_wake_handler(AsyncMock(return_value="ok"))
+        observer.set_result_handler(AsyncMock(side_effect=asyncio.CancelledError()))
+
+        with pytest.raises(asyncio.CancelledError):
+            await observer._dispatch("wake-hook", {"msg": "hi"})
 
 
 # ---------------------------------------------------------------------------

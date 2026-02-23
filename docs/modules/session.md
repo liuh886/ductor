@@ -27,6 +27,8 @@ Chat-level envelope:
 - `created_at`, `last_active` (ISO UTC)
 - `provider_sessions: dict[str, ProviderSessionData]`
 
+Provider keys typically include `claude`, `codex`, and/or `gemini`.
+
 Compatibility behavior:
 
 - constructor still accepts legacy flat fields (`session_id`, `message_count`, `total_cost_usd`, `total_tokens`) for old JSON/tests,
@@ -48,7 +50,7 @@ Utility methods:
 
 ## `SessionManager` API
 
-- `resolve_session(chat_id, provider=None, model=None) -> (SessionData, is_new)`
+- `resolve_session(chat_id, provider=None, model=None, preserve_existing_target=False) -> (SessionData, is_new)`
 - `get_active(chat_id) -> SessionData | None`
 - `reset_session(chat_id, provider=None, model=None) -> SessionData`
 - `reset_provider_session(chat_id, provider, model) -> SessionData`

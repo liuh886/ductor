@@ -10,7 +10,7 @@ from ductor_bot.cli.param_resolver import (
     TaskOverrides,
     resolve_cli_config,
 )
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import AgentConfig, set_gemini_models
 from ductor_bot.errors import DuctorError
 
 
@@ -49,6 +49,11 @@ def codex_cache() -> CodexModelCache:
             ),
         ],
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_gemini_models() -> None:
+    set_gemini_models(frozenset())
 
 
 def test_resolve_global_only(base_config: AgentConfig, codex_cache: CodexModelCache) -> None:
@@ -163,3 +168,36 @@ def test_resolve_claude_ignores_reasoning(
 
     assert result.provider == "claude"
     assert result.reasoning_effort == ""
+
+
+def test_resolve_gemini_model_from_discovery(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    set_gemini_models(frozenset({"gemini-2.5-pro"}))
+    overrides = TaskOverrides(provider="gemini", model="gemini-2.5-pro")
+
+    result = resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
+
+    assert result.provider == "gemini"
+    assert result.model == "gemini-2.5-pro"
+
+
+def test_resolve_gemini_invalid_against_discovered_models(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    set_gemini_models(frozenset({"gemini-2.5-pro"}))
+    overrides = TaskOverrides(provider="gemini", model="gemini-3-pro-preview")
+
+    with pytest.raises(DuctorError, match="Invalid Gemini model"):
+        resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
+
+
+def test_resolve_gemini_fallback_prefix_when_no_discovery(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    overrides = TaskOverrides(provider="gemini", model="gemini-foo")
+
+    result = resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
+
+    assert result.provider == "gemini"
+    assert result.model == "gemini-foo"

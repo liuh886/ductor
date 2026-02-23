@@ -12,9 +12,8 @@ from ductor_bot.cli.param_resolver import TaskOverrides, resolve_cli_config
 from ductor_bot.cron.execution import (
     build_cmd,
     enrich_instruction,
+    execute_one_shot,
     indent,
-    parse_claude_result,
-    parse_codex_result,
 )
 from ductor_bot.utils.quiet_hours import check_quiet_hour
 from ductor_bot.webhook.models import WebhookResult, render_template
@@ -23,7 +22,7 @@ from ductor_bot.webhook.server import WebhookServer
 if TYPE_CHECKING:
     from ductor_bot.cli.codex_cache import CodexModelCache
     from ductor_bot.cli.param_resolver import TaskExecutionConfig
-    from ductor_bot.config import AgentConfig, ModelRegistry
+    from ductor_bot.config import AgentConfig
     from ductor_bot.webhook.manager import WebhookManager
     from ductor_bot.workspace.paths import DuctorPaths
 
@@ -52,13 +51,11 @@ class WebhookObserver:
         manager: WebhookManager,
         *,
         config: AgentConfig,
-        models: ModelRegistry,
         codex_cache: CodexModelCache,
     ) -> None:
         self._paths = paths
         self._manager = manager
         self._config = config
-        self._models = models
         self._codex_cache = codex_cache
         self._server: WebhookServer | None = None
         self._on_result: WebhookResultCallback | None = None
@@ -188,6 +185,8 @@ class WebhookObserver:
                     result_text="",
                     status=f"error:unknown_mode_{hook.mode}",
                 )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("Webhook dispatch error hook=%s", hook_id)
             self._manager.record_trigger(hook_id, error="error:exception")
@@ -207,6 +206,8 @@ class WebhookObserver:
         if self._on_result:
             try:
                 await self._on_result(result)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Webhook result handler error hook=%s", hook_id)
 
@@ -234,6 +235,8 @@ class WebhookObserver:
                 text = await self._handle_wake(chat_id, prompt)
                 if text:
                     results.append(text)
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("Wake dispatch error hook=%s chat=%d", hook_id, chat_id)
 
@@ -345,43 +348,25 @@ class WebhookObserver:
                 indent(enriched, "    "),
             )
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(folder),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            execution = await execute_one_shot(
+                cmd,
+                cwd=folder,
+                provider=exec_config.provider,
+                timeout_seconds=timeout,
+                timeout_label="Webhook cron_task",
             )
-
-            timed_out = False
-            try:
-                async with asyncio.timeout(timeout):
-                    stdout, stderr = await proc.communicate()
-            except TimeoutError:
-                timed_out = True
+            if execution.timed_out:
                 logger.warning("Webhook cron_task %s timed out after %.0fs", hook_id, timeout)
-                proc.kill()
-                stdout, stderr = await proc.communicate()
-            except asyncio.CancelledError:
-                proc.kill()
-                await proc.wait()
-                raise
 
-            if stderr:
+            if execution.stderr:
                 logger.debug(
-                    "Webhook stderr (%s): %s", hook_id, stderr.decode(errors="replace")[:500]
+                    "Webhook stderr (%s): %s",
+                    hook_id,
+                    execution.stderr.decode(errors="replace")[:500],
                 )
 
-            if timed_out:
-                status = "error:timeout"
-                result_text = f"[Webhook cron_task timed out after {timeout:.0f}s]"
-            else:
-                result_text = (
-                    parse_codex_result(stdout)
-                    if exec_config.provider == "codex"
-                    else parse_claude_result(stdout)
-                )
-                status = "success" if proc.returncode == 0 else f"error:exit_{proc.returncode}"
+            status = execution.status
+            result_text = execution.result_text
 
             logger.info(
                 "--- WEBHOOK CRON_TASK DONE ---\n"
@@ -390,7 +375,7 @@ class WebhookObserver:
                 hook_id,
                 exec_config.provider,
                 status,
-                len(stdout),
+                len(execution.stdout),
                 len(result_text),
             )
 
