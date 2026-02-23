@@ -154,11 +154,8 @@ class CodexCLI(BaseCLI):
         if continue_session:
             logger.debug("continue_session is not supported by Codex CLI, ignoring")
         cmd = self._build_command(prompt, resume_session, json_output=True)
-        _log_cmd(cmd)
-
-        exec_cmd, use_cwd = docker_wrap(
-            cmd, self._config.docker_container, self._config.chat_id, self._working_dir
-        )
+        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        _log_cmd(exec_cmd)
         process = await asyncio.create_subprocess_exec(
             *exec_cmd,
             stdin=_win_stdin_pipe(),
@@ -197,11 +194,8 @@ class CodexCLI(BaseCLI):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Send a prompt and yield stream events as they arrive."""
         cmd = self._build_command(prompt, resume_session, json_output=True)
-        _log_cmd(cmd, streaming=True)
-
-        exec_cmd, use_cwd = docker_wrap(
-            cmd, self._config.docker_container, self._config.chat_id, self._working_dir
-        )
+        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        _log_cmd(exec_cmd, streaming=True)
         process = await asyncio.create_subprocess_exec(
             *exec_cmd,
             stdin=_win_stdin_pipe(),

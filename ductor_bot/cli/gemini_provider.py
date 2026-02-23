@@ -23,6 +23,7 @@ from ductor_bot.cli.gemini_utils import (
 from ductor_bot.cli.stream_events import ResultEvent, StreamEvent, SystemInitEvent
 from ductor_bot.cli.types import CLIResponse
 from ductor_bot.config import NULLISH_TEXT_VALUES
+from ductor_bot.workspace.paths import resolve_paths
 
 if TYPE_CHECKING:
     from ductor_bot.cli.process_registry import ProcessRegistry, TrackedProcess
@@ -30,6 +31,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 300.0
+
+# Must match ``_DUCTOR_MOUNT`` in ``ductor_bot.infra.docker``.
+_CONTAINER_DUCTOR = "/ductor"
 
 
 @dataclass(slots=True)
@@ -149,10 +153,7 @@ class GeminiCLI(BaseCLI):
 
         system_prompt_path = self._create_system_prompt_path()
         try:
-            env = self._prepare_env(system_prompt_path)
-            exec_cmd, use_cwd = docker_wrap(
-                cmd, self._config.docker_container, self._config.chat_id, self._working_dir
-            )
+            exec_cmd, use_cwd, subprocess_env = self._resolve_exec(cmd, system_prompt_path)
             _log_cmd(exec_cmd)
 
             process = await asyncio.create_subprocess_exec(
@@ -161,7 +162,7 @@ class GeminiCLI(BaseCLI):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=use_cwd,
-                env=env,
+                env=subprocess_env,
                 creationflags=_CREATION_FLAGS,
             )
 
@@ -203,10 +204,7 @@ class GeminiCLI(BaseCLI):
 
         system_prompt_path = self._create_system_prompt_path()
         try:
-            env = self._prepare_env(system_prompt_path)
-            exec_cmd, use_cwd = docker_wrap(
-                cmd, self._config.docker_container, self._config.chat_id, self._working_dir
-            )
+            exec_cmd, use_cwd, subprocess_env = self._resolve_exec(cmd, system_prompt_path)
             _log_cmd(exec_cmd, streaming=True)
 
             process = await asyncio.create_subprocess_exec(
@@ -215,7 +213,7 @@ class GeminiCLI(BaseCLI):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=use_cwd,
-                env=env,
+                env=subprocess_env,
                 limit=4 * 1024 * 1024,
                 creationflags=_CREATION_FLAGS,
             )
@@ -289,13 +287,86 @@ class GeminiCLI(BaseCLI):
                     yield event
 
     def _create_system_prompt_path(self) -> str | None:
-        """Create a temporary system prompt file when prompt content is present."""
-        if self._config.system_prompt or self._config.append_system_prompt:
-            return create_system_prompt_file(
-                self._config.system_prompt or "",
-                self._config.append_system_prompt or "",
-            )
+        """Create a temporary system prompt file when prompt content is present.
+
+        In Docker mode the file is written to ``~/.ductor/tmp/`` which is
+        bind-mounted into the container so it can be read via a translated
+        container-side path.
+        """
+        if not (self._config.system_prompt or self._config.append_system_prompt):
+            return None
+        directory: str | None = None
+        if self._config.docker_container:
+            tmp_dir = resolve_paths().ductor_home / "tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            directory = str(tmp_dir)
+        return create_system_prompt_file(
+            self._config.system_prompt or "",
+            self._config.append_system_prompt or "",
+            directory=directory,
+        )
+
+    def _docker_extra_env(self, system_prompt_path: str | None = None) -> dict[str, str]:
+        """Build Docker ``-e`` flags for Gemini-specific env vars.
+
+        These are injected into the container via ``docker exec -e``.
+        """
+        extra: dict[str, str] = {"GEMINI_IDE_ENABLED": "false"}
+
+        # Forward host GEMINI_API_KEY if set, otherwise inject from config.
+        host_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if host_key and host_key.lower() not in NULLISH_TEXT_VALUES:
+            extra["GEMINI_API_KEY"] = host_key
+        else:
+            key = (self._config.gemini_api_key or "").strip()
+            if key and key.lower() not in NULLISH_TEXT_VALUES:
+                settings = _gemini_settings_path(dict(os.environ))
+                if gemini_api_key_mode_selected(settings):
+                    extra["GEMINI_API_KEY"] = key
+
+        # Forward Google Cloud auth vars when present on host.
+        for var in ("GOOGLE_GENAI_USE_GCA", "GOOGLE_GENAI_USE_VERTEXAI"):
+            val = os.environ.get(var, "").strip()
+            if val:
+                extra[var] = val
+
+        # Translate system prompt path to container-side path.
+        if system_prompt_path:
+            container_path = self._host_to_container_path(system_prompt_path)
+            if container_path:
+                extra["GEMINI_SYSTEM_MD"] = container_path
+
+        return extra
+
+    @staticmethod
+    def _host_to_container_path(host_path: str) -> str | None:
+        """Translate a host path under ``~/.ductor/`` to its container mount."""
+        prefix = str(resolve_paths().ductor_home)
+        if host_path.startswith(prefix):
+            return _CONTAINER_DUCTOR + host_path[len(prefix) :]
         return None
+
+    def _resolve_exec(
+        self,
+        cmd: list[str],
+        system_prompt_path: str | None,
+    ) -> tuple[list[str], str | None, dict[str, str] | None]:
+        """Resolve command, cwd, and env for subprocess execution.
+
+        Returns ``(exec_cmd, use_cwd, subprocess_env)``.  In Docker mode
+        ``subprocess_env`` is ``None`` (inherit host env for the ``docker``
+        binary) and Gemini-specific vars are forwarded via ``-e`` flags.
+        """
+        if self._config.docker_container:
+            extra_env = self._docker_extra_env(system_prompt_path)
+            exec_cmd, use_cwd = docker_wrap(
+                cmd, self._config, extra_env=extra_env, interactive=True
+            )
+            return exec_cmd, use_cwd, None
+
+        env = self._prepare_env(system_prompt_path)
+        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        return exec_cmd, use_cwd, env
 
     def _track_process(
         self,
@@ -375,12 +446,26 @@ async def _cleanup_file(path: str | None) -> None:
         await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
 
+_SENSITIVE_ENV_KEYS = ("GEMINI_API_KEY",)
+
+
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
-    """Log the CLI command with long args truncated."""
-    safe = [
-        (c[:80] + "...") if len(c) > 80 and i > 0 and cmd[i - 1].startswith("--") else c
-        for i, c in enumerate(cmd)
-    ]
+    """Log the CLI command with sensitive env values masked."""
+    safe: list[str] = []
+    mask_next = False
+    for i, c in enumerate(cmd):
+        if mask_next:
+            safe.append(c[:4] + "***" if len(c) > 4 else "***")
+            mask_next = False
+            continue
+        if c == "-e" and i + 1 < len(cmd):
+            nxt = cmd[i + 1]
+            if any(nxt.startswith(f"{k}=") for k in _SENSITIVE_ENV_KEYS):
+                mask_next = True
+        if len(c) > 80 and i > 0 and cmd[i - 1].startswith("--"):
+            safe.append(c[:80] + "...")
+        else:
+            safe.append(c)
     logger.info("%s: %s", "Gemini stream cmd" if streaming else "Gemini cmd", " ".join(safe))
 
 

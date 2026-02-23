@@ -17,14 +17,16 @@ if TYPE_CHECKING:
 
 def test_docker_wrap_without_container(tmp_path: Path) -> None:
     cmd = ["claude", "-p", "hello"]
-    result_cmd, cwd = docker_wrap(cmd, "", 0, tmp_path)
+    cfg = CLIConfig(docker_container="", chat_id=0, working_dir=str(tmp_path))
+    result_cmd, cwd = docker_wrap(cmd, cfg)
     assert result_cmd == cmd
     assert cwd == str(tmp_path)
 
 
 def test_docker_wrap_with_container(tmp_path: Path) -> None:
     cmd = ["claude", "-p", "hello"]
-    result_cmd, cwd = docker_wrap(cmd, "my-container", 42, tmp_path)
+    cfg = CLIConfig(docker_container="my-container", chat_id=42, working_dir=str(tmp_path))
+    result_cmd, cwd = docker_wrap(cmd, cfg)
     assert result_cmd[0] == "docker"
     assert "my-container" in result_cmd
     assert "DUCTOR_CHAT_ID=42" in result_cmd[3]

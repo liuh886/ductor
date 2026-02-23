@@ -99,11 +99,8 @@ class ClaudeCodeCLI(BaseCLI):
     ) -> CLIResponse:
         """Send a prompt and return the final result."""
         cmd = self._build_command(prompt, resume_session, continue_session)
-        _log_cmd(cmd)
-
-        exec_cmd, use_cwd = docker_wrap(
-            cmd, self._config.docker_container, self._config.chat_id, self._working_dir
-        )
+        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        _log_cmd(exec_cmd)
         process = await asyncio.create_subprocess_exec(
             *exec_cmd,
             stdin=_win_stdin_pipe(),
@@ -159,11 +156,8 @@ class ClaudeCodeCLI(BaseCLI):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Send a prompt and yield stream events as they arrive."""
         cmd = self._build_command_streaming(prompt, resume_session, continue_session)
-        _log_cmd(cmd, streaming=True)
-
-        exec_cmd, use_cwd = docker_wrap(
-            cmd, self._config.docker_container, self._config.chat_id, self._working_dir
-        )
+        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        _log_cmd(exec_cmd, streaming=True)
         process = await asyncio.create_subprocess_exec(
             *exec_cmd,
             stdin=_win_stdin_pipe(),

@@ -25,19 +25,19 @@
         "edit_interval_seconds": 2.0,
         "max_edit_failures": 3,
         "append_mode": false,
-        "sentence_break": true,
+        "sentence_break": true
     },
     "docker": {
         "enabled": false,
         "image_name": "ductor-sandbox",
         "container_name": "ductor-sandbox",
-        "auto_build": true,
+        "auto_build": true
     },
     "cleanup": {
         "enabled": true,
         "telegram_files_days": 30,
         "output_to_user_days": 30,
-        "check_hour": 3,
+        "check_hour": 3
     },
     "heartbeat": {
         "enabled": false,
@@ -46,7 +46,7 @@
         "quiet_start": 21,
         "quiet_end": 8,
         "prompt": "You are running as a background heartbeat check. Review the current workspace context:\n- Read memory_system/MAINMEMORY.md for user interests and personality\n- Check cron_tasks/ for active projects\n- Think about what might be useful, interesting, or fun for the user\n\nIf you have a creative idea, suggestion, interesting fact, or something the user might enjoy:\nReply with your message directly.\n\nIf nothing needs attention right now:\nReply exactly: HEARTBEAT_OK",
-        "ack_token": "HEARTBEAT_OK",
+        "ack_token": "HEARTBEAT_OK"
     },
     "webhooks": {
         "enabled": false,
@@ -54,6 +54,6 @@
         "port": 8742,
         "token": "",
         "max_body_bytes": 262144,
-        "rate_limit_per_minute": 30,
-    },
+        "rate_limit_per_minute": 30
+    }
 }

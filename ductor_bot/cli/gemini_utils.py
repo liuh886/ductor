@@ -108,16 +108,27 @@ def trust_workspace(working_dir: Path) -> None:
         logger.warning("Failed to update Gemini trusted folders", exc_info=True)
 
 
-def create_system_prompt_file(system_prompt: str, append_prompt: str = "") -> str:
-    """Write system prompt to a temp file, return path. Caller must clean up."""
+def create_system_prompt_file(
+    system_prompt: str,
+    append_prompt: str = "",
+    *,
+    directory: str | None = None,
+) -> str:
+    """Write system prompt to a temp file, return path. Caller must clean up.
+
+    When *directory* is set the temp file is placed there instead of the
+    system default (useful for Docker mounts like ``~/.ductor/tmp``).
+    """
     content = system_prompt
     if append_prompt:
         content = f"{content}\n\n{append_prompt}"
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".md",
+        prefix="gemini_system_",
         delete=False,
         encoding="utf-8",
+        dir=directory,
     ) as tf:
         tf.write(content)
         return tf.name

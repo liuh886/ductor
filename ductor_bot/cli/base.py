@@ -71,25 +71,31 @@ class CLIConfig:
 
 def docker_wrap(
     cmd: list[str],
-    docker_container: str,
-    chat_id: int,
-    working_dir: Path,
+    config: CLIConfig,
+    *,
+    extra_env: dict[str, str] | None = None,
+    interactive: bool = False,
 ) -> tuple[list[str], str | None]:
-    """Wrap a CLI command for Docker execution if a container is set."""
-    if docker_container:
-        logger.debug("docker_wrap container=%s", docker_container)
+    """Wrap a CLI command for Docker execution if a container is set.
+
+    *interactive* adds ``-i`` to keep stdin open (required for providers
+    that pipe the prompt via stdin, e.g. Gemini).
+
+    *extra_env* vars are injected as ``-e`` flags into ``docker exec``
+    (set **inside** the container, unlike ``env=`` on the host process).
+    """
+    if config.docker_container:
+        logger.debug("docker_wrap container=%s", config.docker_container)
+        stdin_flag: list[str] = ["-i"] if interactive else []
+        env_flags: list[str] = ["-e", f"DUCTOR_CHAT_ID={config.chat_id}"]
+        if extra_env:
+            for key, value in extra_env.items():
+                env_flags += ["-e", f"{key}={value}"]
         return (
-            [
-                "docker",
-                "exec",
-                "-e",
-                f"DUCTOR_CHAT_ID={chat_id}",
-                docker_container,
-                *cmd,
-            ],
+            ["docker", "exec", *stdin_flag, *env_flags, config.docker_container, *cmd],
             None,
         )
-    return cmd, str(working_dir)
+    return cmd, str(Path(config.working_dir).resolve())
 
 
 class BaseCLI(ABC):

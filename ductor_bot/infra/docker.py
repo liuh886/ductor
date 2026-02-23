@@ -6,12 +6,17 @@ import asyncio
 import logging
 import os
 import platform
+import sys
 import tempfile
 from pathlib import Path
 from shutil import which
+from typing import TYPE_CHECKING
 
 from ductor_bot.config import DockerConfig
 from ductor_bot.workspace.paths import DuctorPaths
+
+if TYPE_CHECKING:
+    from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
@@ -35,39 +40,78 @@ class DockerManager:
         self._config = config
         self._paths = paths
         self._container: str | None = None
+        self._console: Console | None = self._create_console()
 
     @property
     def container(self) -> str | None:
         """Currently active container name, or ``None``."""
         return self._container
 
+    @staticmethod
+    def _create_console() -> Console | None:
+        """Create a Rich console when running interactively."""
+        if not sys.stderr.isatty():
+            return None
+        from rich.console import Console as RichConsole
+
+        return RichConsole(stderr=True)
+
+    def _status(self, msg: str) -> None:
+        """Print a status message to the interactive console (if available)."""
+        if self._console:
+            self._console.print(msg)
+
     async def setup(self) -> str | None:
         """Start or reuse the sandbox container. Returns name or ``None``."""
         if not which("docker"):
+            self._status(
+                "[bold red]Docker binary not found, falling back to host execution.[/bold red]"
+            )
             logger.warning("Docker binary not found, falling back to host execution")
             return None
 
+        self._status("[dim]Checking Docker daemon...[/dim]")
         if not await self._daemon_available():
+            self._status("[bold red]Docker daemon not responding.[/bold red]")
             logger.warning("Docker daemon not responding, falling back to host execution")
             return None
+        self._status("[green]Docker daemon OK.[/green]")
 
         image = self._config.image_name
         if not await self._image_exists(image):
             if not self._config.auto_build:
+                self._status(
+                    f"[bold red]Docker image '{image}' not found and auto_build disabled.[/bold red]"
+                )
                 logger.warning("Docker image '%s' not found and auto_build disabled", image)
                 return None
+            self._status(
+                f"[bold cyan]Building sandbox image '{image}'...[/bold cyan]\n"
+                "[dim]  Downloading Debian bookworm + Node.js 22 base image\n"
+                "  Installing Python, build tools, Git\n"
+                "  Installing Claude, Codex, and Gemini CLIs\n"
+                "  This may take a few minutes on first run...[/dim]"
+            )
             if not await self._build_image(image):
+                self._status("[bold red]Docker image build failed.[/bold red]")
                 logger.warning("Docker image build failed, falling back to host execution")
                 return None
+            self._status(f"[bold green]Image '{image}' built successfully.[/bold green]")
+        else:
+            self._status(f"[dim]Image '{image}' found.[/dim]")
 
         container = self._config.container_name
         if await self._container_running(container):
+            self._status(f"[dim]Reusing running container '{container}'.[/dim]")
             logger.info("Reusing running Docker container '%s'", container)
         else:
+            self._status(f"[dim]Starting container '{container}'...[/dim]")
             await self._remove_container(container)
             if not await self._start_container(container, image):
+                self._status("[bold red]Failed to start container.[/bold red]")
                 logger.warning("Failed to start container, falling back to host execution")
                 return None
+            self._status(f"[bold green]Container '{container}' ready.[/bold green]")
 
         self._container = container
         return container

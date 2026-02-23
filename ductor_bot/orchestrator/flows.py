@@ -120,6 +120,9 @@ async def _reset_on_error(
 
 
 _SIGKILL_USER_MSG = "Execution was interrupted. Please send the same request again."
+_SESSION_RECOVERED_MSG = (
+    "_Previous session could not be restored. A new session was started automatically._"
+)
 
 
 def _is_sigkill(response: AgentResponse) -> bool:
@@ -127,22 +130,44 @@ def _is_sigkill(response: AgentResponse) -> bool:
     return response.is_error and response.returncode == -getattr(signal, "SIGKILL", 9)
 
 
-async def _recover_after_sigkill(  # noqa: PLR0913
+_INVALID_SESSION_MARKERS = ("invalid session", "session not found")
+
+
+def _is_invalid_session(response: AgentResponse) -> bool:
+    """Return True when the CLI rejected a ``--resume`` session ID.
+
+    Happens when sessions created on host are resumed inside Docker
+    (or vice-versa) because working directories differ.
+    """
+    if not response.is_error:
+        return False
+    lower = (response.result or "").lower()
+    return any(marker in lower for marker in _INVALID_SESSION_MARKERS)
+
+
+def _needs_session_recovery(response: AgentResponse) -> bool:
+    """Return True when the response warrants an automatic session reset + retry."""
+    return _is_sigkill(response) or _is_invalid_session(response)
+
+
+async def _recover_session(  # noqa: PLR0913
     orch: Orchestrator,
     chat_id: int,
     text: str,
     *,
+    reason: str,
     model_override: str | None,
     streaming: bool,
     on_text_delta: Callable[[str], Awaitable[None]] | None = None,
     on_tool_activity: Callable[[str], Awaitable[None]] | None = None,
     on_system_status: Callable[[str | None], Awaitable[None]] | None = None,
 ) -> tuple[AgentRequest, SessionData, AgentResponse]:
-    """Reset only the active provider session and retry once after SIGKILL."""
-    logger.warning("recovery.sigkill chat=%s action=retry", chat_id)
+    """Reset the active provider session and retry once."""
+    logger.warning("recovery.%s chat=%s action=retry", reason, chat_id)
     model_name = model_override or orch._config.model
     provider_name = orch._models.provider_for(model_name)
     await orch._process_registry.kill_all(chat_id)
+    orch._process_registry.clear_abort(chat_id)
     await orch._sessions.reset_provider_session(chat_id, provider=provider_name, model=model_name)
 
     if on_system_status is not None:
@@ -212,20 +237,20 @@ async def normal(
         return warning
 
     response = await orch._cli_service.execute(request)
+    session_recovered = False
+    if not orch._process_registry.was_aborted(chat_id) and _needs_session_recovery(response):
+        session_recovered = _is_invalid_session(response)
+        reason = "invalid_session" if session_recovered else "sigkill"
+        request, session, response = await _recover_session(
+            orch, chat_id, text, reason=reason, model_override=model_override, streaming=False
+        )
     if orch._process_registry.was_aborted(chat_id):
         logger.info("Normal flow aborted by user")
         return OrchestratorResult(text="")
-    if _is_sigkill(response):
-        request, session, response = await _recover_after_sigkill(
-            orch, chat_id, text, model_override=model_override, streaming=False
-        )
     if response.is_error:
         if _is_sigkill(response):
             logger.warning("recovery.sigkill chat=%s action=user-retry", chat_id)
             return OrchestratorResult(text=_SIGKILL_USER_MSG, stream_fallback=True)
-        if orch._process_registry.was_aborted(chat_id):
-            logger.info("Normal flow aborted by user (after error)")
-            return OrchestratorResult(text="")
         model_name, provider_name = _request_target(orch, request)
         return await _reset_on_error(
             orch,
@@ -236,7 +261,10 @@ async def normal(
         )
     await _update_session(orch, session, response)
     logger.info("Normal flow completed")
-    return _finish_normal(response, session, orch._config.session_age_warning_hours)
+    result = _finish_normal(response, session, orch._config.session_age_warning_hours)
+    if session_recovered:
+        result.text = f"{_SESSION_RECOVERED_MSG}\n\n{result.text}"
+    return result
 
 
 async def normal_streaming(  # noqa: PLR0913
@@ -263,27 +291,28 @@ async def normal_streaming(  # noqa: PLR0913
         on_tool_activity=on_tool_activity,
         on_system_status=on_system_status,
     )
-    if orch._process_registry.was_aborted(chat_id):
-        logger.info("Streaming flow aborted by user")
-        return OrchestratorResult(text="")
-    if _is_sigkill(response):
-        request, session, response = await _recover_after_sigkill(
+    session_recovered = False
+    if not orch._process_registry.was_aborted(chat_id) and _needs_session_recovery(response):
+        session_recovered = _is_invalid_session(response)
+        reason = "invalid_session" if session_recovered else "sigkill"
+        request, session, response = await _recover_session(
             orch,
             chat_id,
             text,
+            reason=reason,
             model_override=model_override,
             streaming=True,
             on_text_delta=on_text_delta,
             on_tool_activity=on_tool_activity,
             on_system_status=on_system_status,
         )
+    if orch._process_registry.was_aborted(chat_id):
+        logger.info("Streaming flow aborted by user")
+        return OrchestratorResult(text="")
     if response.is_error:
         if _is_sigkill(response):
             logger.warning("recovery.sigkill chat=%s action=user-retry", chat_id)
             return OrchestratorResult(text=_SIGKILL_USER_MSG, stream_fallback=True)
-        if orch._process_registry.was_aborted(chat_id):
-            logger.info("Streaming flow aborted by user (after error)")
-            return OrchestratorResult(text="")
         model_name, provider_name = _request_target(orch, request)
         return await _reset_on_error(
             orch,
@@ -294,7 +323,10 @@ async def normal_streaming(  # noqa: PLR0913
         )
     await _update_session(orch, session, response)
     logger.info("Streaming flow completed")
-    return _finish_normal(response, session, orch._config.session_age_warning_hours)
+    result = _finish_normal(response, session, orch._config.session_age_warning_hours)
+    if session_recovered:
+        result.text = f"{_SESSION_RECOVERED_MSG}\n\n{result.text}"
+    return result
 
 
 def _session_age_note(session: SessionData, warning_hours: int) -> str:
