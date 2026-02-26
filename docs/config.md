@@ -28,6 +28,11 @@ Normalization detail:
 
 Runtime edits persisted through config helpers include `/model` changes (model/provider/reasoning), webhook token auto-generation, and API token auto-generation.
 
+API config persistence note:
+
+- `load_config()` intentionally does not auto-add the `api` block during default deep-merge (beta gating).
+- `ductor api enable` writes the `api` block (including generated token) into `config.json`.
+
 ## `AgentConfig` (`ductor_bot/config.py`)
 
 | Field | Type | Default | Notes |
@@ -117,6 +122,7 @@ Behavior notes:
 | `container_name` | `str` | `"ductor-sandbox"` | Docker container name |
 | `auto_build` | `bool` | `true` | Build image automatically when missing |
 | `mount_host_cache` | `bool` | `false` | Mount host `~/.cache` into container (see below) |
+| `mounts` | `list[str]` | `[]` | Extra host directories mounted into sandbox (`/mnt/...`) |
 
 `Orchestrator.create()` calls `DockerManager.setup()` when enabled. If setup fails, ductor logs warning and falls back to host execution.
 
@@ -133,6 +139,20 @@ Mounts the host's platform-specific cache directory into the container at `/home
 Use case: browser-based skills (e.g. google-ai-mode) that use patchright/playwright need access to persistent browser profiles and browser binaries stored in the host cache. Without this, each container start requires a fresh CAPTCHA solve and Chrome download.
 
 Disabled by default because it exposes the host cache directory to the sandbox.
+
+### `mounts`
+
+User-defined directory mounts for project/data access inside Docker sandbox.
+
+- each entry is expanded (`~`, env vars), resolved, and validated as an existing directory
+- invalid or missing entries are skipped with warnings
+- container target path is derived from host basename: `/mnt/<sanitized-name>`
+- duplicate target names are disambiguated as `/mnt/name_2`, `/mnt/name_3`, ...
+
+Runtime note:
+
+- updates are typically managed via `ductor docker mount|unmount`
+- changing mounts requires bot restart (or `ductor docker rebuild`) to affect container run flags
 
 ## `HeartbeatConfig`
 
@@ -158,8 +178,9 @@ Disabled by default because it exposes the host cache directory to the sandbox.
 
 Cleanup implementation detail:
 
-- cleanup is non-recursive (`_delete_old_files` checks only top-level files),
-- media/API uploads are stored in date subdirectories (`.../YYYY-MM-DD/...`), so those uploaded files are currently not deleted by this observer.
+- cleanup is recursive (`_delete_old_files` walks nested files via `rglob("*")`),
+- after file deletion, empty subdirectories are pruned,
+- dated upload folders (`.../YYYY-MM-DD/...`) are cleaned when contained files exceed retention and directories become empty.
 
 ## `WebhookConfig`
 
@@ -180,14 +201,15 @@ Cleanup implementation detail:
 | `host` | `str` | `"0.0.0.0"` | Bind address |
 | `port` | `int` | `8741` | API HTTP/WebSocket port |
 | `token` | `str` | `""` | Bearer/WebSocket auth token (auto-generated when API starts) |
-| `chat_id` | `int` | `0` | Present in config schema; see runtime note below |
+| `chat_id` | `int` | `0` | Default API session chat (`0` means fallback to first `allowed_user_ids` entry, else `1`) |
 | `allow_public` | `bool` | `false` | Suppresses Tailscale-not-detected warning |
 
 Runtime note (`Orchestrator._start_api_server` + `ApiServer._authenticate`):
 
-- default API session chat ID currently comes from first `allowed_user_ids` entry (fallback `1`),
+- if `config.api.chat_id > 0`, it is used as default API session chat ID,
+- otherwise default comes from first `allowed_user_ids` entry (fallback `1`),
 - per-connection auth payload may override via `{"type":"auth","chat_id":...}`,
-- `config.api.chat_id` is currently not consumed by orchestrator startup wiring.
+- clients can override only for that connection; persisted default stays in config.
 
 ## Model Resolution
 

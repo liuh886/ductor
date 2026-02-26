@@ -33,6 +33,7 @@ You can:
 
 - chat from Telegram with Claude/Codex/Gemini,
 - stream responses live into edited Telegram messages,
+- offload one-off tasks via `/bg` and receive a final result when they finish,
 - run cron jobs and webhooks,
 - let heartbeat checks proactively notify you,
 - isolate runtime with Docker.
@@ -77,10 +78,11 @@ ductor executes the real provider CLIs as subprocesses. It does not proxy or spo
 
 ### Automation
 
+- Background tasks (`/bg`): push one-off tasks from the main chat into async execution while the chat stays responsive; receive a final completion message when done
 - Cron jobs: in-process scheduler with timezone support, per-job overrides, quiet hours, dependency queue
 - Webhooks: `wake` (inject into active chat) and `cron_task` (isolated task run) modes
 - Heartbeat: proactive checks in active sessions with cooldown + quiet hours
-- Cleanup: daily retention cleanup for `telegram_files/` and `output_to_user/`
+- Cleanup: daily retention cleanup for `telegram_files/`, `output_to_user/`, and `api_files/`
 
 ### Infrastructure
 
@@ -89,6 +91,7 @@ ductor executes the real provider CLIs as subprocesses. It does not proxy or spo
   - macOS: `launchd` Launch Agent
   - Windows: Task Scheduler task
 - Docker sidecar sandbox support (`Dockerfile.sandbox`)
+- Configurable Docker host-directory mounts (`docker.mounts`, `ductor docker mount ...`)
 - Restart protocol (`EXIT_RESTART = 42`) + sentinel-based user notifications
 - Version/update flow with Telegram `/upgrade` callback path
 
@@ -125,10 +128,28 @@ Detailed installation: [`docs/installation.md`](docs/installation.md)
 ductor docker enable
 ductor docker disable
 ductor docker rebuild
+ductor docker mount /absolute/or/env/path
+ductor docker unmount /absolute/or/env/path
+ductor docker mounts
 ```
 
 - `enable` / `disable`: toggles `docker.enabled` in `~/.ductor/config/config.json`
 - `rebuild`: stops the bot, removes Docker container + image, rebuilds on next start
+- `mount`: adds a host directory to `docker.mounts` (resolved absolute path; duplicates ignored)
+- `unmount`: removes a configured mount (exact/resolved/basename match)
+- `mounts`: shows configured host mounts and resolved container targets (`/mnt/<name>`)
+- mount/unmount changes require restart or container rebuild to apply
+
+## API management (beta)
+
+```bash
+ductor api enable
+ductor api disable
+```
+
+- `enable`: writes/updates `config.api`, generates token if missing
+- `disable`: sets `config.api.enabled=false`
+- restart required after changes
 
 ## Run as a background service
 
@@ -159,17 +180,10 @@ You (Telegram)
   -> streamed or non-streamed response back to Telegram
 ```
 
-Background observers run in the same process:
+Background systems run in the same process:
 
-- `CronObserver`
-- `HeartbeatObserver`
-- `WebhookObserver`
-- `CleanupObserver`
-- `CodexCacheObserver`
-- `GeminiCacheObserver`
-- `UpdateObserver` (only for upgradeable installs: `pipx`/`pip`)
-- rule sync watcher (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`)
-- skill sync watcher
+- periodic observers/watchers: `CronObserver`, `HeartbeatObserver`, `WebhookObserver`, `CleanupObserver`, `CodexCacheObserver`, `GeminiCacheObserver`, `UpdateObserver` (only for upgradeable installs), rule sync watcher, skill sync watcher
+- on-demand subsystem: `BackgroundObserver` (`/bg` task runner)
 
 Session behavior (important):
 
@@ -201,7 +215,10 @@ Session behavior (important):
       user_tools/
     telegram_files/
     output_to_user/
+    api_files/
 ```
+
+`workspace/api_files/` is created lazily on first API upload.
 
 ## Configuration
 
@@ -255,6 +272,8 @@ Full schema: [`docs/config.md`](docs/config.md)
 | `ductor restart` | Stop and re-exec bot |
 | `ductor upgrade` | Upgrade package and restart (non-dev mode) |
 | `ductor uninstall` | Remove bot data + uninstall package |
+| `ductor docker <enable|disable|rebuild|mount|unmount|mounts>` | Docker mode/config + user mount management |
+| `ductor api <enable|disable>` | Direct WebSocket API toggle (beta) |
 | `ductor service ...` | Service management (`install/status/start/stop/logs/uninstall`) |
 | `ductor help` | Help + status |
 

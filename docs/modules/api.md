@@ -25,8 +25,12 @@ Section `api` in `config.json`:
 | `host` | `0.0.0.0` | Bind address |
 | `port` | `8741` | Bind port |
 | `token` | `""` | Auth token (auto-generated on first API start) |
-| `chat_id` | `0` | Present in schema; currently not consumed by orchestrator startup defaulting |
+| `chat_id` | `0` | Default API session chat (`0` means fallback to first `allowed_user_ids` entry, else `1`) |
 | `allow_public` | `false` | Suppress Tailscale-not-detected warning |
+
+Persistence note:
+
+- the `api` block is written by `ductor api enable` (beta path), so older configs may not include it until API is enabled.
 
 File-related config in `cleanup` section:
 
@@ -36,8 +40,9 @@ File-related config in `cleanup` section:
 
 Retention implementation detail:
 
-- cleanup currently checks top-level files only (non-recursive),
-- API uploads are stored under `api_files/YYYY-MM-DD/`, so those uploaded files are currently not deleted by cleanup.
+- cleanup walks files recursively,
+- old files in `api_files/YYYY-MM-DD/` are deleted when retention expires,
+- empty date directories are pruned after deletion.
 
 ## Authentication + E2E key exchange
 
@@ -122,10 +127,8 @@ Server <- encrypted({"type": "error", "code": "decrypt_failed", "message": "Decr
 
 The session system is keyed by `chat_id`. This controls which conversation history, provider state, and memory the API client uses.
 
-- startup default: first `allowed_user_ids` entry (fallback `1` if allowlist is empty).
+- startup default: `config.api.chat_id` when `> 0`; otherwise first `allowed_user_ids` entry (fallback `1` if allowlist is empty).
 - auth override: client may pass `chat_id` in the auth payload for an isolated session.
-
-Current runtime note: `config.api.chat_id` exists in `AgentConfig` but is not used in `Orchestrator._start_api_server()`.
 
 ## WebSocket protocol
 
@@ -135,14 +138,19 @@ Endpoint: `ws://<host>:<port>/ws`
 
 ```
 Client -> {"type": "auth", "token": "...", "e2e_pk": "<base64>", "chat_id": 12345}
-Server <- {"type": "auth_ok", "chat_id": 12345, "e2e_pk": "<base64>"}
+Server <- {"type": "auth_ok", "chat_id": 12345, "e2e_pk": "<base64>", "providers": [...], "active_provider": "...", "active_model": "..."}
 ```
 
-`chat_id` in the auth message is optional. Omitting it uses the orchestrator-provided default (first allowlisted user, fallback `1`).
+`chat_id` in the auth message is optional. Omitting it uses the orchestrator-provided default (`config.api.chat_id` when `>0`, else first allowlisted user, fallback `1`).
 
 `e2e_pk` is mandatory. Must be a base64-encoded 32-byte Curve25519 public key. The server rejects connections without it.
 
 `auth_ok` is the last plaintext message. Everything after is encrypted.
+
+`auth_ok` payload fields:
+
+- always: `chat_id`, `e2e_pk`, `providers` (authenticated provider metadata + model list)
+- when orchestrator active-state getter is wired: `active_provider`, `active_model`
 
 ### Sending messages (encrypted)
 
@@ -342,13 +350,11 @@ In `Orchestrator.create()`, after all other observers:
 
 1. Check `config.api.enabled`.
 2. Auto-generate token if empty, persist to config.
-3. Resolve default `chat_id` from first `allowed_user_ids` entry (fallback `1`).
+3. Resolve default `chat_id` from `config.api.chat_id` (`>0`) or first `allowed_user_ids` entry (fallback `1`).
 4. Create `ApiServer`, wire `handle_message_streaming` and `abort` as callbacks.
 5. Wire file context (`allowed_roots`, `upload_dir`, `workspace`).
 6. Start server.
 7. If no Tailscale detected and `allow_public=false`: log warning (server still starts).
-
-Note: `config.api.chat_id` is currently not wired into this startup default.
 
 ## Shutdown
 

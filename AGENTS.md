@@ -4,7 +4,7 @@ This file gives coding agents a current map of the repository.
 
 ## Project Overview
 
-ductor is a Telegram bot that routes chat input to official provider CLIs (`claude`, `codex`, `gemini`), streams responses back to Telegram, persists per-chat state, and runs cron/webhook/heartbeat automation in-process. It also has an optional direct WebSocket API server (`api.enabled=true`) with authenticated file upload/download endpoints.
+ductor is a Telegram bot that routes chat input to official provider CLIs (`claude`, `codex`, `gemini`), streams responses back to Telegram, persists per-chat state, and runs cron/webhook/heartbeat automation in-process. It also supports `/bg` one-shot background tasks and an optional direct WebSocket API server (`api.enabled=true`) with authenticated file upload/download endpoints.
 
 Stack:
 
@@ -65,6 +65,7 @@ Direct API Message (optional)
 | `files/` | Shared file helpers (path tags, MIME detection, storage naming, media prompt builder) |
 | `orchestrator/` | command registry, directives/hooks, flow routing, observer wiring |
 | `cli/` | provider wrappers, stream parsing, auth checks, process registry, model caches |
+| `background/` | on-demand `/bg` task runner and async result delivery |
 | `session/` | chat sessions with provider-isolated buckets |
 | `cron/` | in-process scheduler and one-shot task execution |
 | `webhook/` | HTTP hooks (`wake` and `cron_task`) |
@@ -84,13 +85,14 @@ Direct API Message (optional)
 - Skill sync spans `~/.ductor/workspace/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills`.
   - normal mode: links
   - Docker mode: managed copies (`.ductor_managed` marker)
+- Docker user mounts (`docker.mounts`) map host directories into the sandbox under `/mnt/<name>`.
 - Streaming fallback is automatic; `/stop` abort checks are enforced during event loop processing.
 - Session state is provider-isolated; `/new` resets only the active provider bucket.
 - File access policy (`file_access`) is shared by Telegram file sends and API file downloads (`GET /files`).
 
 ## Background Systems
 
-All run as in-process asyncio tasks:
+Periodic in-process tasks:
 
 - `CronObserver`
 - `HeartbeatObserver`
@@ -101,6 +103,10 @@ All run as in-process asyncio tasks:
 - rule sync watcher
 - skill sync watcher
 - update observer (upgradeable installs)
+
+On-demand in-process subsystem:
+
+- `BackgroundObserver` (`/bg` task execution)
 
 Optional network service (not a periodic observer task):
 
@@ -128,6 +134,11 @@ Optional network service (not a periodic observer task):
 | `ductor docker rebuild` | Stop bot, remove container & image, rebuilt on next start |
 | `ductor docker enable` | Set `docker.enabled = true` |
 | `ductor docker disable` | Stop container, set `docker.enabled = false` |
+| `ductor docker mount <path>` | Add host directory mount to `docker.mounts` |
+| `ductor docker unmount <path>` | Remove host directory mount from `docker.mounts` |
+| `ductor docker mounts` | Show configured Docker mounts and targets |
+| `ductor api enable` | Enable direct WebSocket API server config (beta) |
+| `ductor api disable` | Disable direct WebSocket API server config (beta) |
 | `ductor service install` | Install as background service |
 | `ductor service [sub]` | Service management (status/stop/logs/...) |
 

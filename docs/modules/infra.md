@@ -94,6 +94,10 @@ Windows compatibility includes broader `OSError` handling around PID liveness/te
    - Linux: `~/.cache` (or `$XDG_CACHE_HOME`)
    - macOS: `~/Library/Caches`
    - Windows: `%LOCALAPPDATA%`
+7. mount user-configured directories from `docker.mounts`:
+   - host paths are expanded/resolved and must exist as directories
+   - mounted as `rw` under `/mnt/<name>`
+   - `<name>` comes from host basename (sanitized), with `_2`, `_3` suffixes for collisions
 
 Linux adds UID/GID mapping (`--user uid:gid`) to avoid root-owned host files.
 
@@ -110,8 +114,13 @@ The `Dockerfile.sandbox` includes Chrome/Chromium runtime dependencies (libgbm, 
 | `ductor docker rebuild` | Stop bot, remove container & image (rebuilt on next start) |
 | `ductor docker enable` | Set `docker.enabled = true` in config |
 | `ductor docker disable` | Stop container, set `docker.enabled = false` in config |
+| `ductor docker mount <path>` | Add directory to `docker.mounts` (stored as resolved absolute path) |
+| `ductor docker unmount <path>` | Remove configured mount (exact/resolved/basename match) |
+| `ductor docker mounts` | List configured mounts with resolved container targets and status |
 
 `ductor docker rebuild` is safe to run while the bot runs as a service -- it stops the bot process first, the active service backend (systemd/launchd/Task Scheduler) can restart it, and the image is rebuilt during startup.
+
+Mount-management commands update `config.json` only. Restart (or rebuild) is required for new `docker run -v ...` flags to take effect.
 
 ## Version/update system
 

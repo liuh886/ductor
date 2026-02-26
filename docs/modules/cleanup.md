@@ -46,14 +46,14 @@ Execution detail: actual deletion work runs in `asyncio.to_thread(_run_cleanup, 
 `_delete_old_files(directory, max_age_days)`:
 
 - deletes files older than `max_age_days`
-- top-level files only (non-recursive)
-- ignores subdirectories
+- walks directory trees recursively
+- prunes empty subdirectories after file deletion
 - logs warnings on per-file deletion errors
 
 Current behavior implication:
 
 - Telegram/API uploads are saved under date subdirectories (`YYYY-MM-DD/`),
-- because cleanup is non-recursive, those subdirectory files are currently not deleted by this observer.
+- those nested files are eligible for cleanup once they pass retention age.
 
 ## Wiring
 

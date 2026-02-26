@@ -130,14 +130,28 @@ Docker CLI shortcuts:
 ductor docker enable
 ductor docker disable
 ductor docker rebuild
+ductor docker mount /path/to/project
+ductor docker unmount /path/to/project
+ductor docker mounts
 ```
 
 - `enable` / `disable` toggles `docker.enabled` in `config.json` (restart bot afterwards).
 - `rebuild` stops the bot, removes container + image, and forces fresh build on next start.
+- `mount` / `unmount` manage `docker.mounts` entries.
+- mounts are available in-container under `/mnt/<name>` (basename-based mapping with collision suffixes).
+- run `ductor docker mounts` to inspect effective mapping and broken paths.
 
 ## Direct API server (optional)
 
-Enable in config:
+Preferred enable path:
+
+```bash
+ductor api enable
+```
+
+This writes/updates the `api` block in `config.json` and generates a token if missing.
+
+Manual config equivalent:
 
 ```json
 {
@@ -159,7 +173,7 @@ Notes:
   - health: `GET /health`
   - file download: `GET /files?path=...` (Bearer token)
   - file upload: `POST /upload` (Bearer token, multipart)
-- default API session maps to first `allowed_user_ids` entry; clients can override `chat_id` in auth payload.
+- default API session uses `api.chat_id` when `>0`, else first `allowed_user_ids` entry (fallback `1`); clients can override `chat_id` in auth payload.
 - recommended deployment is a private network (for example Tailscale).
 
 ## Background service

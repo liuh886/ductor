@@ -14,7 +14,7 @@ ductor routes chat input to official provider CLIs (`claude`, `codex`, `gemini`)
 8. `docs/modules/files.md` -- shared file parsing/storage/prompt helpers.
 9. `docs/modules/cli.md` -- provider wrappers, stream parsing, process control.
 10. `docs/modules/workspace.md` -- `~/.ductor` seeding, rule deployment/sync, runtime notices.
-11. Remaining module docs (`session`, `cron`, `webhook`, `heartbeat`, `cleanup`, `infra`, `supervisor`, `security`, `logging`, `skill_system`).
+11. Remaining module docs (`background`, `session`, `cron`, `webhook`, `heartbeat`, `cleanup`, `infra`, `supervisor`, `security`, `logging`, `skill_system`).
 
 ## System in 60 Seconds
 
@@ -23,13 +23,14 @@ ductor routes chat input to official provider CLIs (`claude`, `codex`, `gemini`)
 - `ductor_bot/files/`: shared file tag parsing, MIME detection/classification, storage naming, transport-agnostic media prompt builder.
 - `ductor_bot/orchestrator/`: command dispatch, directives/hooks, normal + heartbeat flows, observer/server wiring.
 - `ductor_bot/cli/`: Claude/Codex/Gemini wrappers, stream-event normalization, process registry, auth detection, model caches.
+- `ductor_bot/background/`: on-demand `/bg` task execution and async result delivery.
 - `ductor_bot/session/`: per-chat session lifecycle with provider-isolated buckets in `sessions.json`.
 - `ductor_bot/cron/`: in-process scheduler for `cron_jobs.json` with task overrides, quiet hours, dependency queue.
 - `ductor_bot/webhook/`: HTTP ingress (`/hooks/{hook_id}`) with `bearer`/`hmac`, `wake`/`cron_task`, and shared dependency queue.
 - `ductor_bot/heartbeat/`: periodic proactive checks in active sessions.
-- `ductor_bot/cleanup/`: daily retention cleanup for top-level files in `telegram_files`, `output_to_user`, and `api_files`.
+- `ductor_bot/cleanup/`: daily recursive retention cleanup for `telegram_files`, `output_to_user`, and `api_files` (plus empty-dir pruning).
 - `ductor_bot/workspace/`: path resolution, home seeding from `_home_defaults`, RULES variant deployment, rule sync, skill sync.
-- `ductor_bot/infra/`: PID lock, restart/update sentinels, Docker manager, service backends (Linux/macOS/Windows), updater/version checks.
+- `ductor_bot/infra/`: PID lock, restart/update sentinels, Docker manager (incl. optional user mounts), service backends (Linux/macOS/Windows), updater/version checks.
 
 Runtime behavior note:
 
@@ -45,6 +46,7 @@ Runtime behavior note:
 - Module docs:
   - [setup_wizard](modules/setup_wizard.md)
   - [bot](modules/bot.md)
+  - [background](modules/background.md)
   - [api](modules/api.md)
   - [files](modules/files.md)
   - [cli](modules/cli.md)

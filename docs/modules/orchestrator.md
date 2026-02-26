@@ -12,11 +12,15 @@ Central routing layer between ingress transports (Telegram + optional API server
 - `hooks.py`: hook registry + `MAINMEMORY_REMINDER`
 - `model_selector.py`: interactive model/provider switch wizard (`ms:*`)
 - `cron_selector.py`: interactive cron toggles (`crn:*`)
-- API server integration points in `core.py`: `_start_api_server()`, `_api_server`, shutdown stop path
+- API server integration points in `core.py`: `_start_api_server()`, `_api_stop`, shutdown stop path
 
 ## Startup (`Orchestrator.create`)
 
-1. `init_workspace(paths)`
+Workspace precondition:
+
+- `~/.ductor` seeding and `init_workspace(...)` are handled upstream by `load_config()` in `__main__.py`.
+
+1. resolve paths from `ductor_home`
 2. set `DUCTOR_HOME`
 3. optional Docker setup (`DockerManager.setup`)
 4. if Docker active: re-sync skills in copy mode (`docker_active=True`)
@@ -26,7 +30,7 @@ Central routing layer between ingress transports (Telegram + optional API server
 8. start model caches (`_init_model_caches`):
    - `GeminiCacheObserver` (`gemini_models.json`) with refresh callback to `set_gemini_models`
    - `CodexCacheObserver` (`codex_models.json`)
-9. construct `CronObserver` + `WebhookObserver` (heartbeat/cleanup already constructed in `__init__`)
+9. construct `BackgroundObserver`, `CronObserver`, `WebhookObserver` (heartbeat/cleanup already constructed in `__init__`)
 10. start `CronObserver`, `HeartbeatObserver`, `WebhookObserver`, `CleanupObserver`
 11. if `config.api.enabled`: start `ApiServer` via `_start_api_server`
 12. start rule sync watcher (`watch_rule_files`)
@@ -150,6 +154,13 @@ Callback namespace: `crn:`
 - supports paging, refresh, per-job toggle, bulk all-on/all-off
 - toggles persist in `CronManager` and call `CronObserver.reschedule_now()`
 
+## Background task wiring (`/bg`)
+
+- `submit_background_task(...)` resolves current execution config and submits to `BackgroundObserver`
+- `active_background_tasks(...)` powers `/status` visibility for running tasks
+- `abort(chat_id)` kills active CLI processes and cancels chat-scoped background tasks
+- result delivery is delegated via `set_bg_result_handler(...)` to bot layer callbacks
+
 ## Webhook wiring
 
 `Orchestrator` only wires handlers; wake execution remains in bot layer:
@@ -164,7 +175,7 @@ This keeps wake dispatch behind the same per-chat lock as normal messages.
 `_start_api_server()` in `core.py`:
 
 1. auto-generates `api.token` when empty and persists it to `config.json`
-2. computes default API `chat_id` from first `allowed_user_ids` entry (fallback `1`)
+2. computes default API `chat_id` from `config.api.chat_id` (`>0`) or first `allowed_user_ids` entry (fallback `1`)
 3. constructs `ApiServer(config.api, default_chat_id=...)`
 4. wires callbacks:
    - message streaming -> `handle_message_streaming`
@@ -175,10 +186,7 @@ This keeps wake dispatch behind the same per-chat lock as normal messages.
    - workspace root for relative prompt paths
 6. starts aiohttp server
 
-Note:
-
-- `config.api.chat_id` exists in schema but is currently not consumed by startup wiring.
-- clients can still override session via auth payload `{"type":"auth","chat_id":...}`.
+Clients can still override session per connection via auth payload `{"type":"auth","chat_id":...}`.
 
 ## Shutdown
 
@@ -187,6 +195,6 @@ Note:
 1. stop API server if running
 2. cancel rule/skill watcher tasks
 3. `cleanup_ductor_links(paths)`
-4. stop heartbeat/webhook/cron/cleanup observers
+4. stop background/heartbeat/webhook/cron/cleanup observers
 5. stop codex and gemini cache observers
 6. teardown Docker container (if managed)

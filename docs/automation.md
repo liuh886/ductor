@@ -147,7 +147,7 @@ Default prompt asks the model to review memory + cron context and either send so
 
 Cleanup runs once per day at `cleanup.check_hour` (in `user_timezone`), checked hourly.
 
-Deletes old top-level files from:
+Deletes old files (recursive) from:
 
 - `workspace/telegram_files/`
 - `workspace/output_to_user/`
@@ -159,12 +159,7 @@ Retention windows:
 - `cleanup.output_to_user_days`
 - `cleanup.api_files_days`
 
-Cleanup is non-recursive.
-
-Current implication:
-
-- uploads are stored in dated subdirectories (`YYYY-MM-DD/`),
-- those subdirectory files are not removed by current cleanup logic.
+Cleanup also prunes empty subdirectories after deletion, so dated upload folders are removed once empty.
 
 ## Config blocks
 

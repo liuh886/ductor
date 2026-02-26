@@ -29,12 +29,13 @@ Direct API message (optional, `api.enabled=true`)
   -> WebSocket stream events + final result
 ```
 
-Also running in background:
+Background systems:
 
 - `CronObserver`: schedules `cron_jobs.json` entries.
 - `HeartbeatObserver`: periodic checks in existing sessions.
 - `WebhookObserver`: HTTP ingress for external triggers.
 - `CleanupObserver`: daily retention cleanup for workspace file directories.
+- `BackgroundObserver`: on-demand `/bg` task execution and result delivery.
 - `GeminiCacheObserver`: periodic Gemini model-cache refresh (`~/.ductor/config/gemini_models.json`).
 - `CodexCacheObserver`: periodic Codex model-cache refresh (`~/.ductor/config/codex_models.json`).
 - `UpdateObserver`: periodic PyPI version check + Telegram notification (upgradeable installs only).
@@ -57,7 +58,7 @@ Default path:
 4. Configure logging.
 5. Load/create `~/.ductor/config/config.json`.
 6. Deep-merge runtime config with `AgentConfig` defaults.
-7. Run `init_workspace(paths)`.
+7. Run `init_workspace(paths)` inside `load_config()`.
 8. Validate required config fields.
 9. Acquire PID lock (`bot.pid`, `kill_existing=True`).
 10. Start `TelegramBot`.
@@ -76,21 +77,18 @@ Default path:
 ### `Orchestrator.create()` (`ductor_bot/orchestrator/core.py`)
 
 1. Resolve paths from `ductor_home`.
-2. Run `init_workspace(paths)` in a worker thread.
-3. Set `DUCTOR_HOME` env var.
-4. If Docker enabled: run `DockerManager.setup()` and keep recovery wiring.
-5. If Docker container is active: re-sync skills in Docker-safe copy mode.
-6. Inject runtime environment notice into workspace rule files (`inject_runtime_environment`).
-7. Build orchestrator instance.
-8. Check provider auth (`check_all_auth`) and set authenticated provider set.
-9. Start `GeminiCacheObserver` (`~/.ductor/config/gemini_models.json`) and refresh runtime Gemini model registry from its callback.
-10. Start `CodexCacheObserver` (`~/.ductor/config/codex_models.json`).
-11. Create `CronObserver` and `WebhookObserver` with shared Codex cache.
-12. Start cron, heartbeat, webhook, cleanup observers.
-13. If `api.enabled=true`: start `ApiServer` (auto-generate token when empty, wire message/abort handlers and file context).
-14. Start rule-sync and skill-sync watcher tasks.
-
-`init_workspace()` is called in both `__main__.py` and `Orchestrator.create()`; behavior is idempotent.
+2. Set `DUCTOR_HOME` env var.
+3. If Docker enabled: run `DockerManager.setup()` (includes auth mounts + optional `mount_host_cache` + `docker.mounts`) and keep recovery wiring.
+4. If Docker container is active: re-sync skills in Docker-safe copy mode.
+5. Inject runtime environment notice into workspace rule files (`inject_runtime_environment`).
+6. Build orchestrator instance.
+7. Check provider auth (`check_all_auth`) and set authenticated provider set.
+8. Start `GeminiCacheObserver` (`~/.ductor/config/gemini_models.json`) and refresh runtime Gemini model registry from its callback.
+9. Start `CodexCacheObserver` (`~/.ductor/config/codex_models.json`).
+10. Create `BackgroundObserver`, `CronObserver`, and `WebhookObserver` (cron/webhook share Codex cache).
+11. Start cron, heartbeat, webhook, cleanup observers.
+12. If `api.enabled=true`: start `ApiServer` (auto-generate token when empty, wire message/abort handlers and file context).
+13. Start rule-sync and skill-sync watcher tasks.
 
 ## Message Routing
 
@@ -168,7 +166,8 @@ Per connection:
 
 1. `ws://<host>:<port>/ws` handshake.
 2. First frame must be auth JSON with token (10s timeout).
-3. Session `chat_id` defaults to first `allowed_user_ids` entry (fallback `1`); auth payload may override.
+   - `auth_ok` returns E2E server key plus provider metadata (`providers`) and active runtime fields when available.
+3. Session `chat_id` defaults to `config.api.chat_id` (`>0`) or first `allowed_user_ids` entry (fallback `1`); auth payload may override.
 4. `message` frames run under per-`chat_id` lock and use streaming callbacks (`text_delta`, `tool_activity`, `system_status`, `result`).
 5. `abort` frame or `/stop` message calls orchestrator abort path (`ProcessRegistry.kill_all`).
 
@@ -177,8 +176,6 @@ Additional HTTP endpoints:
 - `GET /health` (no auth),
 - `GET /files?path=...` (Bearer auth + `file_access` root checks),
 - `POST /upload` (Bearer auth + multipart save to `workspace/api_files/YYYY-MM-DD/`).
-
-Current wiring note: `config.api.chat_id` exists in schema but is not used by startup defaulting.
 
 ## Callback Query Flow
 
@@ -200,6 +197,14 @@ Current wiring note: `config.api.chat_id` exists in schema but is not used by st
 Lock usage is path-dependent (e.g., queue cancel and upgrade callbacks are handled without acquiring the per-chat message lock).
 
 ## Background Systems
+
+### Background (`/bg`) flow
+
+- `TelegramBot._on_bg(...)` submits one-shot work via `Orchestrator.submit_background_task(...)`.
+- `BackgroundObserver` enforces max 5 active tasks per chat and runs tasks asynchronously.
+- Execution uses shared one-shot task runner (`infra/task_runner.py`) with current provider/model config.
+- Completion callback (`TelegramBot._on_bg_result`) sends a new Telegram message (notification-friendly).
+- `/stop` abort path cancels both active CLI subprocesses and active background tasks for the chat.
 
 ### Cron flow
 
@@ -246,8 +251,8 @@ Lock usage is path-dependent (e.g., queue cancel and upgrade callbacks are handl
 
 - Hourly check in `user_timezone`.
 - Runs at most once per day when local hour equals `cleanup.check_hour`.
-- Deletes old top-level files in `workspace/telegram_files/`, `workspace/output_to_user/`, and `workspace/api_files/`.
-- Deletion is non-recursive, so files inside date subdirectories (`YYYY-MM-DD/`) are not cleaned by current logic.
+- Deletes old files recursively in `workspace/telegram_files/`, `workspace/output_to_user/`, and `workspace/api_files/`.
+- Prunes empty subdirectories after file deletion (including date-based upload folders).
 
 ## Restart & Supervisor
 

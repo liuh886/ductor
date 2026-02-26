@@ -20,7 +20,8 @@ Covers `ductor` CLI command behavior, onboarding wizard, and upgrade/restart/uni
 - `ductor upgrade`: CLI-side upgrade + restart (non-dev installs)
 - `ductor uninstall`: full removal workflow
 - `ductor service <install|status|start|stop|logs|uninstall>`: service control
-- `ductor docker <rebuild|enable|disable>`: Docker lifecycle + config toggle
+- `ductor docker <rebuild|enable|disable|mount|unmount|mounts>`: Docker lifecycle + config + mount management
+- `ductor api <enable|disable>`: API server config toggle (beta)
 - `ductor help`: command table + status hint
 
 Command resolution in `main()` takes the first matching non-flag command token.
@@ -97,6 +98,39 @@ Windows-specific behavior:
 
 - Linux: live journalctl stream
 - macOS/Windows: recent lines from `agent.log` (fallback newest `*.log`)
+
+## Docker command wiring
+
+`ductor docker ...` in `__main__.py` supports:
+
+- `enable` / `disable`: toggle `docker.enabled`
+- `rebuild`: stop bot, remove container/image, force fresh build on next start
+- `mount <path>`:
+  - validates directory and appends resolved path to `docker.mounts`
+  - skips duplicates by resolved-path comparison
+  - prints resolved container target (`/mnt/<name>`)
+- `unmount <path>`:
+  - removes mount by exact string, resolved path, or basename
+- `mounts`:
+  - lists configured mounts with `Host Path`, `Container Path`, and status
+  - unresolved/missing paths are shown as `not found`
+
+Mount changes require restart/rebuild to affect the running container.
+
+## API command wiring (beta)
+
+`ductor api ...` is handled directly in `__main__.py`:
+
+- `ductor api enable`:
+  - requires PyNaCl (`pipx inject ductor PyNaCl` or `pip install ductor[api]`)
+  - writes/updates `config.api` block
+  - sets `enabled=true`
+  - generates `api.token` when missing
+  - persists defaults (`host`, `port`, `chat_id`, `allow_public`)
+- `ductor api disable`:
+  - sets `config.api.enabled=false` (keeps existing token/settings)
+
+Both commands require a bot restart to apply runtime API server changes.
 
 ## Telegram upgrade flow
 
