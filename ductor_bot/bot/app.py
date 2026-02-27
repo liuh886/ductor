@@ -1054,11 +1054,17 @@ class TelegramBot:
     ) -> None:
         """Handle async inter-agent result: run through orchestrator, send to Telegram.
 
-        On error: broadcasts the error directly.
-        On success: acquires the chat lock, runs through the orchestrator so the
-        agent can process the result, and sends the response to Telegram.
+        On error: sends the error to the primary user.
+        On success: runs through the orchestrator (without the chat lock, so the
+        user is not blocked) and sends the response to Telegram.
         """
-        set_log_context(operation="ia-async", chat_id=0)
+        chat_id = self._config.allowed_user_ids[0] if self._config.allowed_user_ids else 0
+        if not chat_id:
+            logger.warning("No chat_id available for async interagent result delivery")
+            return
+
+        set_log_context(operation="ia-async", chat_id=chat_id)
+        roots = self._file_roots(self._orch.paths)
 
         if not result.success:
             error_text = (
@@ -1067,24 +1073,18 @@ class TelegramBot:
                 f"Error: {result.error}\n"
                 f"Request: _{result.message_preview}_"
             )
-            roots = self._file_roots(self._orch.paths)
-            await self._broadcast(error_text, allowed_roots=roots)
+            await send_rich(self._bot, chat_id, error_text, allowed_roots=roots)
             return
 
-        chat_id = self._config.allowed_user_ids[0] if self._config.allowed_user_ids else 0
-        if not chat_id:
-            logger.warning("No chat_id available for async interagent result delivery")
-            return
+        # Run the orchestrator turn WITHOUT the chat lock so user messages
+        # are not blocked while the async result is being processed.
+        response_text = await self._orch.handle_async_interagent_result(
+            result.result_text,
+            recipient=result.recipient,
+            task_id=result.task_id,
+            chat_id=chat_id,
+        )
 
-        lock = self._sequential.get_lock(chat_id)
-        async with lock:
-            response_text = await self._orch.handle_async_interagent_result(
-                result.result_text,
-                recipient=result.recipient,
-                task_id=result.task_id,
-            )
-
-        roots = self._file_roots(self._orch.paths)
         if response_text:
             await send_rich(self._bot, chat_id, response_text, allowed_roots=roots)
 

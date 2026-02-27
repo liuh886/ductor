@@ -925,12 +925,16 @@ class Orchestrator:
         *,
         recipient: str,
         task_id: str,
+        chat_id: int = 0,
     ) -> str:
         """Process an async inter-agent result by running a CLI turn.
 
         Called when another agent completes an async request we sent.
         Runs a full turn so the agent can process the result and respond
         in its Telegram chat.
+
+        ``chat_id`` should be the real Telegram user ID so the process is
+        visible in ``/stop`` and can be cancelled.
         """
         from ductor_bot.cli.types import AgentRequest
 
@@ -946,7 +950,7 @@ class Orchestrator:
 
         request = AgentRequest(
             prompt=prompt,
-            chat_id=0,
+            chat_id=chat_id,
             process_label=f"interagent-async:{recipient}",
             timeout_seconds=self._config.cli_timeout,
         )

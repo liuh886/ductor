@@ -84,6 +84,7 @@ class AgentSupervisor:
         self._stacks["main"] = main_stack
         self._health["main"] = AgentHealth(name="main")
         self._bus.register("main", main_stack)
+        self._bus.set_async_result_handler("main", main_stack.bot._on_async_interagent_result)
 
         self._tasks["main"] = asyncio.create_task(
             self._supervised_run("main", main_stack),
@@ -121,7 +122,9 @@ class AgentSupervisor:
         On crash: retry with exponential backoff (5s, 10s, 20s, 40s, 80s).
         After ``_MAX_RESTART_RETRIES`` consecutive failures, give up.
         On clean exit: return the exit code.
-        On restart request (exit code 42): rebuild stack and restart.
+        On restart request (exit code 42):
+          - Main agent: propagate EXIT_RESTART to trigger full service restart.
+          - Sub-agents: rebuild stack in-process (hot-reload).
         """
         from ductor_bot.log_context import set_log_context
 
@@ -141,7 +144,16 @@ class AgentSupervisor:
                 exit_code = await stack.run()
 
                 if exit_code == EXIT_RESTART:
-                    logger.info("Agent '%s' requested restart", name)
+                    if name == "main":
+                        # Main agent: propagate EXIT_RESTART so the process
+                        # re-execs, picking up code/config/dependency changes.
+                        logger.info("Main agent requested full service restart")
+                        health.mark_stopped()
+                        self._main_done.set()
+                        return EXIT_RESTART
+
+                    # Sub-agent: in-process hot-reload (rebuild stack only)
+                    logger.info("Sub-agent '%s' requested restart (hot-reload)", name)
                     health.mark_starting()
                     await stack.shutdown()
                     stack = await self._rebuild_stack(name, stack)
@@ -220,12 +232,6 @@ class AgentSupervisor:
             orch._supervisor = supervisor
             if stack.is_main:
                 orch.register_multiagent_commands()
-            # Wire async inter-agent result handler
-            if supervisor._bus is not None:
-                supervisor._bus.set_async_result_handler(
-                    stack.name,
-                    stack.bot._on_async_interagent_result,
-                )
             logger.debug("Supervisor reference injected into agent '%s'", stack.name)
 
         # aiogram runs startup handlers in registration order;
@@ -240,6 +246,7 @@ class AgentSupervisor:
         self._stacks[name] = new_stack
         if self._bus:
             self._bus.register(name, new_stack)
+            self._bus.set_async_result_handler(name, new_stack.bot._on_async_interagent_result)
         return new_stack
 
     # -- Sub-agent lifecycle ------------------------------------------------
@@ -271,6 +278,7 @@ class AgentSupervisor:
         self._health[name] = AgentHealth(name=name)
         if self._bus:
             self._bus.register(name, stack)
+            self._bus.set_async_result_handler(name, stack.bot._on_async_interagent_result)
 
         self._tasks[name] = asyncio.create_task(
             self._supervised_run(name, stack),
@@ -378,6 +386,12 @@ class AgentSupervisor:
         await self._watcher.stop()
         if self._shared_knowledge:
             await self._shared_knowledge.stop()
+
+        # Cancel in-flight async tasks before tearing down agents
+        if self._bus:
+            cancelled = await self._bus.cancel_all_async()
+            if cancelled:
+                logger.warning("Cancelled %d in-flight async inter-agent task(s)", cancelled)
 
         # Stop sub-agents first, then main
         sub_names = [n for n in list(self._stacks.keys()) if n != "main"]

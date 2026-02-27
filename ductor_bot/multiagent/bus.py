@@ -284,11 +284,29 @@ class InterAgentBus:
         handler = self._async_result_handlers.get(result.sender)
         if handler is None:
             logger.warning(
-                "No async result handler for sender '%s' task=%s",
+                "No async result handler for sender '%s' task=%s — result lost",
                 result.sender, result.task_id,
             )
             return
         try:
             await handler(result)
         except Exception:
-            logger.exception("Error delivering async result task=%s", result.task_id)
+            logger.exception(
+                "Error delivering async result task=%s to '%s' — result lost",
+                result.task_id, result.sender,
+            )
+
+    async def cancel_all_async(self) -> int:
+        """Cancel all in-flight async tasks. Returns the number cancelled."""
+        tasks = list(self._async_tasks.values())
+        cancelled = 0
+        for task in tasks:
+            if task.asyncio_task and not task.asyncio_task.done():
+                task.asyncio_task.cancel()
+                cancelled += 1
+                logger.warning(
+                    "Cancelled in-flight async task=%s (%s -> %s)",
+                    task.task_id, task.sender, task.recipient,
+                )
+        self._async_tasks.clear()
+        return cancelled
