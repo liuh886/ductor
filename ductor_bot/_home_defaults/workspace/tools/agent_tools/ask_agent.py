@@ -12,7 +12,11 @@ Environment variables DUCTOR_AGENT_NAME, DUCTOR_INTERAGENT_PORT, and
 DUCTOR_INTERAGENT_HOST are automatically set by the Ductor framework.
 
 Usage:
-    python3 ask_agent.py TARGET_AGENT "Your message here"
+    python3 ask_agent.py [--new] TARGET_AGENT "Your message here"
+
+Options:
+    --new   Start a fresh session, discarding any prior inter-agent context
+            with the recipient.
 """
 
 from __future__ import annotations
@@ -25,18 +29,27 @@ import urllib.error
 
 
 def main() -> None:
-    if len(sys.argv) < 3:
-        print('Usage: python3 ask_agent.py TARGET_AGENT "message"', file=sys.stderr)
+    args = sys.argv[1:]
+    new_session = False
+    if args and args[0] == "--new":
+        new_session = True
+        args = args[1:]
+
+    if len(args) < 2:
+        print('Usage: python3 ask_agent.py [--new] TARGET_AGENT "message"', file=sys.stderr)
         sys.exit(1)
 
-    target = sys.argv[1]
-    message = sys.argv[2]
+    target = args[0]
+    message = args[1]
     port = os.environ.get("DUCTOR_INTERAGENT_PORT", "8799")
     host = os.environ.get("DUCTOR_INTERAGENT_HOST", "127.0.0.1")
     sender = os.environ.get("DUCTOR_AGENT_NAME", "unknown")
 
     url = f"http://{host}:{port}/interagent/send"
-    payload = json.dumps({"from": sender, "to": target, "message": message}).encode()
+    body: dict[str, object] = {"from": sender, "to": target, "message": message}
+    if new_session:
+        body["new_session"] = True
+    payload = json.dumps(body).encode()
 
     req = urllib.request.Request(
         url,
