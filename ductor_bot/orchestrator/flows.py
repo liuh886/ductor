@@ -66,6 +66,10 @@ async def _prepare_normal(
         if mainmemory.strip():
             append_prompt = mainmemory
 
+        roster = _build_agent_roster(orch)
+        if roster:
+            append_prompt = f"{append_prompt}\n\n{roster}" if append_prompt else roster
+
     hook_ctx = HookContext(
         chat_id=chat_id,
         message_count=session.message_count,
@@ -365,6 +369,41 @@ def _finish_normal(
         text=text,
         stream_fallback=response.stream_fallback,
     )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic agent roster
+# ---------------------------------------------------------------------------
+
+
+def _build_agent_roster(orch: Orchestrator) -> str:
+    """Build a dynamic agent roster string from the supervisor's bus.
+
+    Returns empty string if no supervisor or only one agent is online.
+    """
+    supervisor = getattr(orch, "_supervisor", None)
+    if supervisor is None:
+        return ""
+
+    bus = getattr(supervisor, "_bus", None) or getattr(supervisor, "bus", None)
+    if bus is None:
+        return ""
+
+    agents = bus.list_agents()
+    if not agents or len(agents) <= 1:
+        return ""
+
+    own_name = orch._cli_service._config.agent_name
+    peers = [a for a in agents if a != own_name]
+
+    lines = [
+        "## Active Agent Roster",
+        f"Your name: `{own_name}`",
+        f"Other agents online: {', '.join(f'`{a}`' for a in peers)}",
+        "",
+        "Use `ask_agent.py` (sync) or `ask_agent_async.py` (async) to communicate.",
+    ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

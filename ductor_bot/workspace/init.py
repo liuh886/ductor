@@ -43,7 +43,11 @@ _ZONE2_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
 # Directories where ALL .py files are Zone 2 (framework-managed).
 # User-owned scripts should go in tools/user_tools/ (Zone 3).
 # Paths are relative to home_defaults root (include workspace/ prefix).
-_ZONE2_PY_DIRS = frozenset({"workspace/tools/cron_tools", "workspace/tools/webhook_tools"})
+_ZONE2_PY_DIRS = frozenset({
+    "workspace/tools/cron_tools",
+    "workspace/tools/webhook_tools",
+    "workspace/tools/agent_tools",
+})
 
 # Rule templates are deployed separately by RulesSelector
 _SKIP_FILES = frozenset(
@@ -271,6 +275,7 @@ _REQUIRED_DIRS = (
     "workspace/tools/cron_tools",
     "workspace/tools/telegram_tools",
     "workspace/tools/webhook_tools",
+    "workspace/tools/agent_tools",
     "workspace/output_to_user",
     "workspace/telegram_files",
     "workspace/skills",
@@ -341,25 +346,92 @@ _HOST_NOTICE = """
 - Ask before touching anything outside `workspace/`.
 """
 
+# ---------------------------------------------------------------------------
+# Multi-Agent identity injection
+# ---------------------------------------------------------------------------
 
-def inject_runtime_environment(paths: DuctorPaths, *, docker_container: str) -> None:
-    """Append a runtime environment section to workspace rule files.
+_IDENTITY_MAIN = """
+
+---
+
+## Multi-Agent Identity
+
+**You are the MAIN agent (`{name}`).**
+
+- You are the primary agent and coordinator in a multi-agent system.
+- You can create, manage, and communicate with sub-agents.
+- Sub-agents each have their own Telegram bot, workspace, and memory.
+
+### Communication Tools
+
+- **Synchronous**: `python3 tools/agent_tools/ask_agent.py TARGET "message"` — blocks until response
+- **Asynchronous**: `python3 tools/agent_tools/ask_agent_async.py TARGET "message"` — returns immediately, response delivered via Telegram
+- **List agents**: `python3 tools/agent_tools/list_agents.py`
+- **Shared knowledge**: `python3 tools/agent_tools/edit_shared_knowledge.py`
+
+Use async communication for tasks that may take more than a few seconds.
+"""
+
+_IDENTITY_SUB = """
+
+---
+
+## Multi-Agent Identity
+
+**You are agent `{name}` (sub-agent).**
+
+- You are a specialized sub-agent in a multi-agent system.
+- The main agent coordinates the overall system.
+- You have your own workspace, memory, and Telegram bot.
+
+### Communication Tools
+
+- **Synchronous**: `python3 tools/agent_tools/ask_agent.py TARGET "message"` — blocks until response
+- **Asynchronous**: `python3 tools/agent_tools/ask_agent_async.py TARGET "message"` — returns immediately, response delivered via Telegram
+
+When another agent sends you a message, you'll see it wrapped in `[INTER-AGENT MESSAGE]` markers.
+When you receive an async response, it will be wrapped in `[ASYNC INTER-AGENT RESPONSE]` markers.
+Respond directly and concisely to inter-agent requests.
+"""
+
+
+def _build_identity_notice(agent_name: str) -> str:
+    """Build the identity section for rule files."""
+    if agent_name == "main":
+        return _IDENTITY_MAIN.format(name=agent_name)
+    return _IDENTITY_SUB.format(name=agent_name)
+
+
+def inject_runtime_environment(
+    paths: DuctorPaths,
+    *,
+    docker_container: str,
+    agent_name: str = "main",
+) -> None:
+    """Append agent identity and runtime environment sections to workspace rule files.
 
     Called once after workspace init when the Docker state is known.
     """
-    notice = _DOCKER_NOTICE.format(container=docker_container) if docker_container else _HOST_NOTICE
+    env_notice = (
+        _DOCKER_NOTICE.format(container=docker_container)
+        if docker_container
+        else _HOST_NOTICE
+    )
+    identity_notice = _build_identity_notice(agent_name)
+
     for name in _RULE_FILE_NAMES:
         target = paths.workspace / name
         if not target.exists():
             continue
         content = target.read_text(encoding="utf-8")
         # Avoid duplicate injection on restart without workspace re-init
-        if "## Runtime Environment" in content:
+        if "## Multi-Agent Identity" in content or "## Runtime Environment" in content:
             continue
-        _write_atomic(target, content + notice)
+        _write_atomic(target, content + identity_notice + env_notice)
     logger.info(
-        "Runtime environment injected: %s",
+        "Runtime environment injected: %s agent=%s",
         "docker" if docker_container else "host",
+        agent_name,
     )
 
 

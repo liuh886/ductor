@@ -18,6 +18,7 @@ from aiogram.types import BotCommand, FSInputFile, ReplyParameters
 
 from ductor_bot.background import BackgroundResult
 from ductor_bot.bot.buttons import extract_buttons_for_session
+from ductor_bot.multiagent.bus import AsyncInterAgentResult
 from ductor_bot.bot.file_browser import (
     file_browser_start,
     handle_file_browser_callback,
@@ -49,7 +50,7 @@ from ductor_bot.bot.welcome import (
     is_welcome_callback,
     resolve_welcome_callback,
 )
-from ductor_bot.commands import BOT_COMMANDS as _COMMAND_DEFS
+from ductor_bot.commands import BOT_COMMANDS as _COMMAND_DEFS, MULTIAGENT_COMMANDS as _MA_DEFS
 from ductor_bot.config import AgentConfig
 from ductor_bot.files.allowed_roots import resolve_allowed_roots
 from ductor_bot.infra.restart import EXIT_RESTART, consume_restart_marker, consume_restart_sentinel
@@ -80,8 +81,9 @@ TypingContext = _TypingContext
 send_files_from_text = _send_files_from_text
 
 _BOT_COMMANDS = [BotCommand(command=cmd, description=desc) for cmd, desc in _COMMAND_DEFS]
+_MA_BOT_COMMANDS = [BotCommand(command=cmd, description=desc) for cmd, desc in _MA_DEFS]
 
-_CMD_DESC: dict[str, str] = dict(_COMMAND_DEFS)
+_CMD_DESC: dict[str, str] = {**dict(_COMMAND_DEFS), **dict(_MA_DEFS)}
 
 
 def _help_line(command: str) -> str:
@@ -133,8 +135,9 @@ async def _cancel_task(task: asyncio.Task[None] | None) -> None:
 class TelegramBot:
     """Telegram frontend. All logic lives in the Orchestrator."""
 
-    def __init__(self, config: AgentConfig) -> None:
+    def __init__(self, config: AgentConfig, *, agent_name: str = "main") -> None:
         self._config = config
+        self._agent_name = agent_name
         self._orchestrator: Orchestrator | None = None
 
         self._bot = Bot(
@@ -184,7 +187,9 @@ class TelegramBot:
     async def _on_startup(self) -> None:
         from ductor_bot.orchestrator.core import Orchestrator
 
-        self._orchestrator = await Orchestrator.create(self._config)
+        self._orchestrator = await Orchestrator.create(
+            self._config, agent_name=self._agent_name,
+        )
 
         me = await self._bot.get_me()
         self._bot_id = me.id
@@ -242,7 +247,10 @@ class TelegramBot:
         r.message(Command("session"))(self._on_session)
         r.message(Command("sessions"))(self._on_sessions)
         r.message(Command("showfiles"))(self._on_showfiles)
-        for cmd in ("status", "memory", "model", "cron", "diagnose", "upgrade"):
+        base_cmds = ["status", "memory", "model", "cron", "diagnose", "upgrade"]
+        if self._agent_name == "main":
+            base_cmds += ["agents", "agent_start", "agent_stop", "agent_restart"]
+        for cmd in base_cmds:
             r.message(Command(cmd))(self._on_command)
         r.message()(self._on_message)
         r.callback_query()(self._on_callback_query)
@@ -1048,6 +1056,46 @@ class TelegramBot:
         await send_rich(self._bot, chat_id, text, allowed_roots=self._file_roots(self._orch.paths))
         logger.info("Heartbeat delivered")
 
+    async def _on_async_interagent_result(
+        self,
+        result: AsyncInterAgentResult,
+    ) -> None:
+        """Handle async inter-agent result: run through orchestrator, send to Telegram.
+
+        On error: sends the error to the primary user.
+        On success: runs through the orchestrator (without the chat lock, so the
+        user is not blocked) and sends the response to Telegram.
+        """
+        chat_id = self._config.allowed_user_ids[0] if self._config.allowed_user_ids else 0
+        if not chat_id:
+            logger.warning("No chat_id available for async interagent result delivery")
+            return
+
+        set_log_context(operation="ia-async", chat_id=chat_id)
+        roots = self._file_roots(self._orch.paths)
+
+        if not result.success:
+            error_text = (
+                f"**Inter-Agent Request Failed**\n\n"
+                f"Agent: `{result.recipient}`\n"
+                f"Error: {result.error}\n"
+                f"Request: _{result.message_preview}_"
+            )
+            await send_rich(self._bot, chat_id, error_text, allowed_roots=roots)
+            return
+
+        # Run the orchestrator turn WITHOUT the chat lock so user messages
+        # are not blocked while the async result is being processed.
+        response_text = await self._orch.handle_async_interagent_result(
+            result.result_text,
+            recipient=result.recipient,
+            task_id=result.task_id,
+            chat_id=chat_id,
+        )
+
+        if response_text:
+            await send_rich(self._bot, chat_id, response_text, allowed_roots=roots)
+
     async def _handle_webhook_wake(self, chat_id: int, prompt: str) -> str | None:
         """Process webhook wake prompt through the normal message pipeline.
 
@@ -1232,12 +1280,13 @@ class TelegramBot:
         )
 
     async def _sync_commands(self) -> None:
+        desired = _BOT_COMMANDS + _MA_BOT_COMMANDS if self._agent_name == "main" else _BOT_COMMANDS
         current = await self._bot.get_my_commands()
         current_set = {(c.command, c.description) for c in current}
-        desired_set = {(c.command, c.description) for c in _BOT_COMMANDS}
+        desired_set = {(c.command, c.description) for c in desired}
         if current_set != desired_set:
-            await self._bot.set_my_commands(_BOT_COMMANDS)
-            logger.info("Updated %d bot commands", len(_BOT_COMMANDS))
+            await self._bot.set_my_commands(desired)
+            logger.info("Updated %d bot commands", len(desired))
 
     async def _watch_restart_marker(self) -> None:
         """Poll for restart-requested marker file."""

@@ -13,6 +13,7 @@ import logging
 from contextvars import ContextVar
 
 # Cross-cutting context propagated through asyncio tasks.
+ctx_agent_name: ContextVar[str | None] = ContextVar("ctx_agent_name", default=None)
 ctx_chat_id: ContextVar[int | None] = ContextVar("ctx_chat_id", default=None)
 ctx_session_id: ContextVar[str | None] = ContextVar("ctx_session_id", default=None)
 ctx_operation: ContextVar[str | None] = ContextVar("ctx_operation", default=None)
@@ -22,10 +23,13 @@ class ContextFilter(logging.Filter):
     """Inject ContextVar values into every LogRecord as ``record.ctx``."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        agent = ctx_agent_name.get(None)
         chat = ctx_chat_id.get(None)
         sid = ctx_session_id.get(None)
         op = ctx_operation.get(None)
         parts: list[str] = []
+        if agent:
+            parts.append(agent)
         if op:
             parts.append(op)
         if chat is not None:
@@ -38,6 +42,7 @@ class ContextFilter(logging.Filter):
 
 def set_log_context(
     *,
+    agent_name: str | None = None,
     operation: str | None = None,
     chat_id: int | None = None,
     session_id: str | None = None,
@@ -47,6 +52,8 @@ def set_log_context(
     Values propagate to all coroutines called within the same task.
     Each ``asyncio.create_task()`` copies the current context automatically.
     """
+    if agent_name is not None:
+        ctx_agent_name.set(agent_name)
     if operation is not None:
         ctx_operation.set(operation)
     if chat_id is not None:

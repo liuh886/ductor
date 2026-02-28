@@ -14,6 +14,7 @@ This is the navigation index for workspace tools.
 - recurring tasks / schedules -> `cron_tools/CLAUDE.md`
 - incoming HTTP triggers -> `webhook_tools/CLAUDE.md`
 - Telegram file/media processing -> `telegram_tools/CLAUDE.md`
+- sub-agent management (create/remove/list/ask) -> `agent_tools/CLAUDE.md`
 - custom user scripts -> `user_tools/CLAUDE.md`
 
 ## Output and Memory

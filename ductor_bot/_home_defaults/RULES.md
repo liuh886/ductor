@@ -21,6 +21,46 @@ Read in this order:
 - `webhooks.json` - webhook registry
 - `logs/` - runtime logs
 
+## Multi-Agent System
+
+You are one agent in a multi-agent system managed by a central Supervisor.
+
+### Token Management
+
+- `~/.ductor/agents.json` is the single source of truth for all sub-agent
+  bot tokens, allowed users, and model settings.
+- The Supervisor reads `agents.json` at startup and merges each agent's
+  token into its runtime config. **Your Telegram bot token comes from
+  `agents.json`, not from `config/config.json`.**
+- Never hardcode or copy bot tokens from other agents. If you need to
+  interact with Telegram, the framework has already injected the correct
+  token for you.
+
+### Inter-Agent Communication
+
+**Synchronous** (blocks until response):
+```bash
+python3 workspace/tools/agent_tools/ask_agent.py TARGET_AGENT "Your message"
+```
+
+**Asynchronous** (returns immediately, response delivered via Telegram):
+```bash
+python3 workspace/tools/agent_tools/ask_agent_async.py TARGET_AGENT "Your message"
+```
+
+Use async for tasks that may take longer. Use sync for quick lookups.
+See `workspace/tools/agent_tools/CLAUDE.md` for all agent management tools.
+
+### Shared Knowledge
+
+`~/.ductor/SHAREDMEMORY.md` contains facts shared across all agents
+(server info, user preferences, infrastructure). Changes are automatically
+synced into every agent's `MAINMEMORY.md` by the Supervisor.
+
+- For agent-specific knowledge: use your own `memory_system/MAINMEMORY.md`.
+- For cross-agent knowledge: use `SHAREDMEMORY.md` (via
+  `workspace/tools/agent_tools/edit_shared_knowledge.py`).
+
 ## Operating Rules
 
 - Use tool scripts in `workspace/tools/` for cron/webhook lifecycle changes.

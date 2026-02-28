@@ -32,6 +32,19 @@ At the start of new sessions (especially personal or ongoing work), read `MAINME
 - Use consistent Markdown sections.
 - Merge duplicates and remove stale facts.
 
+## Shared Knowledge (SHAREDMEMORY.md)
+
+When you learn something relevant to ALL agents (server facts, user preferences,
+infrastructure changes, shared conventions), update shared knowledge instead of
+only your own MAINMEMORY.md:
+
+```bash
+python3 tools/agent_tools/edit_shared_knowledge.py --append "New shared fact"
+```
+
+The Supervisor automatically syncs SHAREDMEMORY.md into every agent's MAINMEMORY.md.
+Agent-specific knowledge (project details, personal context) stays in your own memory.
+
 ## Cleanup Rules
 
 - If user says data is wrong or should be forgotten, remove/update immediately.

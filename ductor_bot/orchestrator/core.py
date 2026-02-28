@@ -121,6 +121,8 @@ class Orchestrator:
         paths: DuctorPaths,
         *,
         docker_container: str = "",
+        agent_name: str = "main",
+        interagent_port: int = 8799,
     ) -> None:
         self._config = config
         self._paths: DuctorPaths = paths
@@ -146,6 +148,8 @@ class Orchestrator:
                 claude_cli_parameters=tuple(config.cli_parameters.claude),
                 codex_cli_parameters=tuple(config.cli_parameters.codex),
                 gemini_cli_parameters=tuple(config.cli_parameters.gemini),
+                agent_name=agent_name,
+                interagent_port=interagent_port,
             ),
             models=self._models,
             available_providers=frozenset(),
@@ -173,6 +177,7 @@ class Orchestrator:
         self._gemini_api_key_mode: bool | None = None
         self._hook_registry = MessageHookRegistry()
         self._hook_registry.register(MAINMEMORY_REMINDER)
+        self._supervisor: object | None = None  # Set by AgentSupervisor after creation
         self._command_registry = CommandRegistry()
         self._register_commands()
         self._config_reloader: ConfigReloader | None = None
@@ -183,14 +188,19 @@ class Orchestrator:
         return self._paths
 
     @classmethod
-    async def create(cls, config: AgentConfig) -> Orchestrator:
+    async def create(
+        cls, config: AgentConfig, *, agent_name: str = "main",
+    ) -> Orchestrator:
         """Async factory: build Orchestrator.
 
         Workspace must already be initialized by the caller (``__main__.load_config``).
         """
         paths = resolve_paths(ductor_home=config.ductor_home)
 
-        os.environ["DUCTOR_HOME"] = str(paths.ductor_home)
+        # Only set the process-wide env var for the main agent to avoid
+        # race conditions in multi-agent mode (sub-agents use per-subprocess env).
+        if agent_name == "main":
+            os.environ["DUCTOR_HOME"] = str(paths.ductor_home)
 
         docker_container = ""
         docker_mgr: DockerManager | None = None
@@ -206,10 +216,13 @@ class Orchestrator:
             await asyncio.to_thread(_docker_skill_resync, paths)
 
         await asyncio.to_thread(
-            inject_runtime_environment, paths, docker_container=docker_container
+            inject_runtime_environment,
+            paths,
+            docker_container=docker_container,
+            agent_name=agent_name,
         )
 
-        orch = cls(config, paths, docker_container=docker_container)
+        orch = cls(config, paths, docker_container=docker_container, agent_name=agent_name)
         orch._docker = docker_mgr
 
         from ductor_bot.cli.auth import AuthStatus, check_all_auth
@@ -489,6 +502,28 @@ class Orchestrator:
         reg.register_async("/diagnose", cmd_diagnose)
         reg.register_async("/upgrade", cmd_upgrade)
         reg.register_async("/sessions", cmd_sessions)
+
+    def register_multiagent_commands(self) -> None:
+        """Register /agents, /agent_start, /agent_stop, /agent_restart commands.
+
+        Called by the AgentSupervisor after setting ``_supervisor``.
+        """
+        from ductor_bot.multiagent.commands import (
+            cmd_agent_restart,
+            cmd_agent_start,
+            cmd_agent_stop,
+            cmd_agents,
+        )
+
+        reg = self._command_registry
+        reg.register_async("/agents", cmd_agents)
+        reg.register_async("/agent_start", cmd_agent_start)
+        reg.register_async("/agent_start ", cmd_agent_start)
+        reg.register_async("/agent_stop", cmd_agent_stop)
+        reg.register_async("/agent_stop ", cmd_agent_stop)
+        reg.register_async("/agent_restart", cmd_agent_restart)
+        reg.register_async("/agent_restart ", cmd_agent_restart)
+        logger.info("Multi-agent commands registered")
 
     async def reset_session(self, chat_id: int) -> None:
         """Reset the session for a given chat."""
@@ -853,6 +888,84 @@ class Orchestrator:
         if self._gemini_cache_observer:
             await self._gemini_cache_observer.stop()
             self._gemini_cache_observer = None
+
+    # -- Inter-agent communication ------------------------------------------
+
+    async def handle_interagent_message(self, sender: str, message: str) -> str:
+        """Process a message from another agent via the InterAgentBus.
+
+        Runs a one-shot CLI turn (no session resume) with the message wrapped
+        in inter-agent context markers.
+        """
+        from ductor_bot.cli.types import AgentRequest
+
+        own_name = self._cli_service._config.agent_name
+        prompt = (
+            f"[INTER-AGENT MESSAGE from '{sender}' to '{own_name}']\n"
+            f"{message}\n"
+            f"[END INTER-AGENT MESSAGE]\n\n"
+            f"You are agent '{own_name}'. Respond to this inter-agent request "
+            f"from '{sender}'. Be direct and concise."
+        )
+
+        request = AgentRequest(
+            prompt=prompt,
+            chat_id=0,
+            process_label=f"interagent:{sender}",
+            timeout_seconds=self._config.cli_timeout,
+        )
+
+        try:
+            response = await self._cli_service.execute(request)
+            return response.result if response else ""
+        except Exception:
+            logger.exception("Inter-agent message handling failed (from=%s)", sender)
+            return f"Error processing inter-agent message from '{sender}'"
+
+    async def handle_async_interagent_result(
+        self,
+        result_text: str,
+        *,
+        recipient: str,
+        task_id: str,
+        chat_id: int = 0,
+    ) -> str:
+        """Process an async inter-agent result by running a CLI turn.
+
+        Called when another agent completes an async request we sent.
+        Runs a full turn so the agent can process the result and respond
+        in its Telegram chat.
+
+        ``chat_id`` should be the real Telegram user ID so the process is
+        visible in ``/stop`` and can be cancelled.
+        """
+        from ductor_bot.cli.types import AgentRequest
+
+        own_name = self._cli_service._config.agent_name
+        prompt = (
+            f"[ASYNC INTER-AGENT RESPONSE from '{recipient}' (task {task_id})]\n"
+            f"{result_text}\n"
+            f"[END ASYNC INTER-AGENT RESPONSE]\n\n"
+            f"You are agent '{own_name}'. Process this response from agent "
+            f"'{recipient}' and communicate the relevant results to the user "
+            f"in your Telegram chat."
+        )
+
+        request = AgentRequest(
+            prompt=prompt,
+            chat_id=chat_id,
+            process_label=f"interagent-async:{recipient}",
+            timeout_seconds=self._config.cli_timeout,
+        )
+
+        try:
+            response = await self._cli_service.execute(request)
+            return response.result if response else ""
+        except Exception:
+            logger.exception(
+                "Async inter-agent result handling failed (from=%s)", recipient,
+            )
+            return f"Error processing async result from '{recipient}'"
 
     async def shutdown(self) -> None:
         """Cleanup on bot shutdown."""

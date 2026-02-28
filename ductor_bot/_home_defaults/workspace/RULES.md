@@ -56,6 +56,7 @@ Use `tools/CLAUDE.md` as the index, then open the matching subfolder docs:
 - `tools/cron_tools/CLAUDE.md`
 - `tools/webhook_tools/CLAUDE.md`
 - `tools/telegram_tools/CLAUDE.md`
+- `tools/agent_tools/CLAUDE.md`
 - `tools/user_tools/CLAUDE.md`
 
 ## Skills
