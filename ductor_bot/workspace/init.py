@@ -385,11 +385,18 @@ Python tool commands to the user — those are for YOU to use internally.
 
 - `python3 tools/agent_tools/ask_agent.py TARGET "message"` — sync, blocks
 - `python3 tools/agent_tools/ask_agent_async.py TARGET "message"` — async
+- Add `--new` before TARGET to start a fresh session (discard prior context)
 - `python3 tools/agent_tools/list_agents.py`
 - `python3 tools/agent_tools/edit_shared_knowledge.py`
 
 Responses from these tools always come back to YOU, never to the sub-agent's chat.
 Use async for tasks that may take more than a few seconds.
+
+When you delegate a task asynchronously, the sub-agent processes it in a \
+Named Session called `ia-{name}`. The user can continue that session \
+in the sub-agent's Telegram chat via `@ia-{name} <message>`. When \
+reporting results to the user, mention this session name so they know \
+how to follow up directly with the sub-agent.
 """
 
 _IDENTITY_SUB = """
@@ -408,13 +415,26 @@ _IDENTITY_SUB = """
 
 - **Synchronous**: `python3 tools/agent_tools/ask_agent.py TARGET "message"` — blocks until response, answer returned to you
 - **Asynchronous**: `python3 tools/agent_tools/ask_agent_async.py TARGET "message"` — returns immediately, answer delivered back to YOUR chat when ready
+- **Fresh session**: Add `--new` before the target to discard prior context: `ask_agent_async.py --new TARGET "message"`
 
 **Important**: Responses always come back to the calling agent, never to \
 a different chat. There is no way to send answers to another agent's \
 Telegram chat via these tools.
 
-When another agent sends you a message, you'll see it wrapped in `[INTER-AGENT MESSAGE]` markers.
-Respond directly and concisely to inter-agent requests.
+### Inter-Agent Named Sessions
+
+When another agent sends you a message, it runs in a **Named Session** \
+called `ia-{{sender}}` (e.g. `ia-main`). These sessions:
+
+- Preserve context across multiple messages from the same sender agent
+- Run in the background, independent of your direct Telegram chat
+- Are visible to the user via `/sessions` and can be continued \
+manually with `@ia-{{sender}} <message>` in your Telegram chat
+
+When you receive an `[INTER-AGENT MESSAGE]` marker, respond directly \
+and concisely. If the user asks about running tasks or background \
+sessions, check `/sessions` or `named_sessions.json` for active \
+inter-agent sessions.
 """
 
 

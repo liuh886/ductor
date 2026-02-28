@@ -91,6 +91,33 @@ python3 tools/agent_tools/ask_agent_async.py "agent-name" "Complex request that 
 Use async for code generation, analysis, research, or anything that may
 take more than a few seconds. Use sync for quick lookups.
 
+### Starting a fresh session (`--new`)
+
+By default, follow-up messages to the same agent resume the existing
+inter-agent session (context is preserved). To start a completely new
+task with no prior context, use the `--new` flag:
+
+```bash
+python3 tools/agent_tools/ask_agent_async.py --new "agent-name" "Brand new task"
+python3 tools/agent_tools/ask_agent.py --new "agent-name" "Brand new question"
+```
+
+### Named Sessions for inter-agent work
+
+Each inter-agent conversation creates a **Named Session** on the recipient
+agent called `ia-{sender}` (e.g. if `main` sends to `codex`, the session
+is `ia-main` on codex).
+
+These sessions:
+- Persist across messages and survive bot restarts
+- Run in the background, independent of the recipient's direct Telegram chat
+- Can be continued by the user directly in the recipient's Telegram chat
+  via `@ia-{sender} <message>` (e.g. `@ia-main tell me more`)
+- Are visible in the recipient's `/sessions` list
+
+When reporting async results to the user, mention the session name so they
+can follow up directly with the sub-agent if needed.
+
 ## Shared Knowledge
 
 `SHAREDMEMORY.md` contains knowledge shared across all agents. Changes are
