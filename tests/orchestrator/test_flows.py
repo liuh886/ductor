@@ -116,7 +116,8 @@ async def test_normal_timeout_preserves_session(orch: Orchestrator) -> None:
     object.__setattr__(orch._process_registry, "kill_all", AsyncMock(return_value=0))
 
     result = await normal(orch, SessionKey(chat_id=1), "Hello")
-    assert "Session Error" in result.text
+    assert "Timeout" in result.text
+    assert "session has been preserved" in result.text
     assert mock_execute.call_count == 1
 
 

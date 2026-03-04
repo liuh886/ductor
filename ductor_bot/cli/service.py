@@ -19,6 +19,7 @@ from ductor_bot.cli.stream_events import (
     CompactBoundaryEvent,
     ResultEvent,
     StreamEvent,
+    SystemInitEvent,
     SystemStatusEvent,
     ThinkingEvent,
     ToolUseEvent,
@@ -45,9 +46,13 @@ class _StreamCallbacks:
         self._on_text = on_text
         self._on_tool = on_tool
         self._on_status = on_status
+        self.init_session_id: str | None = None
 
     async def dispatch(self, event: StreamEvent) -> tuple[str, ResultEvent | None]:
         """Handle one event. Returns (accumulated_text_chunk, result_or_none)."""
+        if isinstance(event, SystemInitEvent) and event.session_id:
+            self.init_session_id = event.session_id
+            return "", None
         if isinstance(event, AssistantTextDelta) and event.text:
             if self._on_text is not None:
                 await self._on_text(event.text)
@@ -213,17 +218,28 @@ class CLIService:
                 request,
                 accumulated_text,
                 stream_error=stream_error,
+                init_session_id=callbacks.init_session_id,
             )
 
+        # Carry forward session_id from SystemInitEvent when the ResultEvent
+        # lacks one (e.g. timeout kill before final event).
+        if not result_event.session_id and callbacks.init_session_id:
+            result_event.session_id = callbacks.init_session_id
+
+        # Detect timeout marker from executor.
+        timed_out = (result_event.result or "").startswith("__TIMEOUT__")
+
         logger.info(
-            "CLI streaming completed label=%s fallback=%s",
+            "CLI streaming completed label=%s fallback=%s timed_out=%s",
             request.process_label,
             stream_error,
+            timed_out,
         )
         cli_resp = CLIResponse(
             session_id=result_event.session_id,
-            result=result_event.result or accumulated_text,
+            result="" if timed_out else (result_event.result or accumulated_text),
             is_error=result_event.is_error,
+            timed_out=timed_out,
             returncode=result_event.returncode,
             duration_ms=result_event.duration_ms,
             duration_api_ms=result_event.duration_api_ms,
@@ -240,13 +256,15 @@ class CLIService:
         accumulated_text: str,
         *,
         stream_error: bool,
+        init_session_id: str | None = None,
     ) -> AgentResponse:
         """Handle failed or incomplete streaming: use accumulated text or retry."""
         was_aborted = self._process_registry.was_aborted(request.chat_id)
         logger.info(
-            "Stream fallback: aborted=%s accumulated=%d",
+            "Stream fallback: aborted=%s accumulated=%d init_sid=%s",
             was_aborted,
             len(accumulated_text),
+            (init_session_id or "?")[:8],
         )
 
         if was_aborted:
@@ -257,7 +275,7 @@ class CLIService:
                 "Stream completed without ResultEvent, using %d chars",
                 len(accumulated_text),
             )
-            return AgentResponse(result=accumulated_text)
+            return AgentResponse(result=accumulated_text, session_id=init_session_id)
 
         logger.warning(
             "Streaming failed error=%s accumulated=%d chars, retrying non-streaming",

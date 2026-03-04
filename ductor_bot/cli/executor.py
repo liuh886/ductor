@@ -151,8 +151,13 @@ async def run_streaming_subprocess(
     except TimeoutError:
         force_kill_process_tree(process.pid)
         await process.wait()
-        logger.warning("%s stream timed out after %.0fs", provider_label, spec.timeout_seconds)
-        yield ResultEvent(type="result", result="", is_error=True)
+        timeout_s = spec.timeout_seconds or 0
+        logger.warning("%s stream timed out after %.0fs", provider_label, timeout_s)
+        yield ResultEvent(
+            type="result",
+            result=f"__TIMEOUT__{int(timeout_s)}",
+            is_error=True,
+        )
         return
     finally:
         await _cancel_drain(stderr_drain)

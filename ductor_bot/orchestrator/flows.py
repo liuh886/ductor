@@ -19,7 +19,7 @@ from ductor_bot.log_context import set_log_context
 from ductor_bot.orchestrator.hooks import HookContext
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.session import SessionData, SessionKey
-from ductor_bot.text.response_format import session_error_text
+from ductor_bot.text.response_format import session_error_text, timeout_error_text
 from ductor_bot.workspace.loader import read_mainmemory
 
 if TYPE_CHECKING:
@@ -153,6 +153,37 @@ async def _reset_on_error(
     return OrchestratorResult(
         text=session_error_text(model_name, cli_detail),
     )
+
+
+async def _handle_timeout(
+    orch: Orchestrator,
+    key: SessionKey,
+    session: SessionData,
+    response: AgentResponse,
+    request: AgentRequest,
+) -> OrchestratorResult:
+    """Preserve session after timeout and return a clear user-facing message.
+
+    Unlike ``_reset_on_error``, this persists the session_id from the response
+    so that the next user message can ``--resume`` the timed-out session.
+    """
+    model_name, _provider_name = _request_target(orch, request)
+    await orch._process_registry.kill_all(key.chat_id)
+
+    # Persist the session_id captured from SystemInitEvent so resume works.
+    if response.session_id and response.session_id != session.session_id:
+        logger.info(
+            "Timeout: preserving session_id %s for resume",
+            response.session_id[:8],
+        )
+        session.session_id = response.session_id
+    await orch._sessions.update_session(
+        session, cost_usd=response.cost_usd, tokens=response.total_tokens
+    )
+
+    timeout_s = request.timeout_seconds or 0
+    logger.warning("Session timed out after %.0fs model=%s", timeout_s, model_name)
+    return OrchestratorResult(text=timeout_error_text(model_name, timeout_s))
 
 
 _SIGKILL_USER_MSG = "Execution was interrupted. Please send the same request again."
@@ -320,6 +351,8 @@ async def normal(
         if orch._process_registry.was_aborted(key.chat_id):
             logger.info("Normal flow aborted by user")
             return OrchestratorResult(text="")
+        if response.timed_out:
+            return await _handle_timeout(orch, key, session, response, request)
         if response.is_error:
             if _is_sigkill(response):
                 logger.warning("recovery.sigkill chat=%s action=user-retry", key.chat_id)
@@ -378,6 +411,8 @@ async def normal_streaming(
         if orch._process_registry.was_aborted(key.chat_id):
             logger.info("Streaming flow aborted by user")
             return OrchestratorResult(text="")
+        if response.timed_out:
+            return await _handle_timeout(orch, key, session, response, request)
         if response.is_error:
             if _is_sigkill(response):
                 logger.warning("recovery.sigkill chat=%s action=user-retry", key.chat_id)
