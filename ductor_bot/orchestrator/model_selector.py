@@ -224,7 +224,10 @@ async def switch_model(
 
     Shared by ``/model <name>`` text command and the wizard callbacks.
     """
-    old = orch._config.model
+    is_topic = key.topic_id is not None
+    active_session = await orch._sessions.get_active(key)
+
+    old = active_session.model if is_topic and active_session else orch._config.model
     same_model = old == model_id
     effort_only = same_model and reasoning_effort is not None
 
@@ -234,8 +237,6 @@ async def switch_model(
     old_provider = orch._models.provider_for(old)
     new_provider = orch._models.provider_for(model_id)
     provider_changed = old_provider != new_provider
-
-    active_session = await orch._sessions.get_active(key)
     resume_session_id, resume_message_count = _resume_state_for_provider(
         active_session,
         new_provider,
@@ -250,30 +251,34 @@ async def switch_model(
                 model=model_id,
             )
 
-    orch._config.model = model_id
-    orch._cli_service.update_default_model(model_id)
-    if provider_changed:
-        orch._config.provider = new_provider
+    if not is_topic:
+        # Global config: update only from main chat / DM (not from topics).
+        orch._config.model = model_id
+        orch._cli_service.update_default_model(model_id)
+        if provider_changed:
+            orch._config.provider = new_provider
 
-    updates: dict[str, object] = {"model": model_id, "provider": orch._config.provider}
+        updates: dict[str, object] = {"model": model_id, "provider": orch._config.provider}
 
-    if reasoning_effort is not None:
-        orch._config.reasoning_effort = reasoning_effort
-        orch._cli_service.update_reasoning_effort(reasoning_effort)
-        updates["reasoning_effort"] = reasoning_effort
+        if reasoning_effort is not None:
+            orch._config.reasoning_effort = reasoning_effort
+            orch._cli_service.update_reasoning_effort(reasoning_effort)
+            updates["reasoning_effort"] = reasoning_effort
 
-    await update_config_file_async(orch.paths.config_path, **updates)
+        await update_config_file_async(orch.paths.config_path, **updates)
 
-    # Sub-agent: also sync model/provider/effort to agents.json so the
-    # registry stays current and survives restarts without merge hacks.
-    if orch.paths.ductor_home.parent.name == "agents":
-        agents_path = orch.paths.ductor_home.parent.parent / "agents.json"
-        agent_name = orch._cli_service._config.agent_name
-        registry_updates = dict(updates)
-        # Only Codex uses reasoning_effort — remove it when switching away
-        if new_provider != "codex" and "reasoning_effort" not in registry_updates:
-            registry_updates["reasoning_effort"] = None
-        await asyncio.to_thread(update_agent_fields, agents_path, agent_name, **registry_updates)
+        # Sub-agent: also sync model/provider/effort to agents.json so the
+        # registry stays current and survives restarts without merge hacks.
+        if orch.paths.ductor_home.parent.name == "agents":
+            agents_path = orch.paths.ductor_home.parent.parent / "agents.json"
+            agent_name = orch._cli_service._config.agent_name
+            registry_updates = dict(updates)
+            # Only Codex uses reasoning_effort — remove it when switching away
+            if new_provider != "codex" and "reasoning_effort" not in registry_updates:
+                registry_updates["reasoning_effort"] = None
+            await asyncio.to_thread(
+                update_agent_fields, agents_path, agent_name, **registry_updates
+            )
 
     logger.info("Model switch model=%s provider=%s", model_id, orch._config.provider)
 
@@ -306,7 +311,6 @@ async def _status_line(orch: Orchestrator, key: SessionKey) -> str:
     else:
         model, provider = orch.resolve_runtime_target(orch._config.model)
 
-    configured = orch._config.model
     effort = orch._config.reasoning_effort
 
     if provider == "codex":
@@ -314,8 +318,10 @@ async def _status_line(orch: Orchestrator, key: SessionKey) -> str:
     else:
         current = f"**Model Selector**\nCurrent: {model}"
 
-    if model != configured:
-        current += f"\nConfigured default: {configured}"
+    if key.topic_id is None:
+        configured = orch._config.model
+        if model != configured:
+            current += f"\nConfigured default: {configured}"
 
     return current
 
