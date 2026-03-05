@@ -25,11 +25,8 @@ async def run_matrix_startup(bot: MatrixBot) -> None:
 
     bot._orchestrator = await Orchestrator.create(bot._config, agent_name=bot._agent_name)
 
-    # Wire message bus
-    bot._bus.set_injector(bot._orchestrator)
-
-    # Wire observers to bus (cron, heartbeat, webhooks, background)
-    _wire_observers(bot)
+    # Wire all observers + injector to bus in one call
+    bot._orchestrator.wire_observers_to_bus(bot._bus)
 
     # Handle restart sentinel
     restart_reason = _consume_restart_sentinel(bot)
@@ -67,59 +64,12 @@ async def run_matrix_startup(bot: MatrixBot) -> None:
         await hook()
 
 
-def _wire_observers(bot: MatrixBot) -> None:
-    """Wire orchestrator observers to the message bus."""
-    orch = bot._orchestrator
-    if orch is None:
-        return
-
-    # Background observer
-    if orch.bg_observer:
-        from ductor_bot.bus.adapters import from_background_result
-
-        async def _on_bg_result(result: object) -> None:
-            await bot._bus.submit(from_background_result(result))
-
-        orch.bg_observer.set_result_callback(_on_bg_result)
-
-    # Cron observer
-    if orch.cron_observer:
-        from ductor_bot.bus.adapters import from_cron_result
-
-        async def _on_cron_result(title: str, result: str, status: str) -> None:
-            await bot._bus.submit(from_cron_result(title, result, status))
-
-        orch.cron_observer.set_result_callback(_on_cron_result)
-
-    # Heartbeat observer
-    if orch.heartbeat_observer:
-        from ductor_bot.bus.adapters import from_heartbeat
-
-        async def _on_heartbeat(text: str) -> None:
-            chat_id = bot._default_chat_id()
-            await bot._bus.submit(from_heartbeat(chat_id, text))
-
-        orch.heartbeat_observer.set_result_callback(_on_heartbeat)
-
-    # Webhook observer
-    if orch.webhook_observer:
-        from ductor_bot.bus.adapters import from_webhook_cron_result, from_webhook_wake
-
-        async def _on_webhook_cron(result: object) -> None:
-            await bot._bus.submit(from_webhook_cron_result(result))
-
-        async def _on_webhook_wake(prompt: str) -> None:
-            chat_id = bot._default_chat_id()
-            await bot._bus.submit(from_webhook_wake(chat_id, prompt))
-
-        orch.webhook_observer.set_cron_callback(_on_webhook_cron)
-        orch.webhook_observer.set_wake_callback(_on_webhook_wake)
-
-
 def _consume_restart_sentinel(bot: MatrixBot) -> str:
     """Check and consume restart marker."""
     paths_obj = bot._orchestrator.paths if bot._orchestrator else None
     if paths_obj is None:
         return ""
-    marker = consume_restart_marker(paths_obj.ductor_home)
-    return marker or ""
+    marker_path = paths_obj.ductor_home / "restart-requested"
+    if consume_restart_marker(marker_path=marker_path):
+        return "restart marker"
+    return ""

@@ -210,8 +210,8 @@ class MatrixBot:
         if button_match:
             text = button_match
 
-        # Handle commands
-        if text.startswith("/"):
+        # Handle commands (! prefix for Matrix, / also accepted)
+        if text.startswith("!") or text.startswith("/"):
             await self._handle_command(text, room_id, chat_id, event)
             return
 
@@ -227,9 +227,9 @@ class MatrixBot:
         self, text: str, room_id: str, chat_id: int, event: object
     ) -> None:
         """Handle slash commands in Matrix."""
-        from ductor_bot.infra.restart import mark_restart_requested, EXIT_RESTART
+        from ductor_bot.infra.restart import write_restart_marker, EXIT_RESTART
 
-        cmd = text.split()[0].lower().lstrip("/")
+        cmd = text.split()[0].lower().lstrip("/!")
 
         if cmd == "stop":
             orch = self._orchestrator
@@ -249,12 +249,13 @@ class MatrixBot:
             return
 
         if cmd == "restart":
-            mark_restart_requested(
-                Path(self._config.ductor_home).expanduser(), reason="user /restart"
-            )
+            home = Path(self._config.ductor_home).expanduser()
+            write_restart_marker(marker_path=home / "restart-requested")
             self._exit_code = EXIT_RESTART
             # Stop sync loop
-            raise asyncio.CancelledError
+            if self._sync_task and not self._sync_task.done():
+                self._sync_task.cancel()
+            return
 
         if cmd == "new":
             orch = self._orchestrator
@@ -269,7 +270,7 @@ class MatrixBot:
                 room_id,
                 "**Ductor Matrix Bot**\n\n"
                 "Send any message to start.\n\n"
-                "Commands: `/new`, `/stop`, `/restart`, `/help`",
+                "Commands: `!new`, `!stop`, `!restart`, `!help`",
             )
             return
 
@@ -298,10 +299,11 @@ class MatrixBot:
             async def _on_delta(delta: str) -> None:
                 await editor.append_text(delta)
 
-            response = await orch.run_message(key, text, stream_callback=_on_delta)
-            if response:
-                # Format with buttons
-                formatted = self._button_tracker.extract_and_format(room_id, response)
+            result = await orch.handle_message_streaming(
+                key, text, on_text_delta=_on_delta,
+            )
+            if result.text:
+                formatted = self._button_tracker.extract_and_format(room_id, result.text)
                 await editor.finalize(formatted)
 
     async def _run_non_streaming(
@@ -313,10 +315,10 @@ class MatrixBot:
             return
 
         async with MatrixTypingContext(self._client, room_id):
-            response = await orch.run_message(key, text)
+            result = await orch.handle_message(key, text)
 
-        if response:
-            formatted = self._button_tracker.extract_and_format(room_id, response)
+        if result.text:
+            formatted = self._button_tracker.extract_and_format(room_id, result.text)
             await matrix_send_rich(self._client, room_id, formatted)
 
     def _is_authorized(self, room: object, event: object) -> bool:
@@ -332,11 +334,11 @@ class MatrixBot:
     # --- Room invite handling ---
 
     async def _on_invite(self, room: object, event: object) -> None:
-        """Auto-join if room is in allowed_rooms."""
+        """Auto-join if room is in allowed_rooms (or all rooms if list is empty)."""
         room_id = getattr(room, "room_id", "")
-        if room_id in self._allowed_rooms_set:
+        if not self._allowed_rooms_set or room_id in self._allowed_rooms_set:
             await self._client.join(room_id)
-            logger.info("Auto-joined allowed room: %s", room_id)
+            logger.info("Auto-joined room: %s", room_id)
 
     # --- Sync token persistence ---
 
@@ -390,7 +392,7 @@ class MatrixBot:
         """Watch for restart marker file (created by /restart command)."""
         from ductor_bot.infra.restart import EXIT_RESTART
 
-        marker = Path(self._config.ductor_home).expanduser() / ".restart_requested"
+        marker = Path(self._config.ductor_home).expanduser() / "restart-requested"
         while True:
             await asyncio.sleep(2)
             if marker.exists():
