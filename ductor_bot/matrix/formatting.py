@@ -71,7 +71,10 @@ def _convert_markdown(text: str) -> str:
             continue
 
         # Normal line with inline formatting
-        result.append(_inline_format(line))
+        if line.strip():
+            result.append(_inline_format(line) + "<br>")
+        else:
+            result.append("<br>")
 
     if in_code_block:
         result.append("</code></pre>")

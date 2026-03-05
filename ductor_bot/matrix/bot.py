@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.bus.bus import MessageBus
 from ductor_bot.bus.lock_pool import LockPool
+from ductor_bot.commands import BOT_COMMANDS, MULTIAGENT_SUB_COMMANDS
 from ductor_bot.config import AgentConfig
 from ductor_bot.files.allowed_roots import resolve_allowed_roots
+from ductor_bot.infra.version import get_current_version
 from ductor_bot.matrix.buttons import ButtonTracker
 from ductor_bot.matrix.credentials import login_or_restore
 from ductor_bot.matrix.id_map import MatrixIdMap
@@ -25,6 +27,7 @@ from ductor_bot.matrix.streaming import MatrixStreamEditor
 from ductor_bot.matrix.typing import MatrixTypingContext
 from ductor_bot.notifications import NotificationService
 from ductor_bot.session.key import SessionKey
+from ductor_bot.text.response_format import SEP, fmt
 
 if TYPE_CHECKING:
     from nio import AsyncClient
@@ -223,36 +226,55 @@ class MatrixBot:
         else:
             await self._run_non_streaming(key, text, room_id, event)
 
+    # Commands routed to the orchestrator's CommandRegistry
+    _ORCHESTRATOR_COMMANDS = frozenset({
+        "status", "model", "memory", "cron", "diagnose", "upgrade",
+        "sessions", "tasks", "agents", "agent_start", "agent_stop",
+        "agent_restart",
+    })
+
     async def _handle_command(
         self, text: str, room_id: str, chat_id: int, event: object
     ) -> None:
-        """Handle slash commands in Matrix."""
+        """Handle commands in Matrix. Supports both !cmd and /cmd prefixes."""
         from ductor_bot.infra.restart import write_restart_marker, EXIT_RESTART
 
+        # Normalize: strip prefix, extract command name
         cmd = text.split()[0].lower().lstrip("/!")
+        # Ensure text has / prefix for orchestrator compatibility
+        if text.startswith("!"):
+            text = "/" + text[1:]
+        key = SessionKey(chat_id=chat_id, topic_id=None)
+
+        # --- Transport-level commands ---
 
         if cmd == "stop":
             orch = self._orchestrator
             if orch:
-                killed = await orch.process_registry.kill_all_active()
+                killed = await orch.abort(chat_id)
                 msg = f"Stopped {killed} process(es)." if killed else "No active processes."
                 await matrix_send_rich(self._client, room_id, msg)
             return
 
         if cmd == "stop_all":
+            orch = self._orchestrator
+            killed = 0
+            if orch:
+                killed = await orch.abort(chat_id)
             if self._abort_all_callback:
-                killed = await self._abort_all_callback()
-                msg = f"Stopped {killed} process(es) across all agents." if killed else "No active processes."
-            else:
-                msg = "Multi-agent abort not available (single-agent mode)."
+                killed += await self._abort_all_callback()
+            msg = f"Stopped {killed} process(es)." if killed else "No active processes."
             await matrix_send_rich(self._client, room_id, msg)
             return
 
         if cmd == "restart":
             home = Path(self._config.ductor_home).expanduser()
             write_restart_marker(marker_path=home / "restart-requested")
+            await matrix_send_rich(
+                self._client, room_id,
+                fmt("**Restarting**", SEP, "Bot is shutting down and will be back shortly."),
+            )
             self._exit_code = EXIT_RESTART
-            # Stop sync loop
             if self._sync_task and not self._sync_task.done():
                 self._sync_task.cancel()
             return
@@ -260,26 +282,125 @@ class MatrixBot:
         if cmd == "new":
             orch = self._orchestrator
             if orch:
-                orch.end_session(SessionKey(chat_id=chat_id, topic_id=None))
-                await matrix_send_rich(self._client, room_id, "Session reset.")
+                result = await orch.handle_message(key, "/new")
+                if result and result.text:
+                    await matrix_send_rich(self._client, room_id, result.text)
             return
 
         if cmd in ("help", "start"):
+            await matrix_send_rich(self._client, room_id, self._build_help_text())
+            return
+
+        if cmd == "info":
+            version = get_current_version()
+            text_out = fmt(
+                "**ductor.dev**",
+                f"Version: `{version}`",
+                SEP,
+                "AI coding agents (Claude, Codex, Gemini) on Matrix.\n"
+                "Named sessions, persistent memory, cron jobs, webhooks, live streaming.",
+            )
+            await matrix_send_rich(self._client, room_id, text_out)
+            return
+
+        if cmd == "agent_commands":
+            lines = [
+                "The multi-agent system lets you run additional bots as "
+                "sub-agents — each with its own workspace and user list. "
+                "All agents share a single process and can communicate "
+                "via the inter-agent bus.",
+                "",
+                "**Commands**",
+                "`!agents` — list all agents and their status",
+                "`!agent_start <name>` — start a sub-agent",
+                "`!agent_stop <name>` — stop a sub-agent",
+                "`!agent_restart <name>` — restart a sub-agent",
+                "",
+                "**Setup**",
+                "Ask your agent to create a new sub-agent or edit "
+                "`agents.json` in your ductor home directory.",
+            ]
             await matrix_send_rich(
-                self._client,
-                room_id,
-                "**Ductor Matrix Bot**\n\n"
-                "Send any message to start.\n\n"
-                "Commands: `!new`, `!stop`, `!restart`, `!help`",
+                self._client, room_id,
+                fmt("**Multi-Agent System**", SEP, "\n".join(lines)),
             )
             return
 
-        # Unknown command — treat as regular message
-        key = SessionKey(chat_id=chat_id, topic_id=None)
+        if cmd == "showfiles":
+            await matrix_send_rich(
+                self._client, room_id,
+                "File browser is not yet supported in Matrix. "
+                "Use `!status` to see workspace info.",
+            )
+            return
+
+        if cmd == "session":
+            parts = text.split(None, 1)
+            if len(parts) < 2 or not parts[1].strip():
+                await matrix_send_rich(
+                    self._client, room_id,
+                    fmt(
+                        "**Background Sessions**", SEP,
+                        "`!session <prompt>` — start a background session\n"
+                        "`!sessions` — view and manage all sessions\n"
+                        "`!stop` — cancel running session",
+                    ),
+                )
+                return
+            # Session with prompt — route to orchestrator as conversation
+            if self._config.streaming.enabled:
+                await self._run_streaming(key, text, room_id, event)
+            else:
+                await self._run_non_streaming(key, text, room_id, event)
+            return
+
+        # --- Orchestrator commands ---
+
+        if cmd in self._ORCHESTRATOR_COMMANDS:
+            orch = self._orchestrator
+            if not orch:
+                return
+            result = await orch.handle_message(key, text)
+            if result and result.text:
+                out = result.text
+                # Render ButtonGrid as numbered text options for Matrix
+                if result.buttons and result.buttons.rows:
+                    labels = [btn.text for row in result.buttons.rows for btn in row]
+                    if labels:
+                        numbered = "\n".join(
+                            f"  {i + 1}. {lbl}" for i, lbl in enumerate(labels)
+                        )
+                        out = f"{out}\n\n{numbered}"
+                await matrix_send_rich(self._client, room_id, out)
+            return
+
+        # --- Unknown command → treat as regular message ---
         if self._config.streaming.enabled:
             await self._run_streaming(key, text, room_id, event)
         else:
             await self._run_non_streaming(key, text, room_id, event)
+
+    def _build_help_text(self) -> str:
+        """Build the help text showing all available commands."""
+        cmd_desc = {**dict(BOT_COMMANDS), **dict(MULTIAGENT_SUB_COMMANDS)}
+
+        def _line(c: str) -> str:
+            desc = cmd_desc.get(c, "")
+            return f"`!{c}` — {desc}" if desc else f"`!{c}`"
+
+        return fmt(
+            "**Command Reference**",
+            SEP,
+            f"**Daily**\n{_line('new')}\n{_line('stop')}\n{_line('stop_all')}\n"
+            f"{_line('model')}\n{_line('status')}\n{_line('memory')}",
+            f"**Automation**\n{_line('session')}\n{_line('tasks')}\n{_line('cron')}",
+            f"**Multi-Agent**\n{_line('agent_commands')}\n{_line('agents')}\n"
+            f"{_line('agent_start')}\n{_line('agent_stop')}\n{_line('agent_restart')}",
+            f"**Browse & Info**\n{_line('showfiles')}\n{_line('info')}\n{_line('help')}",
+            f"**Maintenance**\n{_line('diagnose')}\n{_line('upgrade')}\n{_line('restart')}",
+            SEP,
+            "Use `!` or `/` prefix. Send any message to start.",
+        )
 
     async def _run_streaming(
         self, key: SessionKey, text: str, room_id: str, event: object
