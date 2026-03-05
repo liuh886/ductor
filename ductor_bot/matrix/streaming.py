@@ -91,8 +91,9 @@ class MatrixStreamEditor:
 
         self._last_edit = now
 
-    async def finalize(self, full_text: str) -> None:
-        """Final edit with complete content."""
+    async def finalize(self, full_text: str) -> str | None:
+        """Final edit with complete content. Returns the event_id."""
         self._accumulated = full_text
         self._last_edit = 0  # force immediate edit
         await self.append_text("")
+        return self._event_id

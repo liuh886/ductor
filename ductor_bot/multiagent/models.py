@@ -38,6 +38,9 @@ class SubAgentConfig(BaseModel):
     # Matrix credentials (required when transport=matrix)
     matrix: MatrixConfig | None = None
 
+    # Group behaviour
+    group_mention_only: bool | None = None
+
     # Optional overrides — inherit from main agent if None
     provider: str | None = None
     model: str | None = None

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -50,11 +51,13 @@ class MatrixNotificationService:
     async def notify(self, chat_id: int, text: str) -> None:
         room_id = self._bot.id_map.int_to_room(chat_id)
         if room_id:
-            await matrix_send_rich(self._bot.client, room_id, text)
+            event_id = await matrix_send_rich(self._bot.client, room_id, text)
+            self._bot._track_sent_event(event_id)
 
     async def notify_all(self, text: str) -> None:
         for room_id in self._bot.config.matrix.allowed_rooms:
-            await matrix_send_rich(self._bot.client, room_id, text)
+            event_id = await matrix_send_rich(self._bot.client, room_id, text)
+            self._bot._track_sent_event(event_id)
 
 
 class MatrixBot:
@@ -96,6 +99,9 @@ class MatrixBot:
 
         # Pre-compute allowed rooms set (resolve aliases later if needed)
         self._allowed_rooms_set: set[str] = set(mx.allowed_rooms)
+
+        # Track sent event IDs for reply-to-bot detection (bounded)
+        self._sent_event_ids: deque[str] = deque(maxlen=1000)
 
     # --- BotProtocol implementation ---
 
@@ -205,6 +211,14 @@ class MatrixBot:
         if not text:
             return
 
+        # Group mention-only filter: in multi-user rooms, ignore
+        # messages not addressed to the bot via @mention or reply.
+        is_group_room = not self._is_dm_room(room)
+        if is_group_room and self._config.group_mention_only:
+            if not self._is_message_addressed(event):
+                return
+            text = self._strip_mention(text)
+
         room_id = room.room_id
         chat_id = self._id_map.room_to_int(room_id)
 
@@ -253,7 +267,7 @@ class MatrixBot:
             if orch:
                 killed = await orch.abort(chat_id)
                 msg = f"Stopped {killed} process(es)." if killed else "No active processes."
-                await matrix_send_rich(self._client, room_id, msg)
+                await self._send_rich(room_id, msg)
             return
 
         if cmd == "stop_all":
@@ -264,14 +278,14 @@ class MatrixBot:
             if self._abort_all_callback:
                 killed += await self._abort_all_callback()
             msg = f"Stopped {killed} process(es)." if killed else "No active processes."
-            await matrix_send_rich(self._client, room_id, msg)
+            await self._send_rich(room_id, msg)
             return
 
         if cmd == "restart":
             home = Path(self._config.ductor_home).expanduser()
             write_restart_marker(marker_path=home / "restart-requested")
-            await matrix_send_rich(
-                self._client, room_id,
+            await self._send_rich(
+                room_id,
                 fmt("**Restarting**", SEP, "Bot is shutting down and will be back shortly."),
             )
             self._exit_code = EXIT_RESTART
@@ -284,11 +298,11 @@ class MatrixBot:
             if orch:
                 result = await orch.handle_message(key, "/new")
                 if result and result.text:
-                    await matrix_send_rich(self._client, room_id, result.text)
+                    await self._send_rich(room_id, result.text)
             return
 
         if cmd in ("help", "start"):
-            await matrix_send_rich(self._client, room_id, self._build_help_text())
+            await self._send_rich(room_id, self._build_help_text())
             return
 
         if cmd == "info":
@@ -300,7 +314,7 @@ class MatrixBot:
                 "AI coding agents (Claude, Codex, Gemini) on Matrix.\n"
                 "Named sessions, persistent memory, cron jobs, webhooks, live streaming.",
             )
-            await matrix_send_rich(self._client, room_id, text_out)
+            await self._send_rich(room_id, text_out)
             return
 
         if cmd == "agent_commands":
@@ -320,15 +334,15 @@ class MatrixBot:
                 "Ask your agent to create a new sub-agent or edit "
                 "`agents.json` in your ductor home directory.",
             ]
-            await matrix_send_rich(
-                self._client, room_id,
+            await self._send_rich(
+                room_id,
                 fmt("**Multi-Agent System**", SEP, "\n".join(lines)),
             )
             return
 
         if cmd == "showfiles":
-            await matrix_send_rich(
-                self._client, room_id,
+            await self._send_rich(
+                room_id,
                 "File browser is not yet supported in Matrix. "
                 "Use `!status` to see workspace info.",
             )
@@ -337,8 +351,8 @@ class MatrixBot:
         if cmd == "session":
             parts = text.split(None, 1)
             if len(parts) < 2 or not parts[1].strip():
-                await matrix_send_rich(
-                    self._client, room_id,
+                await self._send_rich(
+                    room_id,
                     fmt(
                         "**Background Sessions**", SEP,
                         "`!session <prompt>` — start a background session\n"
@@ -371,7 +385,7 @@ class MatrixBot:
                             f"  {i + 1}. {lbl}" for i, lbl in enumerate(labels)
                         )
                         out = f"{out}\n\n{numbered}"
-                await matrix_send_rich(self._client, room_id, out)
+                await self._send_rich(room_id, out)
             return
 
         # --- Unknown command → treat as regular message ---
@@ -425,7 +439,8 @@ class MatrixBot:
             )
             if result.text:
                 formatted = self._button_tracker.extract_and_format(room_id, result.text)
-                await editor.finalize(formatted)
+                event_id = await editor.finalize(formatted)
+                self._track_sent_event(event_id)
 
     async def _run_non_streaming(
         self, key: SessionKey, text: str, room_id: str, event: object
@@ -440,26 +455,110 @@ class MatrixBot:
 
         if result.text:
             formatted = self._button_tracker.extract_and_format(room_id, result.text)
-            await matrix_send_rich(self._client, room_id, formatted)
+            await self._send_rich(room_id, formatted)
 
     def _is_authorized(self, room: object, event: object) -> bool:
-        """Check if the sender/room is authorized."""
+        """Check if the sender/room is authorized.
+
+        In group rooms with ``group_mention_only``, the user check is
+        bypassed — the @mention itself acts as the access gate (matching
+        Telegram behaviour).
+        """
         mx = self._config.matrix
         room_id = getattr(room, "room_id", "")
         sender = getattr(event, "sender", "")
 
         room_ok = not mx.allowed_rooms or room_id in self._allowed_rooms_set
+
+        # In group rooms with group_mention_only, skip user check
+        if self._config.group_mention_only and not self._is_dm_room(room):
+            return room_ok
+
         user_ok = not mx.allowed_users or sender in mx.allowed_users
         return room_ok and user_ok
+
+    # --- Group / mention helpers ---
+
+    @staticmethod
+    def _is_dm_room(room: object) -> bool:
+        """True if the room is a direct message (2 or fewer members).
+
+        Named rooms (with a name or canonical alias) are always treated
+        as groups, even when ``member_count`` is low — nio may not have
+        the full member list yet right after joining.
+        """
+        # Named rooms are never DMs
+        name = getattr(room, "name", None)
+        alias = getattr(room, "canonical_alias", None)
+        if name or alias:
+            return False
+        member_count = getattr(room, "member_count", 0)
+        return member_count <= 2
+
+    def _is_message_addressed(self, event: object) -> bool:
+        """True if a group message is addressed to this bot.
+
+        Checks:
+        1. Bot's Matrix user_id in plain text body
+        2. Bot's Matrix user_id in formatted_body (HTML mention pill)
+        3. Reply to a message previously sent by this bot
+        """
+        bot_user_id = self._client.user_id
+        if not bot_user_id:
+            return False
+
+        body = getattr(event, "body", "") or ""
+        formatted_body = getattr(event, "formatted_body", "") or ""
+
+        # 1+2: user_id in body or formatted_body
+        if bot_user_id in body or bot_user_id in formatted_body:
+            return True
+
+        # 3: reply to a bot message
+        source = getattr(event, "source", {})
+        content = source.get("content", {}) if isinstance(source, dict) else {}
+        relates_to = content.get("m.relates_to", {})
+        if isinstance(relates_to, dict):
+            reply_to = relates_to.get("m.in_reply_to", {})
+            if isinstance(reply_to, dict):
+                replied_id = reply_to.get("event_id")
+                if replied_id and replied_id in self._sent_event_ids:
+                    return True
+
+        return False
+
+    def _strip_mention(self, text: str) -> str:
+        """Remove the bot's Matrix user_id from *text*."""
+        bot_user_id = self._client.user_id
+        if bot_user_id and bot_user_id in text:
+            return text.replace(bot_user_id, "").strip()
+        return text
+
+    def _track_sent_event(self, event_id: str | None) -> None:
+        """Record a sent event ID for reply-to-bot detection."""
+        if event_id:
+            self._sent_event_ids.append(event_id)
+
+    async def _send_rich(self, room_id: str, text: str) -> str | None:
+        """Send a message and track the event ID for reply detection."""
+        event_id = await matrix_send_rich(self._client, room_id, text)
+        self._track_sent_event(event_id)
+        return event_id
 
     # --- Room invite handling ---
 
     async def _on_invite(self, room: object, event: object) -> None:
-        """Auto-join if room is in allowed_rooms (or all rooms if list is empty)."""
+        """Auto-join allowed rooms; reject and leave unauthorized ones."""
         room_id = getattr(room, "room_id", "")
         if not self._allowed_rooms_set or room_id in self._allowed_rooms_set:
             await self._client.join(room_id)
             logger.info("Auto-joined room: %s", room_id)
+        elif self._allowed_rooms_set:
+            # Unauthorized room — join briefly to send rejection, then leave
+            await self._client.join(room_id)
+            await self._send_rich(room_id, "This bot is not authorized for this room.")
+            await self._client.room_leave(room_id)
+            logger.info("Auto-left unauthorized room: %s", room_id)
 
     # --- Sync token persistence ---
 
@@ -526,4 +625,4 @@ class MatrixBot:
     async def broadcast(self, text: str) -> None:
         """Send a message to all allowed rooms."""
         for room_id in self._config.matrix.allowed_rooms:
-            await matrix_send_rich(self._client, room_id, text)
+            await self._send_rich(room_id, text)
