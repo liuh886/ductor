@@ -23,6 +23,7 @@ from ductor_bot.infra.version import get_current_version
 from ductor_bot.matrix.buttons import ButtonTracker
 from ductor_bot.matrix.credentials import login_or_restore
 from ductor_bot.matrix.id_map import MatrixIdMap
+from ductor_bot.matrix.sender import redact_messages as matrix_redact_messages
 from ductor_bot.matrix.sender import send_rich as matrix_send_rich
 from ductor_bot.matrix.typing import MatrixTypingContext
 from ductor_bot.notifications import NotificationService
@@ -507,8 +508,12 @@ class MatrixBot:
             return
 
         buffer = [""]
-
         segment_count = [0]
+        clean = self._config.streaming.clean_intermediate
+
+        # Per-request tracking for intermediate message cleanup.
+        pending_marker_ids: list[str] = []   # tool/system markers since last content
+        intermediate_ids: list[str] = []     # all intermediate content messages
 
         async def _on_delta(delta: str) -> None:
             buffer[0] += delta
@@ -517,9 +522,20 @@ class MatrixBot:
             """Flush buffer, send a status tag, and re-set typing indicator."""
             seg_text = buffer[0].strip()
             if seg_text:
-                await self._send_rich(room_id, buffer[0])
+                eid = await self._send_rich(room_id, buffer[0])
+                if clean and eid:
+                    intermediate_ids.append(eid)
+                    if pending_marker_ids:
+                        asyncio.ensure_future(
+                            matrix_redact_messages(
+                                self._client, room_id, pending_marker_ids[:]
+                            )
+                        )
+                        pending_marker_ids.clear()
             buffer[0] = ""
-            await self._send_rich(room_id, tag)
+            tag_eid = await self._send_rich(room_id, tag)
+            if clean and tag_eid:
+                pending_marker_ids.append(tag_eid)
             # Re-set typing indicator (sending messages clears it in Matrix)
             with contextlib.suppress(Exception):
                 await self._client.room_typing(
@@ -573,6 +589,14 @@ class MatrixBot:
             # Fallback: no deltas received but orchestrator returned text.
             formatted = self._button_tracker.extract_and_format(room_id, result.text)
             await self._send_rich(room_id, formatted)
+
+        # Clean up all intermediate messages (markers + reasoning segments).
+        if clean:
+            to_redact = pending_marker_ids + intermediate_ids
+            if to_redact:
+                asyncio.ensure_future(
+                    matrix_redact_messages(self._client, room_id, to_redact)
+                )
 
     async def _run_non_streaming(
         self, key: SessionKey, text: str, room_id: str, event: object

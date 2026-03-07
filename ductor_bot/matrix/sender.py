@@ -5,6 +5,7 @@ Handles formatted messages, file uploads, and message splitting.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import re
@@ -183,3 +184,39 @@ def _split_text(
         return [("", "")]
 
     return [markdown_to_matrix_html(chunk) for chunk in raw_chunks]
+
+
+# ---------------------------------------------------------------------------
+# Redaction helpers
+# ---------------------------------------------------------------------------
+
+
+async def redact_message(
+    client: AsyncClient,
+    room_id: str,
+    event_id: str,
+) -> bool:
+    """Redact (delete) a single message. Returns *True* on success."""
+    try:
+        resp = await client.room_redact(room_id, event_id)
+        if hasattr(resp, "event_id"):
+            return True
+        logger.debug("Redact failed for %s in %s: %s", event_id, room_id, resp)
+    except Exception:
+        logger.debug("Redact error for %s in %s", event_id, room_id, exc_info=True)
+    return False
+
+
+async def redact_messages(
+    client: AsyncClient,
+    room_id: str,
+    event_ids: list[str],
+) -> int:
+    """Redact multiple messages concurrently. Returns success count."""
+    if not event_ids:
+        return 0
+    results = await asyncio.gather(
+        *(redact_message(client, room_id, eid) for eid in event_ids),
+        return_exceptions=True,
+    )
+    return sum(1 for r in results if r is True)
