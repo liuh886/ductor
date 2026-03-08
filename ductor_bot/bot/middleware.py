@@ -59,16 +59,19 @@ MQ_PREFIX = "mq:"
 """Callback data prefix for message queue cancel buttons."""
 
 
-def is_quick_command(text: str) -> bool:
+def is_quick_command(text: str, bot_username: str | None = None) -> bool:
     """Return True if *text* is a command that can bypass the lock.
 
     Matches bare commands (``/status``), bot-mentioned commands
     (``/status@my_bot``), and commands with arguments (``/model sonnet``).
     """
-    cmd = text.strip().lower().split(None, 1)[0] if text.strip() else ""
-    if "@" in cmd:
-        cmd = cmd.split("@", 1)[0]
-    return cmd in QUICK_COMMANDS
+    cmd_part = text.strip().lower().split(None, 1)[0] if text.strip() else ""
+    if "@" in cmd_part:
+        cmd, mention = cmd_part.split("@", 1)
+        if bot_username and mention != bot_username.lower():
+            return False
+        return cmd in QUICK_COMMANDS
+    return cmd_part in QUICK_COMMANDS
 
 
 RejectedCallback = Callable[[int, str, str], None]
@@ -76,6 +79,7 @@ RejectedCallback = Callable[[int, str, str], None]
 
 
 class AuthMiddleware(BaseMiddleware):
+# ... rest of file (omitted for brevity in replacement, but I will use full text if needed)
     """Outer middleware: silently drop messages from unauthorized users/groups.
 
     In private chats only ``allowed_user_ids`` is checked.
@@ -164,6 +168,7 @@ class SequentialMiddleware(BaseMiddleware):
         self._pending: dict[int, list[_QueueEntry]] = {}
         self._entry_counter = 0
         self._bot: Bot | None = None
+        self._bot_username: str | None = None
 
     @property
     def lock_pool(self) -> LockPool:
@@ -173,6 +178,10 @@ class SequentialMiddleware(BaseMiddleware):
     def set_bot(self, bot: Bot) -> None:
         """Inject the Bot instance used to send/edit queue indicator messages."""
         self._bot = bot
+
+    def set_bot_username(self, bot_username: str | None) -> None:
+        """Set the bot username for command mention filtering."""
+        self._bot_username = bot_username
 
     def set_abort_handler(self, handler: AbortHandler) -> None:
         """Register a callback invoked for abort triggers *before* the lock."""
@@ -285,7 +294,7 @@ class SequentialMiddleware(BaseMiddleware):
         if text and await self._check_abort(chat_id, text, event):
             return None
 
-        if self._quick_command_handler and text and is_quick_command(text):
+        if self._quick_command_handler and text and is_quick_command(text, self._bot_username):
             logger.debug("Quick command bypass cmd=%s", text)
             handled = await self._quick_command_handler(chat_id, event)
             if handled:

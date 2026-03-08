@@ -53,7 +53,7 @@ def is_message_addressed(
     """True if *message* in a group chat is addressed to the bot.
 
     Works for both media (caption entities) and plain text (text entities).
-    Checks reply-to-bot and @botname mentions.
+    Checks reply-to-bot, @botname mentions, and /cmd@botname commands.
     """
     if (
         message.reply_to_message
@@ -62,29 +62,53 @@ def is_message_addressed(
         and message.reply_to_message.from_user.id == bot_id
     ):
         return True
+
+    tag = f"@{bot_username}" if bot_username else None
+
     # Check caption entities (media messages)
-    if (
-        message.caption_entities
-        and message.caption
-        and bot_username
-        and any(
-            e.type == "mention"
-            and message.caption[e.offset : e.offset + e.length].lower() == f"@{bot_username}"
-            for e in message.caption_entities
-        )
-    ):
-        return True
+    if message.caption_entities and message.caption and tag:
+        for e in message.caption_entities:
+            if e.type == "mention":
+                if message.caption[e.offset : e.offset + e.length].lower() == tag:
+                    return True
+            if e.type == "bot_command":
+                if message.caption[e.offset : e.offset + e.length].lower().endswith(tag):
+                    return True
+
     # Check text entities (plain text messages)
-    return bool(
-        message.entities
-        and message.text
-        and bot_username
-        and any(
-            e.type == "mention"
-            and message.text[e.offset : e.offset + e.length].lower() == f"@{bot_username}"
-            for e in message.entities
-        )
-    )
+    if message.entities and message.text and tag:
+        for e in message.entities:
+            if e.type == "mention":
+                if message.text[e.offset : e.offset + e.length].lower() == tag:
+                    return True
+            if e.type == "bot_command":
+                if message.text[e.offset : e.offset + e.length].lower().endswith(tag):
+                    return True
+
+    return False
+
+
+def is_command_for_others(
+    message: Message,
+    bot_username: str | None,
+) -> bool:
+    """True if *message* is a command explicitly addressed to another bot.
+
+    Checks for /cmd@otherbot patterns in entities/caption_entities.
+    """
+    if not bot_username:
+        return False
+
+    tag = f"@{bot_username.lower()}"
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+
+    for e in entities:
+        if e.type == "bot_command":
+            cmd = text[e.offset : e.offset + e.length].lower()
+            if "@" in cmd and not cmd.endswith(tag):
+                return True
+    return False
 
 
 def is_media_addressed(
