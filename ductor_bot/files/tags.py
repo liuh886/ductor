@@ -88,6 +88,22 @@ def _normalize_windows_tag_path(value: str) -> str:
     """Normalize Windows drive-letter path variants from file tags."""
     path = value.replace("\\", "/")
 
+    # Handle Docker-on-Windows mount mapping.
+    if path.startswith("/ductor/"):
+        import os
+        # 1. First, try DUCTOR_HOME environment variable
+        h = str(Path.home() / ".ductor")
+        dh = os.environ.get("DUCTOR_HOME", h).replace("\\", "/")
+        
+        # 2. Heuristic: if DUCTOR_HOME doesn't exist, try to infer from package location.
+        # This is very robust on Windows host where we run the bot.
+        if not Path(dh).exists():
+            pkg_root = Path(__file__).parent.parent.parent.parent # ~/.ductor/ductor_bot/...
+            if pkg_root.name == ".ductor" or (pkg_root.parent.name == ".ductor"):
+                 dh = str(pkg_root if pkg_root.name == ".ductor" else pkg_root.parent).replace("\\", "/")
+
+        return path.replace("/ductor/", f"{dh}/", 1)
+
     # file://C:/Users/... -> //C:/Users/... after URI parsing
     if len(path) >= 4 and path.startswith("//") and path[2].isalpha() and path[3] == ":":
         path = path[2:]
