@@ -934,6 +934,36 @@ class TestDockerIntegration:
         assert call_args.kwargs.get("cwd") is None
         assert resp.result == "docker OK"
 
+    async def test_send_with_docker_container_keeps_stdin_open_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows Codex-in-Docker must use `docker exec -i` so stdin prompts arrive."""
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", True)
+        cli = CodexCLI(
+            CLIConfig(
+                provider="codex",
+                model="gpt-5.2-codex",
+                docker_container="sandbox-container",
+            )
+        )
+        jsonl = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "docker OK"},
+            }
+        )
+        proc = _make_process_mock(stdout=jsonl.encode(), returncode=0)
+
+        with patch("ductor_bot.cli.executor.asyncio") as mock_asyncio:
+            mock_asyncio.timeout = asyncio.timeout
+            mock_asyncio.subprocess = asyncio.subprocess
+            mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
+
+            await cli.send("hello")
+
+        exec_cmd = mock_asyncio.create_subprocess_exec.call_args.args
+        assert exec_cmd[:3] == ("docker", "exec", "-i")
+
 
 # ---------------------------------------------------------------------------
 # Parametrized edge cases

@@ -148,6 +148,14 @@ class CodexCLI(BaseCLI):
             cmd.append(final_prompt)
         return cmd
 
+    def _docker_wrap(self, cmd: list[str]) -> tuple[list[str], str | None]:
+        """Keep stdin open for Dockerized Codex on Windows so prompts reach the CLI."""
+        return docker_wrap(
+            cmd,
+            self._config,
+            interactive=_IS_WINDOWS,
+        )
+
     async def send(
         self,
         prompt: str,
@@ -160,7 +168,7 @@ class CodexCLI(BaseCLI):
         if continue_session:
             logger.debug("continue_session is not supported by Codex CLI, ignoring")
         cmd = self._build_command(prompt, resume_session, json_output=True)
-        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        exec_cmd, use_cwd = self._docker_wrap(cmd)
         _log_cmd(exec_cmd)
         return await run_oneshot_subprocess(
             config=self._config,
@@ -179,7 +187,7 @@ class CodexCLI(BaseCLI):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Send a prompt and yield stream events as they arrive."""
         cmd = self._build_command(prompt, resume_session, json_output=True)
-        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
+        exec_cmd, use_cwd = self._docker_wrap(cmd)
         _log_cmd(exec_cmd, streaming=True)
 
         state = _StreamState()
