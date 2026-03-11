@@ -63,9 +63,16 @@ async def create_orchestrator(
         paths,
         docker_container=docker_container,
         agent_name=agent_name,
+        transport=config.transport,
     )
 
-    orch = Orchestrator(config, paths, docker_container=docker_container, agent_name=agent_name)
+    orch = Orchestrator(
+        config,
+        paths,
+        docker_container=docker_container,
+        agent_name=agent_name,
+        interagent_port=config.interagent_port,
+    )
     orch._docker = docker_mgr
 
     from ductor_bot.cli.auth import AuthStatus, check_all_auth

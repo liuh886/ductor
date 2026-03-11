@@ -11,7 +11,8 @@ Daily retention cleanup for workspace file-drop directories.
 
 Targets retention cleanup in:
 
-- `~/.ductor/workspace/telegram_files/`
+- `~/.ductor/workspace/telegram_files/` (Telegram media)
+- `~/.ductor/workspace/matrix_files/` (Matrix media)
 - `~/.ductor/workspace/output_to_user/`
 - `~/.ductor/workspace/api_files/`
 
@@ -20,7 +21,7 @@ Targets retention cleanup in:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | `bool` | `true` | Master toggle |
-| `telegram_files_days` | `int` | `30` | Retention for `telegram_files` |
+| `media_files_days` | `int` | `30` | Retention for media files (telegram + matrix) |
 | `output_to_user_days` | `int` | `30` | Retention for `output_to_user` |
 | `api_files_days` | `int` | `30` | Retention for `api_files` |
 | `check_hour` | `int` | `3` | Local hour (`user_timezone`) when cleanup is eligible |

@@ -88,6 +88,7 @@ class ProviderSessionData:
 class SessionData:
     """Active session state with provider-isolated IDs and metrics."""
 
+    transport: str
     chat_id: int
     topic_id: int | None
     topic_name: str | None
@@ -99,6 +100,7 @@ class SessionData:
 
     def __init__(self, chat_id: int, **raw: object) -> None:
         """Create session data from current or legacy serialized fields."""
+        transport = _as_str(raw.pop("transport", "tg"), default="tg")
         topic_id = _as_optional_int(raw.pop("topic_id", None))
         topic_name = _as_optional_str(raw.pop("topic_name", None))
         provider = _as_str(raw.pop("provider", "claude"), default="claude")
@@ -113,6 +115,7 @@ class SessionData:
         total_cost_usd = _as_optional_float(raw.pop("total_cost_usd", None))
         total_tokens = _as_optional_int(raw.pop("total_tokens", None))
 
+        self.transport = transport
         self.chat_id = chat_id
         self.topic_id = topic_id
         self.topic_name = topic_name
@@ -142,7 +145,11 @@ class SessionData:
     @property
     def session_key(self) -> SessionKey:
         """Composite key for this session."""
-        return SessionKey(chat_id=self.chat_id, topic_id=self.topic_id)
+        return SessionKey(
+            transport=self.transport,
+            chat_id=self.chat_id,
+            topic_id=self.topic_id,
+        )
 
     @property
     def session_id(self) -> str:
@@ -322,6 +329,7 @@ class SessionManager:
 
         new = SessionData(
             chat_id=key.chat_id,
+            transport=key.transport,
             topic_id=key.topic_id,
             topic_name=topic_name,
             provider=prov,
@@ -361,6 +369,7 @@ class SessionManager:
         model_name = model or self._config.model
         new = SessionData(
             chat_id=key.chat_id,
+            transport=key.transport,
             topic_id=key.topic_id,
             provider=prov,
             model=model_name,
@@ -384,6 +393,7 @@ class SessionManager:
         if current is None:
             current = SessionData(
                 chat_id=key.chat_id,
+                transport=key.transport,
                 topic_id=key.topic_id,
                 provider=provider,
                 model=model,
@@ -515,14 +525,25 @@ class SessionManager:
             session.model = current.model
 
     def _raw_entry_missing_model(self, storage_key: str) -> bool:
-        """Return True when raw session JSON exists but has no ``model`` key."""
+        """Return True when raw session JSON exists but has no ``model`` key.
+
+        Handles both new prefixed keys (``"tg:1"``) and legacy unprefixed
+        keys (``"1"``) that may still be on disk before the first save
+        migrates them.
+        """
         if not self._path.exists():
             return False
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return False
+        # Try the canonical key first, then fall back to legacy variants.
         entry = data.get(storage_key)
+        if entry is None:
+            for raw_key in data:
+                if SessionKey.parse(raw_key).storage_key == storage_key:
+                    entry = data[raw_key]
+                    break
         return isinstance(entry, dict) and "model" not in entry
 
     def _is_fresh(self, session: SessionData) -> bool:
@@ -570,7 +591,12 @@ class SessionManager:
         return True
 
     async def _load(self) -> dict[str, SessionData]:
-        """Load sessions from JSON file."""
+        """Load sessions from JSON file.
+
+        Handles migration from legacy unprefixed keys (``"12345"``,
+        ``"12345:99"``) to transport-prefixed keys (``"tg:12345"``,
+        ``"tg:12345:99"``).
+        """
 
         def _read() -> dict[str, SessionData]:
             data = load_json(self._path)
@@ -581,7 +607,13 @@ class SessionManager:
                 parsed = SessionKey.parse(k)
                 if "topic_id" not in v and parsed.topic_id is not None:
                     v["topic_id"] = parsed.topic_id
-                result[k] = SessionData(**v)
+                # Propagate transport from the parsed key into the dict
+                # so SessionData picks it up (legacy entries lack it).
+                if "transport" not in v:
+                    v["transport"] = parsed.transport
+                sd = SessionData(**v)
+                # Re-key under the canonical prefixed storage key
+                result[parsed.storage_key] = sd
             return result
 
         return await asyncio.to_thread(_read)

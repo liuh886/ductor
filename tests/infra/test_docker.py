@@ -128,6 +128,7 @@ class TestDockerManager:
         with (
             patch("shutil.which", return_value="/usr/bin/docker"),
             patch.object(mgr, "_exec", side_effect=mock_exec),
+            patch.object(mgr, "_exec_stream", side_effect=mock_exec),
         ):
             result = await mgr.setup()
         assert build_called

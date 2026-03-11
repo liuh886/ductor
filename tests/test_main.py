@@ -187,7 +187,6 @@ class TestRunTelegram:
         mock_supervisor = MagicMock()
         mock_supervisor.start = AsyncMock(return_value=0)
         mock_supervisor.stop_all = AsyncMock()
-        mock_supervisor.set_notification_sender = MagicMock()
 
         with (
             patch("ductor_bot.__main__.resolve_paths"),
@@ -239,6 +238,56 @@ class TestIsConfiguredExtended:
         paths = _make_paths(tmp_path)
         paths.config_path.parent.mkdir(parents=True)
         paths.config_path.write_text("{invalid json", encoding="utf-8")
+        with patch("ductor_bot.__main__.resolve_paths", return_value=paths):
+            assert _is_configured() is False
+
+
+class TestIsConfiguredMultiTransport:
+    def test_configured_multi_transport_both_valid(self, tmp_path: Path) -> None:
+        from ductor_bot.__main__ import _is_configured
+
+        paths = _make_paths(tmp_path)
+        _write_config(
+            paths,
+            {
+                "transports": ["telegram", "matrix"],
+                "telegram_token": "123:ABC",
+                "allowed_user_ids": [1],
+                "matrix": {"homeserver": "https://mx.test", "user_id": "@bot:test"},
+            },
+        )
+        with patch("ductor_bot.__main__.resolve_paths", return_value=paths):
+            assert _is_configured() is True
+
+    def test_unconfigured_multi_transport_missing_matrix(self, tmp_path: Path) -> None:
+        from ductor_bot.__main__ import _is_configured
+
+        paths = _make_paths(tmp_path)
+        _write_config(
+            paths,
+            {
+                "transports": ["telegram", "matrix"],
+                "telegram_token": "123:ABC",
+                "allowed_user_ids": [1],
+                "matrix": {},
+            },
+        )
+        with patch("ductor_bot.__main__.resolve_paths", return_value=paths):
+            assert _is_configured() is False
+
+    def test_unconfigured_multi_transport_missing_telegram(self, tmp_path: Path) -> None:
+        from ductor_bot.__main__ import _is_configured
+
+        paths = _make_paths(tmp_path)
+        _write_config(
+            paths,
+            {
+                "transports": ["telegram", "matrix"],
+                "telegram_token": "",
+                "allowed_user_ids": [],
+                "matrix": {"homeserver": "https://mx.test", "user_id": "@bot:test"},
+            },
+        )
         with patch("ductor_bot.__main__.resolve_paths", return_value=paths):
             assert _is_configured() is False
 

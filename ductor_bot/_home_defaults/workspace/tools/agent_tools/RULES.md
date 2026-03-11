@@ -5,16 +5,17 @@ Agent creation and removal are only available on the main agent.
 
 ## How users interact with sub-agents
 
-Each sub-agent is a **separate Telegram bot** with its own chat. The user has two options:
+Each sub-agent is a **separate bot** (Telegram or Matrix) with its own chat.
+The user has two options:
 
-1. **Direct chat** — The user opens the sub-agent's Telegram bot and chats
-   directly. This is the primary way to use a sub-agent.
+1. **Direct chat** — The user opens the sub-agent's bot and chats directly.
+   This is the primary way to use a sub-agent.
 2. **Delegation** — The user asks the main agent to send a task via agent tools.
    The response comes back to the main agent's chat, NOT the sub-agent's chat.
 
-**After creating a sub-agent, tell the user to open its Telegram chat to
-talk to it directly.** Do NOT show `python3 tools/...` commands to the user —
-those are internal tools for agent-to-agent communication only.
+**After creating a sub-agent, tell the user to open its chat to talk to it
+directly.** Do NOT show `python3 tools/...` commands to the user — those are
+internal tools for agent-to-agent communication only.
 
 ## Available Tools (internal, not user-facing)
 
@@ -30,7 +31,7 @@ those are internal tools for agent-to-agent communication only.
 ## How agent-to-agent communication works
 
 **The response ALWAYS comes back to the calling agent.** There is no way
-to make a sub-agent reply directly in its own Telegram chat via these tools.
+to make a sub-agent reply directly in its own chat via these tools.
 
     You (main) → send task to sub-agent → sub-agent processes → response returns to YOU
 
@@ -41,8 +42,8 @@ to make a sub-agent reply directly in its own Telegram chat via these tools.
 
 When creating a sub-agent:
 
-1. The user **must provide** a Telegram bot token (created via Telegram BotFather)
-2. Choose a descriptive lowercase name (no spaces, e.g. `finanzius`, `researcher`)
+1. Choose a descriptive lowercase name (no spaces, e.g. `finanzius`, `researcher`)
+2. Choose the transport: **Telegram** or **Matrix**
 3. Use **specific model names**, not provider names:
    - Claude: `opus`, `sonnet`, `haiku`
    - Codex: `gpt-5.3-codex`, `gpt-5.2-codex`, `gpt-5.1-codex-mini` (check `config/codex_models.json`)
@@ -54,14 +55,114 @@ When creating a sub-agent:
 **IMPORTANT:** Never use `codex` or `gemini` as model names — those are providers.
 The `--model` must be a specific model ID from the lists above.
 
+### Telegram Agent
+
+Requires a bot token from @BotFather and Telegram user IDs (integers).
+
 ```bash
 python3 tools/agent_tools/create_agent.py \
   --name "agent-name" \
   --token "BOT_TOKEN" \
   --users "USER_ID1,USER_ID2" \
-  --provider openai \
-  --model gpt-5.3-codex
+  --provider claude \
+  --model opus \
+  --description "Short agent description for the join notification"
 ```
+
+### Matrix Agent
+
+Requires a Matrix account (user ID, homeserver URL). Password is optional
+at creation time — it can be added to `agents.json` later before starting.
+
+```bash
+python3 tools/agent_tools/create_agent.py \
+  --name "matrix-agent" \
+  --transport matrix \
+  --homeserver "https://matrix.example.com" \
+  --user-id "@bot:matrix.example.com" \
+  --allowed-users "@alice:example.com,@bob:example.com" \
+  --provider claude \
+  --model opus \
+  --description "Short agent description"
+```
+
+**Matrix-specific flags:**
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--transport matrix` | Yes* | Selects Matrix transport (*auto-detected if `--homeserver` present) |
+| `--homeserver` | Yes | Homeserver URL (must be HTTPS) |
+| `--user-id` | Yes | Bot's Matrix user ID (`@localpart:domain`) |
+| `--password` | No | Account password for initial login (token saved after first login) |
+| `--allowed-users` | No | Comma-separated Matrix user IDs to allow (empty = all users) |
+| `--allowed-rooms` | No | Comma-separated room IDs (`!id:srv`) or aliases (`#name:srv`). Empty = all rooms |
+
+**Note:** `--token`/`--users` (Telegram) and `--homeserver`/`--user-id`/`--password`
+(Matrix) are mutually exclusive. The script rejects conflicting flags.
+
+**Credentials flow:** The bot needs either `password` or `access_token` in its
+config to log in. On first login with a password, the bot saves an `access_token`
+to `matrix_store/credentials.json`. After that, the password is no longer needed.
+
+### Join Notification (`--description`)
+
+**Always provide `--description`** when creating a sub-agent. This text is
+saved as `workspace/JOIN_NOTIFICATION.md` and **automatically sent + pinned**
+when the user first opens the bot chat or the bot joins a room.
+
+Write a compact message (max ~500 chars) that tells the user:
+1. What this agent does (one sentence)
+2. Key commands: `/new` (fresh context), `/stop` (cancel), `/model` (switch), `/help`
+3. How to start
+
+Example:
+```
+--description "I'm your code review assistant. Send me code or a repo link and I'll review it.
+
+**Commands**
+- /new — Fresh conversation
+- /stop — Cancel running task
+- /model — Switch AI model
+- /help — All commands
+
+Send any message to begin."
+```
+
+To update an existing agent's notification, edit
+`~/.ductor/agents/<name>/workspace/JOIN_NOTIFICATION.md` directly.
+
+## Matrix Bot Account Setup
+
+A Matrix agent needs a dedicated Matrix account. There are several ways
+to create one, depending on the homeserver setup.
+
+### Option 1: Public or Managed Homeserver
+
+Register a new account through the homeserver's web interface or via
+Element/another Matrix client. Use a descriptive username like
+`ductor-bot` or `my-assistant`.
+
+- Go to the homeserver's registration page or use Element → "Create Account"
+- Choose a username and password
+- Note down the full user ID: `@username:homeserver.domain`
+- Note down the homeserver URL: `https://homeserver.domain`
+
+### Option 2: Self-Hosted Synapse
+
+Use the built-in registration tool or the Admin API.
+
+**CLI registration:**
+```bash
+register_new_matrix_user -u botname -p password \
+  -c /path/to/homeserver.yaml http://localhost:8008
+```
+
+### After Account Creation
+
+1. You have: **homeserver URL**, **user ID** (`@bot:server`), **password**
+2. Create the agent with `create_agent.py --transport matrix ...`
+3. On first start, the bot logs in with the password and saves an access token
+4. The password is not used again after the initial login
 
 ## Inter-Agent Communication
 
@@ -82,7 +183,7 @@ python3 tools/agent_tools/ask_agent.py "agent-name" "Quick question"
 
 Use `ask_agent_async.py` for tasks that take longer. Returns immediately
 with a task_id. The sub-agent's response is delivered back to **your**
-Telegram chat (the calling agent's chat) when ready.
+chat (the calling agent's chat) when ready.
 
 ```bash
 python3 tools/agent_tools/ask_agent_async.py "agent-name" "Complex request that takes time"
@@ -110,8 +211,8 @@ is `ia-main` on codex).
 
 These sessions:
 - Persist across messages and survive bot restarts
-- Run in the background, independent of the recipient's direct Telegram chat
-- Can be continued by the user directly in the recipient's Telegram chat
+- Run in the background, independent of the recipient's direct chat
+- Can be continued by the user directly in the recipient's chat
   via `@ia-{sender} <message>` (e.g. `@ia-main tell me more`)
 - Are visible in the recipient's `/sessions` list
 
@@ -140,7 +241,7 @@ only your own MAINMEMORY.md.
 
 ## Removing Sub-Agents
 
-Removing a sub-agent stops its Telegram bot but **preserves its workspace**.
+Removing a sub-agent stops its bot but **preserves its workspace**.
 The workspace can be reused if the agent is re-created with the same name.
 
 ```bash

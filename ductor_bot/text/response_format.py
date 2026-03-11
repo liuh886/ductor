@@ -58,6 +58,21 @@ def session_error_text(model: str, cli_detail: str = "") -> str:
     return base
 
 
+TIMEOUT_ERROR_TEXT = fmt(
+    "**Timeout**",
+    SEP,
+    "[{model}] CLI was terminated after {minutes} min.\n"
+    "Your session has been preserved -- send another message to continue where it left off.\n"
+    "Use /new to start a fresh session.",
+)
+
+
+def timeout_error_text(model: str, timeout_seconds: float) -> str:
+    """Build the error message shown when the CLI times out."""
+    minutes = int(timeout_seconds / 60)
+    return TIMEOUT_ERROR_TEXT.format(model=model, minutes=minutes)
+
+
 def new_session_text(provider: str) -> str:
     """Build /new response for provider-local reset."""
     provider_label = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}.get(
@@ -107,21 +122,6 @@ def timeout_result_text(elapsed: float, configured: float) -> str:
         f"The agent timed out after {int(elapsed)}s (limit: {int(configured)}s).\n"
         "Try a shorter prompt, or ask in smaller steps.",
     )
-
-
-TIMEOUT_ERROR_TEXT = fmt(
-    "**Timeout**",
-    SEP,
-    "[{model}] CLI was terminated after {minutes} min.\n"
-    "Your session has been preserved -- send another message to continue where it left off.\n"
-    "Use /new to start a fresh session.",
-)
-
-
-def timeout_error_text(model: str, timeout_seconds: float) -> str:
-    """Build the error message shown when the CLI times out (session preserved)."""
-    minutes = int(timeout_seconds / 60)
-    return TIMEOUT_ERROR_TEXT.format(model=model, minutes=minutes)
 
 
 # -- Startup lifecycle messages --

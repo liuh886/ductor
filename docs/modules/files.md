@@ -1,6 +1,6 @@
 # files/
 
-Shared transport-agnostic file helpers used by Telegram and direct API paths.
+Shared transport-agnostic file helpers used by Telegram, Matrix, and direct API paths.
 
 ## Files
 
@@ -11,7 +11,7 @@ Shared transport-agnostic file helpers used by Telegram and direct API paths.
 
 ## Purpose
 
-Centralize file logic so Telegram and API use identical behavior for:
+Centralize file logic so Telegram, Matrix, and API use identical behavior for:
 
 - `<file:...>` parsing
 - MIME/type detection
@@ -55,11 +55,13 @@ Builds standardized `[INCOMING FILE]` prompt blocks for agent input.
 
 ## Integration points
 
-- Telegram media ingest/send: `bot/media.py`, `bot/sender.py`, `bot/app.py`
+- Telegram media ingest/send: `messenger/telegram/media.py`, `messenger/telegram/sender.py`, `messenger/telegram/app.py`
+- Matrix media ingest: `messenger/matrix/media.py`, `messenger/matrix/bot.py`
 - API upload/download and file-ref extraction: `api/server.py`
 - API startup file-context wiring: `orchestrator/lifecycle.py`
 
 ## Runtime paths
 
 - Telegram uploads: `~/.ductor/workspace/telegram_files/YYYY-MM-DD/`
+- Matrix uploads: `~/.ductor/workspace/matrix_files/YYYY-MM-DD/`
 - API uploads: `~/.ductor/workspace/api_files/YYYY-MM-DD/`

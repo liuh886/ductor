@@ -19,13 +19,14 @@ Missing values are omitted.
 
 Operation codes currently used:
 
-- `msg`: incoming Telegram message (`SequentialMiddleware`)
-- `cb`: callback query (`TelegramBot._on_callback_query`)
+- `msg`: incoming chat message (`SequentialMiddleware` / `MatrixBot`)
+- `cb`: callback query (`TelegramBot._on_callback_query` / Matrix button handler)
 - `cron`: cron execution (`CronObserver._execute_job`)
 - `hb`: heartbeat run (`HeartbeatObserver._run_for_chat`)
 - `wh`: webhook request / webhook wake dispatch
 - `api`: direct API WebSocket session/message handling (`ApiServer._session_loop`, `_route_text_message`)
 - `ia-async`: async inter-agent result processing (`TelegramBot.on_async_interagent_result`)
+- `task`: task result/question delivery paths (`TelegramBot.on_task_result`, `on_task_question`)
 
 `set_log_context()` updates the context for the current async task; child tasks inherit current context.
 

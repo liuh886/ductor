@@ -72,8 +72,20 @@ def fetch_live_health() -> dict[str, dict[str, object]]:
     """Query the internal API for live agent health. Returns empty dict on failure."""
     import urllib.request
 
+    from ductor_bot.multiagent.internal_api import _DEFAULT_PORT
+
+    paths = resolve_paths()
+    port = _DEFAULT_PORT
+    config_path = paths.config_path
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            port = int(cfg.get("interagent_port", _DEFAULT_PORT))
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+
     try:
-        req = urllib.request.Request("http://127.0.0.1:8799/interagent/health")
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/interagent/health")
         opener = urllib.request.build_opener()
         with opener.open(req, timeout=2) as resp:
             data = json.loads(resp.read())

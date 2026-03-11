@@ -76,16 +76,16 @@ class DuctorPaths:
         return self.workspace / "tools"
 
     @property
-    def user_tools_dir(self) -> Path:
-        return self.workspace / "tools" / "user_tools"
-
-    @property
     def output_to_user_dir(self) -> Path:
         return self.workspace / "output_to_user"
 
     @property
     def telegram_files_dir(self) -> Path:
         return self.workspace / "telegram_files"
+
+    @property
+    def matrix_files_dir(self) -> Path:
+        return self.workspace / "matrix_files"
 
     @property
     def api_files_dir(self) -> Path:
@@ -138,6 +138,10 @@ class DuctorPaths:
     @property
     def mainmemory_path(self) -> Path:
         return self.memory_system_dir / "MAINMEMORY.md"
+
+    @property
+    def join_notification_path(self) -> Path:
+        return self.workspace / "JOIN_NOTIFICATION.md"
 
     # -- Framework paths (bundled with package or repo root) --
 

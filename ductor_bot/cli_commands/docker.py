@@ -17,7 +17,19 @@ from ductor_bot.workspace.paths import resolve_paths
 
 _console = Console()
 
-_DOCKER_SUBCOMMANDS = frozenset({"rebuild", "enable", "disable", "mount", "unmount", "mounts"})
+_DOCKER_SUBCOMMANDS = frozenset(
+    {
+        "rebuild",
+        "enable",
+        "disable",
+        "mount",
+        "unmount",
+        "mounts",
+        "extras",
+        "extras-add",
+        "extras-remove",
+    }
+)
 
 
 def _parse_docker_subcommand(args: list[str]) -> str | None:
@@ -58,6 +70,9 @@ def print_docker_help() -> None:
     table.add_row("ductor docker mount <path>", "Mount a host directory into the sandbox")
     table.add_row("ductor docker unmount <path>", "Remove a mounted directory")
     table.add_row("ductor docker mounts", "List all mounted directories")
+    table.add_row("ductor docker extras", "List available and installed extras")
+    table.add_row("ductor docker extras-add <id>", "Add an extra package")
+    table.add_row("ductor docker extras-remove <id>", "Remove an extra package")
     _console.print(
         Panel(table, title="[bold]Docker Commands[/bold]", border_style="blue", padding=(1, 0)),
     )
@@ -315,16 +330,161 @@ def docker_list_mounts() -> None:
     _console.print(table)
 
 
-def docker_container_name() -> str:
-    """Return the configured Docker container name or default."""
+# -- extras subcommands -----------------------------------------------------
+
+
+def _docker_get_extras(data: dict[str, object]) -> list[object]:
+    """Return the ``docker.extras`` list from config, ensuring it exists."""
+    docker = data.setdefault("docker", {})
+    if not isinstance(docker, dict):
+        data["docker"] = docker = {}
+    raw = docker.get("extras")
+    if not isinstance(raw, list):
+        raw = []
+        docker["extras"] = raw
+    return raw
+
+
+def docker_extras_list() -> None:
+    """List available and selected Docker extras."""
+    from ductor_bot.infra.docker_extras import extras_for_display
+
+    result = docker_read_config()
+    selected: set[str] = set()
+    if result is not None:
+        _, data = result
+        docker = data.get("docker", {})
+        if isinstance(docker, dict):
+            raw = docker.get("extras", [])
+            if isinstance(raw, list):
+                selected = {str(e) for e in raw}
+
+    table = Table(show_header=True, box=None, padding=(0, 2))
+    table.add_column("Package", style="bold", min_width=18)
+    table.add_column("What it does", min_width=30)
+    table.add_column("ID", style="dim")
+    table.add_column("Size", style="cyan", justify="right")
+    table.add_column("Status")
+
+    for category, extras in extras_for_display():
+        table.add_row(f"[bold yellow]{category}[/bold yellow]", "", "", "", "")
+        for extra in extras:
+            status = "[green]selected[/green]" if extra.id in selected else "[dim]—[/dim]"
+            table.add_row(
+                f"  {extra.name}", extra.description, extra.id, extra.size_estimate, status
+            )
+
+    _console.print(table)
+    if selected:
+        _console.print()
+        _console.print(
+            "[dim]Run 'ductor docker rebuild' to apply selected extras to the image.[/dim]"
+        )
+    _console.print()
+    _console.print("[dim]Use 'ductor docker extras-add <id>' to add an extra.[/dim]")
+    _console.print("[dim]Use 'ductor docker extras-remove <id>' to remove an extra.[/dim]")
+
+
+def docker_extras_add(args: list[str]) -> None:
+    """Add an extra to the Docker config."""
+    from ductor_bot.infra.docker_extras import DOCKER_EXTRAS_BY_ID
+
+    positionals = [a for a in args if not a.startswith("-")]
+    extra_id = positionals[2] if len(positionals) >= 3 else None
+
+    if not extra_id:
+        _console.print("[bold red]Usage: ductor docker extras-add <id>[/bold red]")
+        _console.print("[dim]Run 'ductor docker extras' to see available IDs.[/dim]")
+        return
+
+    if extra_id not in DOCKER_EXTRAS_BY_ID:
+        _console.print(f"[bold red]Unknown extra: {extra_id}[/bold red]")
+        _console.print("[dim]Run 'ductor docker extras' to see available IDs.[/dim]")
+        return
+
     result = docker_read_config()
     if result is None:
-        return "ductor-sandbox"
-    _, data = result
-    docker = data.get("docker", {})
-    if isinstance(docker, dict):
-        return str(docker.get("container_name", "ductor-sandbox"))
-    return "ductor-sandbox"
+        return
+    config_path, data = result
+    extras = _docker_get_extras(data)
+    current_set = {str(e) for e in extras}
+
+    if extra_id in current_set:
+        _console.print(f"[dim]Already installed: {extra_id}[/dim]")
+        return
+
+    # Collect the extra plus its transitive dependencies.
+    new_ids: list[str] = []
+
+    def _collect(eid: str) -> None:
+        if eid in current_set or eid in {str(n) for n in new_ids}:
+            return
+        dep = DOCKER_EXTRAS_BY_ID.get(eid)
+        if dep is None:
+            return
+        for d in dep.depends_on:
+            _collect(d)
+        new_ids.append(eid)
+
+    _collect(extra_id)
+
+    from ductor_bot.infra.json_store import atomic_json_save
+
+    extras.extend(new_ids)
+    atomic_json_save(config_path, data)
+
+    added_names = [DOCKER_EXTRAS_BY_ID[i].name for i in new_ids]
+    _console.print(f"[green]Added:[/green] {', '.join(added_names)}")
+    dep_ids = [i for i in new_ids if i != extra_id]
+    if dep_ids:
+        dep_names = [DOCKER_EXTRAS_BY_ID[i].name for i in dep_ids]
+        _console.print(f"[dim]Auto-added dependencies: {', '.join(dep_names)}[/dim]")
+    _console.print("[yellow]Run 'ductor docker rebuild' to apply.[/yellow]")
+
+
+def docker_extras_remove(args: list[str]) -> None:
+    """Remove an extra from the Docker config."""
+    from ductor_bot.infra.docker_extras import DOCKER_EXTRAS, DOCKER_EXTRAS_BY_ID
+
+    positionals = [a for a in args if not a.startswith("-")]
+    extra_id = positionals[2] if len(positionals) >= 3 else None
+
+    if not extra_id:
+        _console.print("[bold red]Usage: ductor docker extras-remove <id>[/bold red]")
+        _console.print("[dim]Run 'ductor docker extras' to see installed IDs.[/dim]")
+        return
+
+    result = docker_read_config()
+    if result is None:
+        return
+    config_path, data = result
+    extras = _docker_get_extras(data)
+    current_set = {str(e) for e in extras}
+
+    if extra_id not in current_set:
+        _console.print(f"[bold red]Not installed: {extra_id}[/bold red]")
+        return
+
+    # Warn about reverse dependencies that are still installed.
+    dependents = [
+        e.name
+        for e in DOCKER_EXTRAS
+        if extra_id in e.depends_on and e.id in current_set and e.id != extra_id
+    ]
+    if dependents:
+        _console.print(
+            f"[yellow]Warning: {', '.join(dependents)} depend on "
+            f"{DOCKER_EXTRAS_BY_ID[extra_id].name}.[/yellow]"
+        )
+
+    from ductor_bot.infra.json_store import atomic_json_save
+
+    extras.remove(extra_id)
+    atomic_json_save(config_path, data)
+
+    name = DOCKER_EXTRAS_BY_ID[extra_id].name if extra_id in DOCKER_EXTRAS_BY_ID else extra_id
+    _console.print(f"[green]Removed:[/green] {name}")
+    _console.print("[yellow]Run 'ductor docker rebuild' to apply.[/yellow]")
 
 
 def cmd_docker(args: list[str]) -> None:
@@ -341,6 +501,9 @@ def cmd_docker(args: list[str]) -> None:
         "mount": lambda: docker_mount(args),
         "unmount": lambda: docker_unmount(args),
         "mounts": docker_list_mounts,
+        "extras": docker_extras_list,
+        "extras-add": lambda: docker_extras_add(args),
+        "extras-remove": lambda: docker_extras_remove(args),
     }
     _console.print()
     dispatch[sub]()

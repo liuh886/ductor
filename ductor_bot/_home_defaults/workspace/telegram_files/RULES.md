@@ -18,7 +18,7 @@ It includes total count plus per-file metadata (`name`, `type`, `size`, `receive
 
 ## Processing
 
-Use tools from `tools/telegram_tools/`:
+Use tools from `tools/media_tools/`:
 
 - images: inspect directly
 - audio/voice: `transcribe_audio.py --file <path>`
@@ -33,7 +33,7 @@ Tool scripts require absolute paths (`--file /absolute/path/...`).
 
 - Do not manually edit `_index.yaml`.
 - Do not move/delete files unless user requested it.
-- Auto-cleanup removes files older than `cleanup.telegram_files_days` (see `config/CLAUDE.md`).
+- Auto-cleanup removes files older than `cleanup.media_files_days` (see `config/CLAUDE.md`).
   Cleanup is non-recursive (top-level date folders are not auto-pruned).
 
 ## Memory

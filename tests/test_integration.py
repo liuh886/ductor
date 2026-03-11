@@ -560,7 +560,7 @@ class TestSessionPersistence:
 
         raw = paths.sessions_path.read_text(encoding="utf-8")
         data = json.loads(raw)
-        assert str(CHAT_ID) in data
+        assert KEY.storage_key in data
 
 
 # ---------------------------------------------------------------------------

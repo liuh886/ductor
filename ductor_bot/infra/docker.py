@@ -161,11 +161,22 @@ class DockerManager:
                 )
                 logger.warning("Docker image '%s' not found and auto_build disabled", image)
                 return None
+            extras_msg = ""
+            if self._config.extras:
+                from ductor_bot.infra.docker_extras import DOCKER_EXTRAS_BY_ID
+
+                names = [
+                    DOCKER_EXTRAS_BY_ID[e].name
+                    for e in self._config.extras
+                    if e in DOCKER_EXTRAS_BY_ID
+                ]
+                if names:
+                    extras_msg = f"\n  Installing extras: {', '.join(names)}"
             self._status(
                 f"[bold cyan]Building sandbox image '{image}'...[/bold cyan]\n"
                 "[dim]  Downloading Debian bookworm + Node.js 22 base image\n"
                 "  Installing Python, build tools, Git\n"
-                "  Installing Claude, Codex, and Gemini CLIs\n"
+                f"  Installing Claude, Codex, and Gemini CLIs{extras_msg}\n"
                 "  This may take a few minutes on first run...[/dim]"
             )
             if not await self._build_image(image):
@@ -235,17 +246,36 @@ class DockerManager:
         if not dockerfile.exists():
             logger.error("Dockerfile.sandbox not found at %s", dockerfile)
             return False
+
+        base_content = dockerfile.read_text(encoding="utf-8")
+
+        from ductor_bot.infra.docker_extras import (
+            calculate_build_timeout,
+            generate_dockerfile_extras,
+            resolve_extras,
+        )
+
+        extras = resolve_extras(self._config.extras)
+        if extras:
+            dockerfile_content = generate_dockerfile_extras(base_content, extras)
+        else:
+            dockerfile_content = base_content
+
+        timeout = calculate_build_timeout(extras)
+
         logger.info("Building Docker image '%s'...", image)
         with tempfile.TemporaryDirectory() as ctx:
-            rc, output = await self._exec(
+            ctx_dockerfile = Path(ctx) / "Dockerfile"
+            ctx_dockerfile.write_text(dockerfile_content, encoding="utf-8")
+            rc, output = await self._exec_stream(
                 "docker",
                 "build",
                 "-t",
                 image,
                 "-f",
-                str(dockerfile),
+                str(ctx_dockerfile),
                 ctx,
-                deadline_seconds=300,
+                deadline_seconds=timeout,
             )
         if rc != 0:
             logger.error("Docker build failed:\n%s", output[-2000:])
@@ -360,6 +390,48 @@ class DockerManager:
             if key not in os.environ:
                 flags += ["-e", f"{key}={value}"]
         return flags
+
+    async def _exec_stream(
+        self,
+        *args: str,
+        deadline_seconds: float = 30,
+    ) -> tuple[int, str]:
+        """Run a Docker command, streaming output to the console.
+
+        Returns ``(returncode, full_output)`` just like ``_exec``, but prints
+        each line to stderr in real-time so the user can follow progress.
+        """
+        proc: asyncio.subprocess.Process | None = None
+        collected: list[str] = []
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            assert proc.stdout is not None
+            async with asyncio.timeout(deadline_seconds):
+                async for raw_line in proc.stdout:
+                    line = raw_line.decode(errors="replace").rstrip()
+                    collected.append(line)
+                    if self._console:
+                        self._console.print(f"  [dim]{line}[/dim]")
+                    else:
+                        logger.info("docker build: %s", line)
+                await proc.wait()
+            return proc.returncode or 0, "\n".join(collected)
+        except TimeoutError:
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
+            msg = f"Timed out after {deadline_seconds}s"
+            if self._console:
+                self._console.print(f"  [bold red]{msg}[/bold red]")
+            logger.debug("Docker command timed out: %s", args[:3])
+            return 1, "\n".join(collected) + f"\n{msg}"
+        except OSError as exc:
+            logger.debug("Docker command failed: %s -> %s", args[:3], exc)
+            return 1, str(exc)
 
     @staticmethod
     async def _exec(

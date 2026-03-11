@@ -186,6 +186,7 @@ def print_usage() -> None:
     table.add_row("ductor agents", "Sub-agent management (list/add/remove)")
     table.add_row("ductor docker", "Docker management (rebuild/enable/disable)")
     table.add_row("ductor api", "API server management (enable/disable) [beta]")
+    table.add_row("ductor install <extra>", "Install optional extras (matrix, api)")
     table.add_row("ductor status", "Show bot status, paths, and agents")
     table.add_row("ductor help", "Show this message")
     table.add_row("-v, --verbose", "Verbose logging output")

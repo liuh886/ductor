@@ -1,0 +1,86 @@
+"""CLI command: ductor install <extra>."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from ductor_bot.infra.install import detect_install_mode
+
+# Available extras and their key package + description
+_EXTRAS: dict[str, tuple[str, str]] = {
+    "matrix": ("nio", "Matrix messenger support (matrix-nio)"),
+    "api": ("nacl", "WebSocket API with E2E encryption (PyNaCl)"),
+}
+
+
+def _is_installed(module_name: str) -> bool:
+    """Check if a Python module is importable."""
+    try:
+        __import__(module_name)
+    except ImportError:
+        return False
+    return True
+
+
+def _install_extra(name: str) -> None:
+    """Install an optional extra dependency."""
+    console = Console()
+
+    if name not in _EXTRAS:
+        console.print(f"[red]Unknown extra: {name}[/red]")
+        print_install_help()
+        return
+
+    module, description = _EXTRAS[name]
+
+    if _is_installed(module):
+        console.print(f"[green]\u2713[/green] {description} is already installed.")
+        return
+
+    mode = detect_install_mode()
+
+    if mode == "pipx":
+        cmd = [sys.executable, "-m", "pip", "install", f"ductor[{name}]"]
+    elif mode == "dev":
+        cmd = [sys.executable, "-m", "pip", "install", "-e", f".[{name}]"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", f"ductor[{name}]"]
+
+    console.print(f"Installing {description}...")
+    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+    if result.returncode == 0:
+        console.print(f"[green]\u2713[/green] {description} installed successfully.")
+    else:
+        console.print("[red]\u2717[/red] Installation failed.")
+        if result.stderr:
+            console.print(f"[dim]{result.stderr.strip()}[/dim]")
+
+
+def print_install_help() -> None:
+    """Show available extras."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Extra")
+    table.add_column("Description")
+    table.add_column("Status")
+
+    for name, (module, desc) in _EXTRAS.items():
+        status = "[green]installed[/green]" if _is_installed(module) else "[dim]not installed[/dim]"
+        table.add_row(name, desc, status)
+
+    Console().print(Panel(table, title="ductor install <extra>"))
+
+
+def cmd_install(args: list[str]) -> None:
+    """Handle `ductor install <extra>`."""
+    if len(args) < 2 or args[1] not in _EXTRAS:
+        print_install_help()
+        return
+    _install_extra(args[1])

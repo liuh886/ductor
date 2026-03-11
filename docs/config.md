@@ -77,14 +77,17 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `max_turns` | `int \| None` | `None` | Passed to Claude CLI |
 | `max_session_messages` | `int \| None` | `None` | Session rollover limit |
 | `permission_mode` | `str` | `"bypassPermissions"` | Provider sandbox/approval mode |
-| `cli_timeout` | `float` | `600.0` | Legacy/global timeout. Still used by cron/webhook `cron_task`, inter-agent turns, stale-process heartbeat cleanup, and as fallback for unknown timeout paths |
+| `cli_timeout` | `float` | `1800.0` | Legacy/global timeout. Still used by cron/webhook `cron_task`, inter-agent turns, stale-process heartbeat cleanup, and as fallback for unknown timeout paths |
 | `reasoning_effort` | `str` | `"medium"` | Default Codex reasoning level |
-| `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for Telegram sends and API `GET /files`; unknown values fall back to workspace-only |
+| `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for file sends and API `GET /files`; unknown values fall back to workspace-only |
 | `gemini_api_key` | `str \| None` | `None` | Config fallback key injected for Gemini API-key mode |
-| `telegram_token` | `str` | `""` | Telegram bot token |
+| `transport` | `str` | `"telegram"` | Messaging transport: `"telegram"` or `"matrix"` |
+| `transports` | `list[str]` | `[]` | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
+| `telegram_token` | `str` | `""` | Telegram bot token (required when `transport=telegram`) |
 | `allowed_user_ids` | `list[int]` | `[]` | Telegram user allowlist (applies in both private and group chats) |
 | `allowed_group_ids` | `list[int]` | `[]` | Telegram group allowlist (which groups the bot can operate in; default `[]` = no groups, fail-closed). In groups, both the group and the user must be allowlisted |
-| `group_mention_only` | `bool` | `false` | In allowlisted group chats, only process messages that explicitly mention or reply to the bot (mention-gating filter; not an auth bypass) |
+| `group_mention_only` | `bool` | `false` | Mention/reply gating in group rooms. Telegram: filter only (no auth bypass). Matrix: in non-DM rooms this bypasses `allowed_users` and uses room + mention/reply as gate |
+| `matrix` | `MatrixConfig` | see below | Matrix homeserver connection (required when `transport=matrix`) |
 | `streaming` | `StreamingConfig` | see below | Streaming tuning |
 | `docker` | `DockerConfig` | see below | Docker sidecar config |
 | `heartbeat` | `HeartbeatConfig` | see below | Background heartbeat config |
@@ -94,6 +97,36 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `cli_parameters` | `CLIParametersConfig` | see below | Provider-specific extra CLI flags |
 | `timeouts` | `TimeoutConfig` | see below | Path-specific timeout policy (`normal`, `background`, `subagent`) |
 | `tasks` | `TasksConfig` | see below | Delegated background task system (`TaskHub`) |
+| `update_check` | `bool` | `true` | Enables periodic update observer (`UpdateObserver`) |
+| `interagent_port` | `int` | `8799` | Port for internal localhost API (`InternalAgentAPI`) |
+
+### Multi-transport behavior
+
+When `transports` is empty (default), the single `transport` value
+is used. When `transports` contains multiple entries (e.g.
+`["telegram", "matrix"]`), `MultiBotAdapter` starts all listed
+transports in parallel and `transport` is auto-set to the first
+entry. A model validator normalizes both fields at load time so
+they stay consistent.
+
+## `MatrixConfig`
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `homeserver` | `str` | `""` | Matrix homeserver URL (e.g. `https://matrix.org`) |
+| `user_id` | `str` | `""` | Bot user ID (e.g. `@ductor:matrix.org`) |
+| `password` | `str` | `""` | Password for initial login |
+| `access_token` | `str` | `""` | Persisted after first login (auto-managed) |
+| `device_id` | `str` | `""` | Persisted after first login (auto-managed) |
+| `allowed_rooms` | `list[str]` | `[]` | Room IDs or aliases the bot may operate in |
+| `allowed_users` | `list[str]` | `[]` | Matrix user IDs allowed to interact |
+| `store_path` | `str` | `"matrix_store"` | E2EE key store directory, relative to `ductor_home` |
+
+Notes:
+
+- `access_token` and `device_id` are auto-populated after first successful login and persisted back to `config.json`.
+- The bot supports end-to-end encrypted rooms via `matrix-nio[e2e]`.
+- `allowed_rooms` and `allowed_users` together form the Matrix auth model.
 
 ## `CLIParametersConfig`
 
@@ -196,6 +229,7 @@ Behavior notes:
 | `auto_build` | `bool` | `true` | Build image automatically when missing |
 | `mount_host_cache` | `bool` | `false` | Mount host `~/.cache` into container (see below) |
 | `mounts` | `list[str]` | `[]` | Extra host directories mounted into sandbox (`/mnt/...`) |
+| `extras` | `list[str]` | `[]` | Optional AI/ML package IDs to install in the Docker image (see below) |
 
 `Orchestrator.create()` calls `DockerManager.setup()` when enabled. If setup fails, ductor logs warning and falls back to host execution.
 
@@ -227,6 +261,38 @@ Runtime note:
 - updates are typically managed via `ductor docker mount|unmount`
 - changing mounts requires bot restart (or `ductor docker rebuild`) to affect container run flags
 
+### `extras`
+
+Optional AI/ML packages installed into the Docker sandbox image at build time. Each entry is an ID from the extras registry (`ductor_bot/infra/docker_extras.py`).
+
+Available extras:
+
+| ID | Name | Category | Size |
+|---|---|---|---|
+| `ffmpeg` | FFmpeg | Audio / Speech | ~100 MB |
+| `whisper` | Faster Whisper | Audio / Speech | ~500 MB |
+| `opencv` | OpenCV | Vision / OCR | ~100 MB |
+| `tesseract` | Tesseract OCR | Vision / OCR | ~40 MB |
+| `easyocr` | EasyOCR | Vision / OCR | ~2.5 GB |
+| `pymupdf` | PyMuPDF | Document Processing | ~50 MB |
+| `pandoc` | Pandoc | Document Processing | ~80 MB |
+| `scipy` | SciPy | Scientific / Data | ~130 MB |
+| `pandas` | pandas | Scientific / Data | ~60 MB |
+| `matplotlib` | Matplotlib | Scientific / Data | ~60 MB |
+| `pytorch-cpu` | PyTorch (CPU) | ML Frameworks | ~800 MB |
+| `transformers` | HF Transformers | ML Frameworks | ~2 GB |
+| `playwright` | Playwright | Web / Browser | ~450 MB |
+
+Dependency resolution:
+
+- `whisper` depends on `ffmpeg`
+- `easyocr` and `transformers` depend on `pytorch-cpu`
+- dependencies are auto-resolved at build time
+
+Managed via `ductor docker extras-add|extras-remove` or during onboarding wizard. Changes require `ductor docker rebuild` to take effect.
+
+When extras are configured, the supervisor startup timeout is dynamically extended to accommodate longer Docker build times.
+
 ## `HeartbeatConfig`
 
 | Field | Type | Default | Notes |
@@ -244,7 +310,7 @@ Runtime note:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | `bool` | `true` | Master toggle |
-| `telegram_files_days` | `int` | `30` | Retention in `workspace/telegram_files/` |
+| `media_files_days` | `int` | `30` | Retention for media files (telegram + matrix) |
 | `output_to_user_days` | `int` | `30` | Retention in `workspace/output_to_user/` |
 | `api_files_days` | `int` | `30` | Retention in `workspace/api_files/` |
 | `check_hour` | `int` | `3` | Local hour in `user_timezone` for cleanup run |
@@ -308,7 +374,7 @@ Observer lifecycle caveat:
 
 Restart-required top-level fields:
 
-- `telegram_token`
+- `transport`, `telegram_token`, `matrix`
 - `docker`, `api`, `webhooks`
 - `ductor_home`, `log_level`, `gemini_api_key`, `timeouts`, `tasks`
 
@@ -392,9 +458,12 @@ Managed via:
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `name` | `str` | yes | | Unique lowercase identifier |
-| `telegram_token` | `str` | yes | | Separate bot token from @BotFather |
+| `transport` | `str` | no | `"telegram"` | `"telegram"` or `"matrix"` |
+| `telegram_token` | `str` | conditional | | Required when `transport=telegram` |
+| `matrix` | `MatrixConfig` | conditional | | Required when `transport=matrix` |
 | `allowed_user_ids` | `list[int]` | no | `[]` | Telegram user allowlist |
 | `allowed_group_ids` | `list[int]` | no | `[]` | Telegram group allowlist |
+| `group_mention_only` | `bool` | no | inherited | Mention/reply gating toggle (transport-specific behavior) |
 | `provider` | `str` | no | inherited | Default provider |
 | `model` | `str` | no | inherited | Default model |
 | `log_level` | `str` | no | inherited | |
@@ -440,8 +509,14 @@ Example:
   },
   {
     "name": "coder",
-    "telegram_token": "654321:XYZ...",
-    "allowed_user_ids": [12345678],
+    "transport": "matrix",
+    "matrix": {
+      "homeserver": "https://matrix.example.com",
+      "user_id": "@coder:example.com",
+      "password": "...",
+      "allowed_rooms": ["!room:example.com"],
+      "allowed_users": ["@user:example.com"]
+    },
     "provider": "codex",
     "reasoning_effort": "high"
   }
@@ -458,7 +533,7 @@ Example:
 Then it always forces:
 
 - `ductor_home = ~/.ductor/agents/<name>/`
-- `telegram_token`, `allowed_user_ids`, and `allowed_group_ids` from the sub-agent entry
+- `transport`, `telegram_token`, `matrix`, `allowed_user_ids`, and `allowed_group_ids` from the sub-agent entry
 - `api.enabled = false` when no explicit `api` block is provided
 
 Notes:
@@ -472,7 +547,10 @@ Notes:
 
 - new entry -> start sub-agent
 - removed entry -> stop sub-agent
-- `telegram_token` change on running agent -> restart sub-agent
+- restart triggers for running agents:
+  - `transport` changed
+  - Telegram identity changed (`telegram_token`)
+  - Matrix identity changed (`matrix.homeserver` or `matrix.user_id`)
 - other field changes currently do not auto-restart running agents
 
 For non-token field updates on a running agent, use `/agent_restart <name>` (or restart the bot) to apply them immediately.

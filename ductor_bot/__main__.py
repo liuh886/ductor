@@ -17,9 +17,7 @@ from rich.console import Console
 from ductor_bot.cli_commands.agents import cmd_agents as _cmd_agents
 from ductor_bot.cli_commands.api_cmd import cmd_api as _cmd_api
 from ductor_bot.cli_commands.docker import cmd_docker as _cmd_docker
-from ductor_bot.cli_commands.lifecycle import (  # noqa: F401
-    _re_exec_bot,
-)
+from ductor_bot.cli_commands.install import cmd_install as _cmd_install
 from ductor_bot.cli_commands.lifecycle import (
     cmd_restart as _cmd_restart,
 )
@@ -70,9 +68,34 @@ def _is_configured() -> bool:
         data = json.loads(paths.config_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return False
+
+    transports = data.get("transports", [])
+    if not transports:
+        transports = [data.get("transport", "telegram")]
+    for t in transports:
+        checker = _IS_CONFIGURED_CHECKS.get(t, _is_configured_telegram)
+        if not checker(data):
+            return False
+    return True
+
+
+def _is_configured_telegram(data: dict[str, object]) -> bool:
     token = data.get("telegram_token", "")
     users = data.get("allowed_user_ids", [])
     return bool(token) and not str(token).startswith("YOUR_") and bool(users)
+
+
+def _is_configured_matrix(data: dict[str, object]) -> bool:
+    mx = data.get("matrix", {})
+    if not isinstance(mx, dict):
+        return False
+    return bool(mx.get("homeserver")) and bool(mx.get("user_id"))
+
+
+_IS_CONFIGURED_CHECKS: dict[str, Callable[[dict[str, object]], bool]] = {
+    "telegram": _is_configured_telegram,
+    "matrix": _is_configured_matrix,
+}
 
 
 def load_config() -> AgentConfig:
@@ -135,7 +158,15 @@ def load_config() -> AgentConfig:
 # ---------------------------------------------------------------------------
 
 
-async def run_telegram(config: AgentConfig) -> int:
+def _validate_transports(config: AgentConfig) -> None:
+    """Run transport-specific config validators for all active transports."""
+    for t in config.transports:
+        validator = _TRANSPORT_VALIDATORS.get(t)
+        if validator:
+            validator(config)
+
+
+async def run_bot(config: AgentConfig) -> int:
     """Validate config and run the bot via AgentSupervisor.
 
     The supervisor manages the main agent and dynamically created sub-agents
@@ -145,23 +176,14 @@ async def run_telegram(config: AgentConfig) -> int:
     Returns the exit code from the bot (``0`` = clean, ``42`` = restart requested).
     """
     paths = resolve_paths(ductor_home=config.ductor_home)
+    _validate_transports(config)
 
-    missing_token = not config.telegram_token or config.telegram_token.startswith("YOUR_")
-    needs_users = not config.allowed_user_ids
-    if missing_token or needs_users:
-        _console.print(
-            "[bold yellow]Config is incomplete. Run [bold]ductor onboarding[/bold].[/bold yellow]"
-        )
-        sys.exit(1)
-
-    from ductor_bot.bot.sender import send_rich
     from ductor_bot.infra.pidlock import acquire_lock, release_lock
     from ductor_bot.multiagent.supervisor import AgentSupervisor
 
     acquire_lock(pid_file=paths.ductor_home / "bot.pid", kill_existing=True)
 
     supervisor = AgentSupervisor(config)
-    supervisor.set_notification_sender(send_rich)
     exit_code = 0
     loop = asyncio.get_running_loop()
     current_task = asyncio.current_task()
@@ -191,6 +213,49 @@ async def run_telegram(config: AgentConfig) -> int:
         await supervisor.stop_all()
         release_lock(pid_file=paths.ductor_home / "bot.pid")
     return exit_code
+
+
+# Backward-compat alias for external scripts that call run_telegram().
+run_telegram = run_bot
+
+
+def _validate_telegram_config(config: AgentConfig) -> None:
+    """Validate Telegram transport requirements."""
+    missing_token = not config.telegram_token or config.telegram_token.startswith("YOUR_")
+    needs_users = not config.allowed_user_ids
+    if missing_token or needs_users:
+        _console.print(
+            "[bold yellow]Config is incomplete. Run [bold]ductor onboarding[/bold].[/bold yellow]"
+        )
+        sys.exit(1)
+
+
+def _validate_matrix_config(config: AgentConfig) -> None:
+    """Validate Matrix transport requirements."""
+    m = config.matrix
+    hint = " Run [bold]ductor onboarding[/bold] to reconfigure."
+    if not m.homeserver:
+        _console.print(f"[bold yellow]Matrix homeserver URL is required.{hint}[/bold yellow]")
+        sys.exit(1)
+    if not m.user_id:
+        _console.print(f"[bold yellow]Matrix user_id is required.{hint}[/bold yellow]")
+        sys.exit(1)
+    if not m.password and not m.access_token:
+        _console.print(
+            f"[bold yellow]Matrix password or access_token is required.{hint}[/bold yellow]"
+        )
+        sys.exit(1)
+    if not m.allowed_rooms and not m.allowed_users:
+        _console.print(
+            f"[bold yellow]At least one allowed_room or allowed_user is required.{hint}[/bold yellow]"
+        )
+        sys.exit(1)
+
+
+_TRANSPORT_VALIDATORS: dict[str, Callable[[AgentConfig], None]] = {
+    "telegram": _validate_telegram_config,
+    "matrix": _validate_matrix_config,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +325,7 @@ _COMMANDS: dict[str, str] = {
     "docker": "docker",
     "api": "api",
     "agents": "agents",
+    "install": "install",
 }
 
 _Action = Callable[[], None]
@@ -289,6 +355,7 @@ def main() -> None:
         "docker": lambda: _cmd_docker(args),
         "api": lambda: _cmd_api(args),
         "agents": lambda: _cmd_agents(args),
+        "install": lambda: _cmd_install(args),
     }
 
     handler = dispatch.get(action) if action else None

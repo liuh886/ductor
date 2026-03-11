@@ -8,9 +8,10 @@
    - Claude Code CLI: `npm install -g @anthropic-ai/claude-code && claude auth`
    - Codex CLI: `npm install -g @openai/codex && codex auth`
    - Gemini CLI: `npm install -g @google/gemini-cli` and authenticate in `gemini`
-4. Telegram bot token from [@BotFather](https://t.me/BotFather)
-5. Telegram user ID from [@userinfobot](https://t.me/userinfobot)
-6. Docker optional (recommended for sandboxing)
+4. One of these messaging transports:
+   - **Telegram**: Bot token from [@BotFather](https://t.me/BotFather) + user ID from [@userinfobot](https://t.me/userinfobot)
+   - **Matrix**: Account on any homeserver (e.g. matrix.org) — homeserver URL, user ID, and password
+5. Docker optional (recommended for sandboxing)
 
 ## Install
 
@@ -44,11 +45,16 @@ ductor
 On first run, onboarding does:
 
 - checks Claude/Codex/Gemini auth status,
-- asks for Telegram token + user ID,
+- asks which transport to use (Telegram or Matrix),
+- collects transport credentials,
 - asks timezone,
-- offers Docker sandboxing,
+- offers Docker sandboxing (with optional AI/ML package selection),
 - offers service install,
 - writes config and seeds `~/.ductor/`.
+
+Multiple transports can run in parallel (e.g. Telegram + Matrix
+simultaneously). After initial setup, configure the `transports` array
+in `config.json`. See [config.md](config.md) for details.
 
 If service install succeeds, onboarding returns without starting foreground bot.
 
@@ -133,6 +139,9 @@ ductor docker rebuild
 ductor docker mount /path/to/project
 ductor docker unmount /path/to/project
 ductor docker mounts
+ductor docker extras
+ductor docker extras-add <id>
+ductor docker extras-remove <id>
 ```
 
 - `enable` / `disable` toggles `docker.enabled` in `config.json` (restart bot afterwards).
@@ -140,6 +149,9 @@ ductor docker mounts
 - `mount` / `unmount` manage `docker.mounts` entries.
 - mounts are available in-container under `/mnt/<name>` (basename-based mapping with collision suffixes).
 - run `ductor docker mounts` to inspect effective mapping and broken paths.
+- `extras` lists all optional packages with their selection status.
+- `extras-add` / `extras-remove` manage optional AI/ML packages (Whisper, PyTorch, OpenCV, etc.) in `config.json`. Transitive dependencies are resolved automatically.
+- after changing extras, run `ductor docker rebuild` to apply. Build output is streamed live to the terminal.
 
 ## Direct API server (optional)
 
@@ -250,10 +262,10 @@ Security basics:
 
 ### Bot not responding
 
-1. check `telegram_token` + `allowed_user_ids`
+1. check transport credentials (`telegram_token` / `matrix` block) + allowlists
 2. run `ductor status`
 3. inspect `~/.ductor/logs/agent.log`
-4. run `/diagnose` in Telegram
+4. run `/diagnose` in chat
 
 ### CLI installed but not authenticated
 

@@ -937,7 +937,7 @@ class TestDockerIntegration:
     async def test_send_with_docker_container_keeps_stdin_open_on_windows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Windows Codex-in-Docker must use `docker exec -i` so stdin prompts arrive."""
+        """Windows Codex-in-Docker must use ``docker exec -i`` so stdin prompts arrive."""
         monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", True)
         cli = CodexCLI(
             CLIConfig(

@@ -155,6 +155,7 @@ async def test_injection_updates_result_text() -> None:
         10,
         f"cron:{env.envelope_id}",
         topic_id=None,
+        transport="tg",
     )
     assert env.result_text == "Injected response"
     t.deliver.assert_awaited_once()

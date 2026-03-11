@@ -15,30 +15,36 @@ One Python process hosts:
 
 Each agent stack contains:
 
-- `TelegramBot` (aiogram ingress)
+- Transport bot (`TelegramBot` or `MatrixBot`, selected via
+  `config.transport`; `MultiBotAdapter` enables parallel
+  multi-transport execution when `config.transports` lists
+  multiple entries)
 - `Orchestrator` (routing + flows)
 - `CLIService` (provider wrappers)
 - provider subprocesses (`claude`, `codex`, `gemini`)
 
-## 2) Primary Telegram message path
+## 2) Primary message path
 
 ```text
-Telegram update
-  -> AuthMiddleware
-  -> SequentialMiddleware (shared lock pool + queue)
-  -> bot handlers
-  -> Orchestrator.handle_message(_streaming)
-  -> CLIService
-  -> provider subprocess
-  -> Telegram response (stream edits or one-shot)
+Telegram:                                 Matrix:
+  Telegram update                           Matrix sync event
+  -> AuthMiddleware                         -> room/user allowlist check
+  -> SequentialMiddleware                   -> MatrixBot handler
+  -> bot handlers                           -> Orchestrator.handle_message(_streaming)
+  -> Orchestrator.handle_message(_streaming)-> CLIService
+  -> CLIService                             -> provider subprocess
+  -> provider subprocess                    -> Matrix room message
+  -> Telegram response (stream edits)
 ```
 
 Notes:
 
 - `/stop` and `/stop_all` are middleware/bot-level abort paths (not orchestrator command dispatch).
 - `/new` resets only the active provider bucket for the active session key.
-- in groups: both `allowed_group_ids` and `allowed_user_ids` must allow the message.
-- `group_mention_only` is a mention/reply filter only (never an auth bypass).
+- Telegram groups: both `allowed_group_ids` and `allowed_user_ids` must allow the message.
+- `group_mention_only` behavior differs by transport:
+  - Telegram: mention/reply gating only (no auth bypass)
+  - Matrix non-DM rooms: user allowlist check is bypassed; room allowlist + mention/reply are used as the gate
 
 ## 3) Session identity model
 
@@ -64,7 +70,7 @@ All observer/task/inter-agent results now flow through `bus/`:
 - wrap to `Envelope` (`bus/adapters.py`)
 - route via `MessageBus`
 - optional lock + optional injection into active session
-- deliver through `TelegramTransport`
+- deliver through registered transport (Telegram or Matrix)
 
 A single shared `LockPool` is used by Telegram middleware, API server, and message bus.
 
@@ -126,7 +132,7 @@ Sub-agent home: `~/.ductor/agents/<name>/` with its own config/workspace/session
 1. `ductor_bot/__main__.py` (entrypoint + config/load/run)
 2. `ductor_bot/cli_commands/` (actual CLI subcommand logic)
 3. `ductor_bot/multiagent/supervisor.py` (always-on runtime wrapper)
-4. `ductor_bot/bot/app.py` + `bot/startup.py` (Telegram lifecycle + ingress)
+4. `ductor_bot/messenger/telegram/app.py` + `messenger/telegram/startup.py` (Telegram), `ductor_bot/messenger/matrix/bot.py` (Matrix)
 5. `ductor_bot/orchestrator/core.py` + `orchestrator/lifecycle.py`
 6. `ductor_bot/bus/*` (unified delivery/injection)
 7. `ductor_bot/tasks/hub.py` + `tasks/registry.py`
@@ -134,20 +140,23 @@ Sub-agent home: `~/.ductor/agents/<name>/` with its own config/workspace/session
 
 ## 9) Command surface (high level)
 
-Telegram core:
+Chat commands (Telegram and Matrix):
 
 - `/new`, `/stop`, `/stop_all`, `/model`, `/status`, `/memory`, `/session`, `/sessions`, `/tasks`, `/cron`, `/diagnose`, `/upgrade`
-- hidden utility commands: `/where`, `/leave` (work but are not in command popup)
+- Telegram-only utility commands: `/where`, `/leave` (work but are not in command popup)
+- Matrix uses `!` prefix by default (e.g. `!help`, `!status`); `/` also works but may conflict with Element's built-in commands
 
-Telegram main-agent only:
+Main-agent only (chat commands):
 
-- `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`, `/agent_commands`
+- Telegram: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`, `/agent_commands`
+- Matrix: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart`, `!agent_commands` (`/` prefix also supported)
 
 CLI:
 
 - `ductor`
-- `ductor status|stop|restart|upgrade|uninstall|onboarding|reset`
+- `ductor status|stop|restart|upgrade|uninstall|onboarding|reset|help`
 - `ductor service ...`
-- `ductor docker ...`
+- `ductor docker ...` (includes `extras`, `extras-add`, `extras-remove` for optional AI/ML packages)
 - `ductor api ...`
 - `ductor agents ...`
+- `ductor install <extra>` (`matrix`, `api`)

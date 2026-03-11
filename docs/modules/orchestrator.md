@@ -1,6 +1,6 @@
 # orchestrator/
 
-Central routing layer between ingress transports (Telegram/API) and CLI execution.
+Central routing layer between ingress transports (Telegram/Matrix/API) and CLI execution.
 
 ## Files
 

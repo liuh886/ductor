@@ -69,7 +69,7 @@ For user-facing schedules, set `user_timezone` explicitly.
 ### Cleanup
 
 - `cleanup.enabled`
-- `cleanup.telegram_files_days`
+- `cleanup.media_files_days`
 - `cleanup.output_to_user_days`
 - `cleanup.check_hour`
 

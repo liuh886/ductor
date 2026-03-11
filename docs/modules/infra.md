@@ -6,7 +6,7 @@ Runtime infrastructure: process lifecycle, restart/update flow, Docker sandbox, 
 
 - process/runtime: `pidlock.py`, `restart.py`, `inflight.py`, `recovery.py`, `startup_state.py`, `boot_id.py`
 - secrets: `env_secrets.py`
-- Docker: `docker.py`
+- Docker: `docker.py`, `docker_extras.py`
 - service: `service.py`, `service_base.py`, `service_logs.py`, `service_linux.py`, `service_macos.py`, `service_windows.py`
 - update/version: `install.py`, `version.py`, `updater.py`
 - filesystem/atomic I/O: `fs.py`, `atomic_io.py`, `json_store.py`
@@ -61,6 +61,15 @@ Restart code: `42` (`EXIT_RESTART`).
   - provider homes (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.claude.json` when present)
   - optional host cache mount
   - user-configured `docker.mounts` to `/mnt/<name>`
+
+Docker extras (`docker_extras.py`):
+
+- `DockerExtra` frozen dataclass registry of optional AI/ML packages (Whisper, PyTorch, OpenCV, Tesseract, etc.)
+- `resolve_extras()` resolves transitive dependencies in topological order
+- `generate_dockerfile_extras()` appends `RUN` blocks (apt + pip) to the base Dockerfile
+- packages with custom `--index-url` (e.g. PyTorch CPU) are installed before standard PyPI packages to prevent CUDA variant downloads
+- `calculate_build_timeout()` adds per-extra timeout to the base build timeout
+- build output is streamed live via `_exec_stream()` to the Rich console
 
 Fallback behavior:
 

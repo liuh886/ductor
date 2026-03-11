@@ -84,7 +84,7 @@ def _make_config(*, enabled: bool = True, check_hour: int = 3) -> AgentConfig:
     return AgentConfig(
         cleanup=CleanupConfig(
             enabled=enabled,
-            telegram_files_days=30,
+            media_files_days=30,
             output_to_user_days=30,
             check_hour=check_hour,
         ),

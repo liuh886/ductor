@@ -41,6 +41,7 @@ class SessionInjector(Protocol):
         label: str,
         *,
         topic_id: int | None = None,
+        transport: str = "tg",
     ) -> str:
         """Execute *prompt* in the active session. Returns response text."""
         ...
@@ -128,6 +129,7 @@ class MessageBus:
                     envelope.chat_id,
                     label,
                     topic_id=envelope.topic_id,
+                    transport=envelope.transport,
                 )
                 envelope.result_text = response
             except Exception:

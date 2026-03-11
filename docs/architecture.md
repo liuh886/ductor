@@ -2,26 +2,47 @@
 
 ## Runtime Overview
 
-```text
-Telegram Update
-  -> aiogram Dispatcher/Router
-  -> AuthMiddleware
-  -> SequentialMiddleware (shared lock pool + queue)
-  -> TelegramBot handler
-  -> Orchestrator
-  -> CLIService
-  -> provider subprocess (Claude/Codex/Gemini)
-  -> Telegram output (stream edits or one-shot)
+ductor supports multiple messaging transports. The `transport` config
+field (`"telegram"` or `"matrix"`) selects a single ingress/delivery
+layer via a transport registry (`messenger/registry.py`). The
+`transports` list field enables parallel multi-transport execution
+(e.g. `["telegram", "matrix"]`); when empty it falls back to the
+single `transport` value.
 
-Background/async results
+```text
+Telegram path:                          Matrix path:
+  Telegram Update                         Matrix sync event
+  -> aiogram Dispatcher/Router            -> matrix-nio callback
+  -> AuthMiddleware                       -> room/user allowlist check
+  -> SequentialMiddleware                 -> MatrixBot handler
+  -> TelegramBot handler                  -> Orchestrator
+  -> Orchestrator                         -> CLIService
+  -> CLIService                           -> provider subprocess
+  -> provider subprocess                  -> Matrix room message
+  -> Telegram message (stream edits)
+
+Background/async results (both transports):
   -> Observer/TaskHub/InterAgentBus callback
   -> bus.adapters -> Envelope
   -> MessageBus
   -> optional lock + optional session injection
-  -> TelegramTransport delivery
+  -> transport-specific delivery (TelegramTransport or MatrixTransport)
 ```
 
+When `transports` lists more than one entry, `MultiBotAdapter`
+starts all transports in parallel and exposes a unified
+`BotProtocol` to the orchestrator.
+
 Direct API path (`api.enabled=true`) uses `ApiServer` and calls orchestrator streaming callbacks directly.
+
+### Transport dispatch
+
+`messenger/registry.py` maps `config.transport` to a bot factory:
+
+- `"telegram"` -> `TelegramBot` (aiogram)
+- `"matrix"` -> `MatrixBot` (matrix-nio)
+
+Both implement `BotProtocol`. Adding a new transport requires only a new factory entry.
 
 ## Startup Flow
 
@@ -29,12 +50,12 @@ Direct API path (`api.enabled=true`) uses `ApiServer` and calls orchestrator str
 
 1. parse CLI args and dispatch command (implementation in `cli_commands/*`)
 2. default run path:
-   - `_is_configured()` checks non-placeholder `telegram_token` and non-empty `allowed_user_ids`
-   - if not configured: onboarding
+   - `_is_configured()` checks transport credentials (Telegram token or Matrix homeserver) and auth lists
+   - if not configured: onboarding (includes transport selection)
    - load/deep-merge config (`load_config()`)
    - initialize workspace (`init_workspace(paths)`)
-   - run supervisor via `run_telegram(config)`
-3. `run_telegram()` acquires PID lock and starts `AgentSupervisor`
+   - run supervisor via `run_bot(config)` (transport-agnostic)
+3. `run_bot()` acquires PID lock and starts `AgentSupervisor`
 
 ### Supervisor startup (`multiagent/supervisor.py`)
 
@@ -48,7 +69,9 @@ Direct API path (`api.enabled=true`) uses `ApiServer` and calls orchestrator str
 8. start `agents.json` watcher
 9. block on main completion and return its exit code
 
-### Bot startup (`bot/startup.py`)
+### Bot startup (Telegram: `messenger/telegram/startup.py`, Matrix: `messenger/matrix/startup.py`)
+
+Telegram startup:
 
 1. create orchestrator (`Orchestrator.create(...)`)
 2. initialize chat tracker (`chat_activity.json`)
@@ -60,6 +83,8 @@ Direct API path (`api.enabled=true`) uses `ApiServer` and calls orchestrator str
 8. recovery planning (`inflight_turns.json` + recovered named sessions)
 9. start update observer (upgradeable installs only), sync Telegram commands, start restart watcher
 10. run group audit immediately + start periodic 24h audit loop
+
+Matrix startup follows a similar pattern (orchestrator creation, bus wiring, observer startup) but uses matrix-nio's `AsyncClient` sync loop instead of aiogram polling.
 
 ### Orchestrator factory (`orchestrator/lifecycle.py`)
 
@@ -76,10 +101,16 @@ Direct API path (`api.enabled=true`) uses `ApiServer` and calls orchestrator str
 
 ## Command Ownership and Routing
 
-Bot-level handlers (`bot/app.py`):
+Bot-level handlers (`messenger/telegram/app.py`):
 
 - `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/stop_all`, `/restart`, `/new`, `/session`, `/sessions`, `/tasks`, `/agent_commands`
 - main-agent-only handlers: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`
+
+Matrix command ownership (`messenger/matrix/bot.py`):
+
+- direct transport commands: `!stop`, `!stop_all`, `!restart`, `!new`, `!help`, `!info`, `!session`, `!showfiles`, `!agent_commands`
+- orchestrator-routed commands: `!status`, `!model`, `!memory`, `!cron`, `!diagnose`, `!upgrade`, `!sessions`, `!tasks`
+- main-agent-only multi-agent commands: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart` (`/` prefix also supported)
 
 Orchestrator command registry (`orchestrator/commands.py`):
 
@@ -167,7 +198,7 @@ Gemini safeguard:
 
 - `Envelope` captures origin, lock mode, injection requirements, delivery mode
 - observers are wired in one call: `ObserverManager.wire_to_bus(...)`
-- Telegram transport formatting is centralized in `bus/telegram_transport.py`
+- Telegram transport formatting is centralized in `messenger/telegram/transport.py`
 - shared `LockPool` prevents lock drift across middleware, API, and background delivery
 
 ## Callback Query Routing
@@ -232,7 +263,7 @@ Rule sync:
 
 ## Multi-Agent Notes
 
-- sub-agents are full stacks with own Telegram token/workspace/session files
+- sub-agents are full stacks with own transport credentials/workspace/session files (each sub-agent can use a different transport)
 - all stacks share one event loop, inter-agent bus, and optional shared task hub
 - async inter-agent results are injected via bus envelopes
 - provider switch during `ia-<sender>` conversations auto-resets that named session and surfaces a provider-switch notice

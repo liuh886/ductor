@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -44,7 +45,7 @@ def path_from_file_tag(file_tag: str) -> Path:
     value = unquote(value)
     if is_windows():
         value = _normalize_windows_tag_path(value)
-    return Path(value)
+    return _resolve_container_path(Path(value))
 
 
 def guess_mime(path: Path | str) -> str:
@@ -82,6 +83,27 @@ def is_image_path(path_str: str) -> bool:
     """
     mime = mimetypes.guess_type(path_str)[0] or ""
     return mime.startswith("image/") and Path(path_str).suffix.lower() not in _SVG_SUFFIXES
+
+
+_DOCKER_MOUNT = "/ductor"
+
+
+def _resolve_container_path(path: Path) -> Path:
+    """Translate Docker container paths to host paths.
+
+    Inside the sandbox container ``~/.ductor`` is mounted at ``/ductor``.
+    CLI output references container-side paths like
+    ``/ductor/workspace/output_to_user/file.png`` which don't exist on the
+    host.  This rewrites them to the real host path.
+    """
+    try:
+        relative = path.relative_to(_DOCKER_MOUNT)
+    except ValueError:
+        return path
+    ductor_home = Path(
+        os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor")),
+    ).expanduser()
+    return ductor_home / relative
 
 
 def _normalize_windows_tag_path(value: str) -> str:

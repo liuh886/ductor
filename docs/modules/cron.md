@@ -102,7 +102,7 @@ Typical values:
 Quiet-hour skips are silent:
 
 - no `last_run_status` update
-- no Telegram result callback
+- no result callback
 
 ## Timezone resolution
 

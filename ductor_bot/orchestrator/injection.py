@@ -29,19 +29,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-async def _inject_prompt(
+async def _inject_prompt(  # noqa: PLR0913
     orch: Orchestrator,
     prompt: str,
     chat_id: int,
     process_label: str,
     *,
     topic_id: int | None = None,
+    transport: str = "tg",
 ) -> str:
     """Execute *prompt* in the current active session and update session state.
 
-    Shared by ``handle_async_interagent_result`` and ``handle_task_question``.
+    Shared by ``handle_async_interagent_result`` and ``inject_prompt``.
     """
-    key = SessionKey(chat_id=chat_id, topic_id=topic_id)
+    key = SessionKey(transport=transport, chat_id=chat_id, topic_id=topic_id)
     active = await orch._sessions.get_active(key)
     resume_id = active.session_id if active else None
 
@@ -270,47 +271,3 @@ async def handle_async_interagent_result(
             recipient,
         )
         return f"Error processing async result from '{recipient}'"
-
-
-async def handle_task_question(
-    orch: Orchestrator,
-    task_id: str,
-    question: str,
-    task_preview: str,
-    key: SessionKey,
-) -> str:
-    """Inject a task worker's question into the main agent's session.
-
-    The main agent decides how to handle the question:
-    - Answer directly via resume_task.py if it knows the answer
-    - Ask the user first, then resume the task with the answer
-
-    Caller must hold the per-chat lock.
-    """
-    prompt = (
-        f"[TASK WORKER QUESTION]\n"
-        f"Task ID: {task_id}\n"
-        f"Task: {task_preview}\n\n"
-        f"Your background worker asks:\n"
-        f'"{question}"\n\n'
-        f"The worker has finished and is waiting for your answer.\n"
-        f"To answer, resume the task:\n"
-        f'  python3 tools/task_tools/resume_task.py {task_id} "your answer"\n\n'
-        f"If you know the answer → resume the task now and inform the user.\n"
-        f"If you need more info → ask the user first, then resume.\n"
-        f"[END TASK QUESTION]"
-    )
-
-    logger.debug("Answering task question: task=%s question='%s'", task_id, question[:60])
-
-    try:
-        return await _inject_prompt(
-            orch,
-            prompt,
-            key.chat_id,
-            f"task-question:{task_id}",
-            topic_id=key.topic_id,
-        )
-    except Exception:
-        logger.exception("Task question handling failed (task=%s)", task_id)
-        return ""

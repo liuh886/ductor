@@ -67,6 +67,7 @@ class DockerConfig(BaseModel):
     auto_build: bool = True
     mount_host_cache: bool = False
     mounts: list[str] = Field(default_factory=list)
+    extras: list[str] = Field(default_factory=list)
 
 
 _DEFAULT_HEARTBEAT_PROMPT = (
@@ -101,10 +102,18 @@ class CleanupConfig(BaseModel):
     """Settings for automatic file cleanup of workspace directories."""
 
     enabled: bool = True
-    telegram_files_days: int = 30
+    media_files_days: int = 30
     output_to_user_days: int = 30
     api_files_days: int = 30
     check_hour: int = 3
+
+    def __init__(self, **data: object) -> None:
+        # Backwards compat: accept old name ``telegram_files_days``.
+        if "telegram_files_days" in data and "media_files_days" not in data:
+            data["media_files_days"] = data.pop("telegram_files_days")
+        elif "telegram_files_days" in data:
+            data.pop("telegram_files_days")
+        super().__init__(**data)
 
 
 class CLIParametersConfig(BaseModel):
@@ -113,6 +122,19 @@ class CLIParametersConfig(BaseModel):
     claude: list[str] = Field(default_factory=list)
     codex: list[str] = Field(default_factory=list)
     gemini: list[str] = Field(default_factory=list)
+
+
+class MatrixConfig(BaseModel):
+    """Matrix homeserver connection settings."""
+
+    homeserver: str = ""  # https://matrix.myserver.com
+    user_id: str = ""  # @ductor:myserver.com
+    password: str = ""  # for initial login
+    access_token: str = ""  # persisted after first login
+    device_id: str = ""  # persisted after first login
+    allowed_rooms: list[str] = Field(default_factory=list)  # ["!abc:server", "#room:server"]
+    allowed_users: list[str] = Field(default_factory=list)  # ["@user:server"]
+    store_path: str = "matrix_store"  # relative to ductor_home
 
 
 class TasksConfig(BaseModel):
@@ -225,7 +247,7 @@ class AgentConfig(BaseModel):
     max_turns: int | None = None
     max_session_messages: int | None = None
     permission_mode: str = "bypassPermissions"
-    cli_timeout: float = 600.0
+    cli_timeout: float = 1800.0
     reasoning_effort: str = "medium"
     file_access: str = "all"
     gemini_api_key: str | None = None
@@ -239,10 +261,15 @@ class AgentConfig(BaseModel):
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     tasks: TasksConfig = Field(default_factory=TasksConfig)
     user_timezone: str = ""
+    update_check: bool = True
     group_mention_only: bool = False
+    interagent_port: int = 8799
+    transport: str = "telegram"  # "telegram" | "matrix"
+    transports: list[str] = Field(default_factory=list)
     telegram_token: str = ""
     allowed_user_ids: list[int] = Field(default_factory=list)
     allowed_group_ids: list[int] = Field(default_factory=list)
+    matrix: MatrixConfig = Field(default_factory=MatrixConfig)
 
     @field_validator("gemini_api_key", mode="before")
     @classmethod
@@ -265,6 +292,24 @@ class AgentConfig(BaseModel):
         if self.cli_timeout != 600.0 and self.timeouts.normal == 600.0:
             self.timeouts.normal = self.cli_timeout
         return self
+
+    @model_validator(mode="after")
+    def _normalize_transports(self) -> AgentConfig:
+        """Normalize ``transports`` and ``transport`` for backward compat.
+
+        - Empty ``transports`` → populated from ``transport`` (single-transport).
+        - Non-empty ``transports`` → ``transport`` set to first entry (primary).
+        """
+        if not self.transports:
+            self.transports = [self.transport]
+        else:
+            self.transport = self.transports[0]
+        return self
+
+    @property
+    def is_multi_transport(self) -> bool:
+        """True when more than one transport is configured."""
+        return len(self.transports) > 1
 
 
 def resolve_timeout(config: AgentConfig, path: str) -> float:

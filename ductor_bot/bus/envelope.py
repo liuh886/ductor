@@ -50,6 +50,7 @@ class Envelope:
     origin: Origin
     chat_id: int
     topic_id: int | None = None
+    transport: str = "tg"
 
     # -- Input (for injection into active session) --
     prompt: str = ""

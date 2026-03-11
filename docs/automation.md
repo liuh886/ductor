@@ -4,16 +4,16 @@ ductor automation systems:
 
 | System | Trigger | Execution Context | Output |
 |---|---|---|---|
-| Sessions (`/session`) | user command | named session (persistent) | Telegram notification |
-| Delegated tasks (`TaskHub`) | task tool scripts (`/tasks/*` API) | shared background task runtime | Telegram notification + parent-session injection |
-| Cron jobs | schedule | isolated task folder | Telegram result |
-| Webhooks | HTTP POST | wake or isolated `cron_task` | Telegram result |
-| Heartbeat | interval | active main session | Telegram alert (non-ACK only) |
-| Cleanup | daily hour | filesystem maintenance | no Telegram message |
+| Sessions (`/session`) | user command | named session (persistent) | chat notification |
+| Delegated tasks (`TaskHub`) | task tool scripts (`/tasks/*` API) | shared background task runtime | chat notification + parent-session injection |
+| Cron jobs | schedule | isolated task folder | chat result |
+| Webhooks | HTTP POST | wake or isolated `cron_task` | chat result |
+| Heartbeat | interval | active main session | chat alert (non-ACK only) |
+| Cleanup | daily hour | filesystem maintenance | no chat message |
 
 ## Named sessions (`/session`)
 
-`/session <prompt>` starts a named background session. The chat is free immediately; a Telegram message is sent when the task completes. Sessions persist and support follow-ups.
+`/session <prompt>` starts a named background session. The chat is free immediately; a message is sent when the task completes. Sessions persist and support follow-ups.
 
 Key properties:
 
@@ -44,13 +44,13 @@ Delegated tasks are separate from `/session`:
 
 - persisted in `~/.ductor/tasks.json`
 - task folders in `~/.ductor/workspace/tasks/<task_id>/`
-- managed in Telegram via `/tasks` (running/waiting/finished + cancel/cleanup controls)
+- managed via `/tasks` command (running/waiting/finished + cancel/cleanup controls)
 - created/resumed/cancelled/deleted through task tools (`tools/task_tools/*.py`) over `InternalAgentAPI /tasks/*`
 - timeout source: `config.tasks.timeout_seconds`
 
 Result flow:
 
-- task completion/failure is posted to Telegram
+- task completion/failure is posted to the chat
 - result is injected into parent agent's current active session (`handle_task_result`)
 - task questions (`ask_parent.py`) are posted and injected via `handle_task_question`
 - forum-topic tasks route back to the originating topic via `thread_id` / `DUCTOR_TOPIC_ID`
@@ -91,7 +91,7 @@ Runtime behavior:
 5. build provider command (`claude`, `codex`, or `gemini`)
 6. execute with timeout (`cli_timeout`)
 7. parse output
-8. send result callback to Telegram
+8. send result callback to chat
 9. persist status (`last_run_status`, `last_run_at`)
 
 Per-job override fields in `cron_jobs.json`:
@@ -192,13 +192,14 @@ Cleanup runs once per day at `cleanup.check_hour` (in `user_timezone`), checked 
 
 Deletes old files (recursive) from:
 
-- `workspace/telegram_files/`
+- `workspace/telegram_files/` (Telegram media)
+- `workspace/matrix_files/` (Matrix media)
 - `workspace/output_to_user/`
 - `workspace/api_files/`
 
 Retention windows:
 
-- `cleanup.telegram_files_days`
+- `cleanup.media_files_days`
 - `cleanup.output_to_user_days`
 - `cleanup.api_files_days`
 
@@ -218,7 +219,7 @@ Cleanup also prunes empty subdirectories after deletion, so dated upload folders
   },
   "cleanup": {
     "enabled": true,
-    "telegram_files_days": 30,
+    "media_files_days": 30,
     "output_to_user_days": 30,
     "api_files_days": 30,
     "check_hour": 3

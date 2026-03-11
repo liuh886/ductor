@@ -4,13 +4,15 @@ Covers `ductor` command behavior, onboarding flow, and lifecycle commands.
 
 ## Files
 
-- `ductor_bot/__main__.py`: CLI dispatch + config helpers + `run_telegram`
+- `ductor_bot/__main__.py`: CLI dispatch + config helpers + `run_bot`
 - `ductor_bot/cli_commands/lifecycle.py`: start/stop/restart/upgrade/uninstall logic
 - `ductor_bot/cli_commands/status.py`: `ductor status` + `ductor help`
 - `ductor_bot/cli_commands/service.py`: service command routing
 - `ductor_bot/cli_commands/docker.py`: docker subcommands
 - `ductor_bot/cli_commands/api_cmd.py`: API enable/disable commands
 - `ductor_bot/cli_commands/agents.py`: sub-agent registry commands
+- `ductor_bot/cli_commands/install.py`: optional extras installer (`ductor install <extra>`)
+- `ductor_bot/infra/docker_extras.py`: optional Docker package registry + Dockerfile generation
 - `ductor_bot/cli/init_wizard.py`: onboarding + smart reset
 
 ## CLI commands
@@ -23,17 +25,21 @@ Covers `ductor` command behavior, onboarding flow, and lifecycle commands.
 - `ductor upgrade`
 - `ductor uninstall`
 - `ductor service <install|status|start|stop|logs|uninstall>`
-- `ductor docker <rebuild|enable|disable|mount|unmount|mounts>`
+- `ductor docker <rebuild|enable|disable|mount|unmount|mounts|extras|extras-add|extras-remove>`
 - `ductor api <enable|disable>`
 - `ductor agents <list|add|remove>`
+- `ductor install <matrix|api>`
 - `ductor help`
 
 ## Configuration gate
 
-`_is_configured()` currently requires:
+`_is_configured()` checks all active transports:
 
-- valid non-placeholder `telegram_token`
-- non-empty `allowed_user_ids`
+- when `transports` is set: every listed transport must pass its checker
+- when `transports` is empty: falls back to single `transport`
+
+- **Telegram** (default): valid non-placeholder `telegram_token` + non-empty `allowed_user_ids`
+- **Matrix**: non-empty `homeserver` + non-empty `user_id`
 
 `allowed_group_ids` controls group authorization but does not satisfy startup configuration alone.
 
@@ -42,12 +48,19 @@ Covers `ductor` command behavior, onboarding flow, and lifecycle commands.
 1. banner
 2. provider install/auth check
 3. disclaimer
-4. Telegram bot token prompt
-5. Telegram user ID prompt
+4. **transport selection** (Telegram or Matrix)
+   - After initial setup, multiple transports can run in parallel via
+     the `transports` array in `config.json` (see [config.md](../config.md))
+5. transport-specific credentials:
+   - Telegram: bot token prompt + user ID prompt
+   - Matrix: homeserver URL + bot user ID + password + allowed users
 6. Docker choice
-7. timezone choice
-8. write merged config + initialize workspace
-9. optional service install
+7. Docker extras selection (only when Docker enabled)
+8. timezone choice
+9. write merged config + initialize workspace
+10. optional service install
+
+Step 7 shows a Rich table of optional AI/ML packages grouped by category (Audio/Speech, Vision/OCR, Document Processing, Scientific/Data, ML Frameworks, Web/Browser) with descriptions and size estimates. Users select via `questionary.checkbox`. Transitive dependencies are auto-resolved.
 
 Return semantics:
 
@@ -108,6 +121,15 @@ Note: runtime primary log file is `~/.ductor/logs/agent.log`; status error count
 - mount/unmount paths are resolved and validated
 - mount list shows host path, container target, status
 - restart/rebuild is required for mount flag changes to affect running container
+
+### Docker extras management
+
+- `ductor docker extras` shows a table of all available optional packages with their status (selected / —) and a hint to rebuild after changes.
+- `ductor docker extras-add <id>` adds an extra (+ transitive dependencies) to `config.json`.
+- `ductor docker extras-remove <id>` removes an extra from `config.json`, warns about reverse dependencies.
+- without `<id>`, `extras-add` / `extras-remove` list available choices.
+- after add/remove, the user must run `ductor docker rebuild` to apply changes to the Docker image.
+- selected extras are compiled into additional `RUN` blocks appended to the base `Dockerfile.sandbox` at build time.
 
 ## API command notes
 

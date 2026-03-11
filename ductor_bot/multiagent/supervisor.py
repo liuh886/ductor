@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ductor_bot.config import AgentConfig, update_config_file_async
@@ -17,7 +18,7 @@ from ductor_bot.multiagent.stack import AgentStack
 from ductor_bot.workspace.paths import resolve_paths
 
 if TYPE_CHECKING:
-    from ductor_bot.multiagent.bus import InterAgentBus, NotifyCallback
+    from ductor_bot.multiagent.bus import InterAgentBus
     from ductor_bot.multiagent.internal_api import InternalAgentAPI
     from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
     from ductor_bot.tasks.hub import TaskHub
@@ -26,6 +27,37 @@ logger = logging.getLogger(__name__)
 
 _MAX_RESTART_RETRIES = 5
 _RESTART_BACKOFF_BASE = 5  # seconds, doubles each retry
+
+
+def _config_changed(new: AgentConfig, old: AgentConfig) -> bool:
+    """Detect meaningful config changes that require agent restart."""
+    if new.transport != old.transport:
+        return True
+    if new.transports != old.transports:
+        return True
+    return _TRANSPORT_IDENTITY_CHANGED.get(new.transport, _default_identity_check)(new, old)
+
+
+def _telegram_identity_check(new: AgentConfig, old: AgentConfig) -> bool:
+    return new.telegram_token != old.telegram_token
+
+
+def _matrix_identity_check(new: AgentConfig, old: AgentConfig) -> bool:
+    return (
+        new.matrix.homeserver != old.matrix.homeserver or new.matrix.user_id != old.matrix.user_id
+    )
+
+
+def _default_identity_check(_new: AgentConfig, _old: AgentConfig) -> bool:
+    return False
+
+
+_IdentityCheck = Callable[[AgentConfig, AgentConfig], bool]
+
+_TRANSPORT_IDENTITY_CHANGED: dict[str, _IdentityCheck] = {
+    "telegram": _telegram_identity_check,
+    "matrix": _matrix_identity_check,
+}
 
 
 class AgentSupervisor:
@@ -55,13 +87,6 @@ class AgentSupervisor:
         self._internal_api: InternalAgentAPI | None = None
         self._shared_knowledge: SharedKnowledgeSync | None = None
         self._task_hub: TaskHub | None = None
-        self._notify_sender: NotifyCallback | None = None
-
-    def set_notification_sender(self, callback: NotifyCallback) -> None:
-        """Set callback for sending Telegram notifications (called after bot wiring)."""
-        self._notify_sender = callback
-        if self._bus is not None:
-            self._bus.set_notification_sender(callback)
 
     @property
     def stacks(self) -> dict[str, AgentStack]:
@@ -84,10 +109,10 @@ class AgentSupervisor:
         from ductor_bot.multiagent.internal_api import InternalAgentAPI
 
         self._bus = InterAgentBus()
-        if self._notify_sender is not None:
-            self._bus.set_notification_sender(self._notify_sender)
         self._internal_api = InternalAgentAPI(
-            self._bus, docker_mode=self._main_config.docker.enabled
+            self._bus,
+            port=self._main_config.interagent_port,
+            docker_mode=self._main_config.docker.enabled,
         )
         self._internal_api.set_health_ref(self._health)
         started = await self._internal_api.start()
@@ -135,10 +160,23 @@ class AgentSupervisor:
         # 2. Wait for main agent startup (Docker, workspace, auth) before
         #    starting sub-agents.  This ensures Docker is set up exactly once
         #    by the main agent; sub-agents reuse the existing container.
+        #    Timeout is extended when Docker extras are configured because the
+        #    first image build can take several minutes.
+        startup_timeout = 120
+        if self._main_config.docker.enabled and self._main_config.docker.extras:
+            from ductor_bot.infra.docker_extras import calculate_build_timeout, resolve_extras
+
+            startup_timeout = max(
+                startup_timeout,
+                calculate_build_timeout(resolve_extras(self._main_config.docker.extras)),
+            )
         try:
-            await asyncio.wait_for(self._main_ready.wait(), timeout=120)
+            await asyncio.wait_for(self._main_ready.wait(), timeout=startup_timeout)
         except TimeoutError:
-            logger.warning("Main agent startup timed out after 120s, starting sub-agents anyway")
+            logger.warning(
+                "Main agent startup timed out after %ds, starting sub-agents anyway",
+                startup_timeout,
+            )
 
         # 3. Load and start sub-agents from agents.json
         await self._sync_sub_agents()
@@ -332,9 +370,9 @@ class AgentSupervisor:
 
             logger.debug("Supervisor reference injected into agent '%s'", stack.name)
 
-        # aiogram runs startup handlers in registration order;
+        # Startup handlers run in registration order;
         # TelegramBot registers _on_startup in __init__, so ours runs after.
-        stack.bot.dispatcher.startup.register(_post_startup)
+        stack.bot.register_startup_hook(_post_startup)
 
     def _wire_task_hub(self, stack: AgentStack) -> None:
         """Wire task hub handlers for an agent stack.
@@ -513,27 +551,23 @@ class AgentSupervisor:
                 if existing is None:
                     continue
 
-                # Rebuild config and compare token (cheapest change detection)
+                # Rebuild config and compare credentials
                 agent_home = self._main_paths.ductor_home / "agents" / name
                 new_config = merge_sub_agent_config(self._main_config, sub_cfg, agent_home)
-                if new_config.telegram_token != existing.config.telegram_token:
-                    logger.info("agents.json: agent '%s' token changed, restarting", name)
+                if _config_changed(new_config, existing.config):
+                    logger.info("agents.json: agent '%s' config changed, restarting", name)
                     await self.stop_agent(name)
                     await self._start_sub_agent(sub_cfg)
 
     # -- Notifications ------------------------------------------------------
 
     async def _notify_main_agent(self, message: str) -> None:
-        """Send a system notification to the main agent's Telegram users."""
-        if self._notify_sender is None:
-            return
+        """Send a system notification to the main agent's users/rooms."""
         main = self._stacks.get("main")
         if main is None:
             return
         try:
-            bot_instance = main.bot.bot_instance
-            for uid in main.config.allowed_user_ids:
-                await self._notify_sender(bot_instance, uid, f"**[Supervisor]** {message}", None)
+            await main.bot.notification_service.notify_all(f"**[Supervisor]** {message}")
         except Exception:
             logger.exception("Failed to notify main agent")
 
