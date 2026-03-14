@@ -91,6 +91,7 @@
         "ack_token": "HEARTBEAT_OK",
         "group_targets": [
             {
+                "enabled": false,
                 "chat_id": -1001234567890,
                 "topic_id": 5,
                 "prompt": "Check server status and report anomalies.",

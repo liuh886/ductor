@@ -645,6 +645,17 @@ class Orchestrator:
 
             init_i18n(config.language)
 
+        if "heartbeat" in hot:
+            hb = self._observers.heartbeat
+            if config.heartbeat.enabled and not hb.running:
+                task = asyncio.create_task(hb.start())
+                task.add_done_callback(lambda _: None)
+                logger.info("Heartbeat observer started via hot-reload")
+            elif not config.heartbeat.enabled and hb.running:
+                task = asyncio.create_task(hb.stop())
+                task.add_done_callback(lambda _: None)
+                logger.info("Heartbeat observer stopped via hot-reload")
+
         handler = getattr(self, "_config_hot_reload_handler", None)
         if handler is not None:
             handler(config, hot)

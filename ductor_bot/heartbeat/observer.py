@@ -212,7 +212,7 @@ class HeartbeatObserver(BaseObserver):
         """Iterate group targets with validation, interval gating, and per-target settings."""
         now = time.time()
         for target in self._hb.group_targets:
-            if target.chat_id is None:
+            if not target.enabled or target.chat_id is None:
                 continue
             if not await self._validate_target(target.chat_id):
                 continue
