@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ductor_bot.cli.types import AgentResponse
 from ductor_bot.config import SceneConfig
-from ductor_bot.messenger.telegram.message_dispatch import _maybe_append_footer
+from ductor_bot.messenger.telegram.message_dispatch import _build_footer
 from ductor_bot.orchestrator.flows import _finish_normal
 from ductor_bot.orchestrator.registry import OrchestratorResult
 
@@ -56,8 +56,8 @@ class TestFinishNormalMetadata:
         assert result.model_name is None
 
 
-class TestMaybeAppendFooter:
-    def test_footer_appended_when_enabled(self) -> None:
+class TestBuildFooter:
+    def test_footer_built_when_enabled(self) -> None:
         scene = SceneConfig(technical_footer=True)
         result = OrchestratorResult(
             text="Hello",
@@ -67,23 +67,20 @@ class TestMaybeAppendFooter:
             cost_usd=0.05,
             duration_ms=3000.0,
         )
-        _maybe_append_footer(result, scene)
-        assert "Model: opus" in result.text
-        assert "Tokens: 1000" in result.text
+        footer = _build_footer(result, scene)
+        assert "Model: opus" in footer
+        assert "Tokens: 1000" in footer
 
-    def test_footer_not_appended_when_disabled(self) -> None:
+    def test_footer_empty_when_disabled(self) -> None:
         scene = SceneConfig(technical_footer=False)
         result = OrchestratorResult(text="Hello", model_name="opus")
-        _maybe_append_footer(result, scene)
-        assert result.text == "Hello"
+        assert _build_footer(result, scene) == ""
 
-    def test_footer_not_appended_without_model(self) -> None:
+    def test_footer_empty_without_model(self) -> None:
         scene = SceneConfig(technical_footer=True)
         result = OrchestratorResult(text="Hello")
-        _maybe_append_footer(result, scene)
-        assert result.text == "Hello"
+        assert _build_footer(result, scene) == ""
 
-    def test_footer_not_appended_with_none_config(self) -> None:
+    def test_footer_empty_with_none_config(self) -> None:
         result = OrchestratorResult(text="Hello", model_name="opus")
-        _maybe_append_footer(result, None)
-        assert result.text == "Hello"
+        assert _build_footer(result, None) == ""

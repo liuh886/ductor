@@ -28,20 +28,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _maybe_append_footer(result: OrchestratorResult, scene: SceneConfig | None) -> None:
-    """Append technical footer to result text when enabled and metadata is available."""
+def _build_footer(result: OrchestratorResult, scene: SceneConfig | None) -> str:
+    """Build technical footer string if enabled and metadata is available."""
     if scene is None or not scene.technical_footer or not result.model_name:
-        return
+        return ""
     from ductor_bot.text.response_format import format_technical_footer
 
-    footer = format_technical_footer(
+    return format_technical_footer(
         result.model_name,
         result.total_tokens,
         result.input_tokens,
         result.cost_usd,
         result.duration_ms,
     )
-    result.text += footer
 
 
 @dataclass(slots=True)
@@ -80,7 +79,8 @@ async def run_non_streaming_message(
     async with TypingContext(dispatch.bot, dispatch.key.chat_id, thread_id=dispatch.thread_id):
         result = await dispatch.orchestrator.handle_message(dispatch.key, dispatch.text)
 
-    _maybe_append_footer(result, dispatch.scene_config)
+    footer = _build_footer(result, dispatch.scene_config)
+    result.text += footer
     reply_id = dispatch.reply_to.message_id if dispatch.reply_to else None
     await send_rich(
         dispatch.bot,
@@ -150,7 +150,10 @@ async def run_streaming_message(
 
     await coalescer.flush(force=True)
     coalescer.stop()
-    _maybe_append_footer(result, dispatch.scene_config)
+    footer = _build_footer(result, dispatch.scene_config)
+    if footer:
+        await editor.append_text(footer)
+        result.text += footer
     await editor.finalize(result.text)
 
     logger.info(
