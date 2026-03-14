@@ -29,6 +29,51 @@ async def _handle_restart_sentinel(bot: TelegramBot) -> dict[str, object] | None
     return sentinel
 
 
+async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None) -> None:
+    """Handle upgrade sentinel, startup lifecycle, and auto-recovery of interrupted work."""
+    upgrade = await asyncio.to_thread(consume_upgrade_sentinel, bot._orch.paths.ductor_home)
+    if upgrade:
+        uid = int(upgrade.get("chat_id", 0))
+        old_v = upgrade.get("old_version", "?")
+        new_v = upgrade.get("new_version", get_current_version())
+        if uid:
+            await bot.notification_service.notify(
+                uid, f"**Upgrade complete** `{old_v}` -> `{new_v}`"
+            )
+
+    from ductor_bot.infra.startup_state import detect_startup_kind, save_startup_state
+    from ductor_bot.text.response_format import startup_notification_text
+
+    startup_info = await asyncio.to_thread(detect_startup_kind, bot._orch.paths.startup_state_path)
+    await asyncio.to_thread(save_startup_state, bot._orch.paths.startup_state_path, startup_info)
+    if sentinel is None and startup_info.kind.value != "service_restart":
+        note = startup_notification_text(startup_info.kind.value)
+        if note:
+            await bot.notification_service.notify_all(note)
+
+    from ductor_bot.infra.recovery import RecoveryPlanner
+    from ductor_bot.text.response_format import recovery_notification_text
+
+    planner = RecoveryPlanner(
+        inflight=bot._orch.inflight_tracker,
+        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
+        max_age_seconds=bot.config.timeouts.normal * 2,
+    )
+    for action in planner.plan():
+        note = recovery_notification_text(action.kind, action.prompt_preview, action.session_name)
+        await bot.notification_service.notify(action.chat_id, note)
+        if action.kind == "named_session" and action.session_name:
+            with contextlib.suppress(Exception):
+                bot._orch.submit_named_followup_bg(
+                    action.chat_id,
+                    action.session_name,
+                    action.prompt_preview,
+                    message_id=0,
+                    thread_id=None,
+                )
+    bot._orch.inflight_tracker.clear()
+
+
 async def _run_primary_startup(bot: TelegramBot) -> None:
     """Create orchestrator, handle sentinels, recovery, and update observer.
 
@@ -57,50 +102,17 @@ async def _run_primary_startup(bot: TelegramBot) -> None:
     bot._orch.wire_observers_to_bus(bot._bus, wake_handler=bot._handle_webhook_wake)
     bot._orchestrator.set_config_hot_reload_handler(bot._on_auth_hot_reload)
 
-    # Check for post-upgrade notification
-    upgrade = await asyncio.to_thread(consume_upgrade_sentinel, bot._orch.paths.ductor_home)
-    if upgrade:
-        uid = int(upgrade.get("chat_id", 0))
-        old_v = upgrade.get("old_version", "?")
-        new_v = upgrade.get("new_version", get_current_version())
-        if uid:
-            await bot.notification_service.notify(
-                uid, f"**Upgrade complete** `{old_v}` -> `{new_v}`"
-            )
+    async def _validate_chat(chat_id: int) -> bool:
+        try:
+            await bot.bot_instance.get_chat(chat_id)
+        except Exception:
+            return False
+        else:
+            return True
 
-    # -- Startup lifecycle detection --
-    from ductor_bot.infra.startup_state import detect_startup_kind, save_startup_state
-    from ductor_bot.text.response_format import startup_notification_text
+    bot._orch._observers.heartbeat.set_chat_validator(_validate_chat)
 
-    startup_info = await asyncio.to_thread(detect_startup_kind, bot._orch.paths.startup_state_path)
-    await asyncio.to_thread(save_startup_state, bot._orch.paths.startup_state_path, startup_info)
-    if sentinel is None and startup_info.kind.value != "service_restart":
-        note = startup_notification_text(startup_info.kind.value)
-        if note:
-            await bot.notification_service.notify_all(note)
-
-    # -- Auto-recovery of interrupted work --
-    from ductor_bot.infra.recovery import RecoveryPlanner
-    from ductor_bot.text.response_format import recovery_notification_text
-
-    planner = RecoveryPlanner(
-        inflight=bot._orch.inflight_tracker,
-        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
-        max_age_seconds=bot.config.timeouts.normal * 2,
-    )
-    for action in planner.plan():
-        note = recovery_notification_text(action.kind, action.prompt_preview, action.session_name)
-        await bot.notification_service.notify(action.chat_id, note)
-        if action.kind == "named_session" and action.session_name:
-            with contextlib.suppress(Exception):
-                bot._orch.submit_named_followup_bg(
-                    action.chat_id,
-                    action.session_name,
-                    action.prompt_preview,
-                    message_id=0,
-                    thread_id=None,
-                )
-    bot._orch.inflight_tracker.clear()
+    await _handle_recovery(bot, sentinel)
 
     # Start background version checker (skip for dev/source installs)
     from ductor_bot.infra.install import is_upgradeable

@@ -153,8 +153,17 @@ class Orchestrator:
         self._webhook_manager = WebhookManager(hooks_path=paths.webhooks_path)
         self._observers = ObserverManager(config, paths)
 
-        async def _heartbeat_handler(chat_id: int, topic_id: int | None = None) -> str | None:
-            return await self.handle_heartbeat(SessionKey(chat_id=chat_id, topic_id=topic_id))
+        async def _heartbeat_handler(
+            chat_id: int,
+            topic_id: int | None = None,
+            prompt: str | None = None,
+            ack_token: str | None = None,
+        ) -> str | None:
+            return await self.handle_heartbeat(
+                SessionKey(chat_id=chat_id, topic_id=topic_id),
+                prompt=prompt,
+                ack_token=ack_token,
+            )
 
         self._observers.heartbeat.set_heartbeat_handler(_heartbeat_handler)
         self._observers.heartbeat.set_busy_check(self._process_registry.has_active)
@@ -455,10 +464,16 @@ class Orchestrator:
         self._observers.wire_to_bus(bus, wake_handler=wake_handler)
         bus.set_injector(self)
 
-    async def handle_heartbeat(self, key: SessionKey) -> str | None:
+    async def handle_heartbeat(
+        self,
+        key: SessionKey,
+        *,
+        prompt: str | None = None,
+        ack_token: str | None = None,
+    ) -> str | None:
         """Run a heartbeat turn in the main session. Returns alert text or None."""
         logger.debug("Heartbeat flow starting")
-        return await heartbeat_flow(self, key)
+        return await heartbeat_flow(self, key, prompt=prompt, ack_token=ack_token)
 
     def submit_named_session(
         self,

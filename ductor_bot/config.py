@@ -87,10 +87,18 @@ _DEFAULT_HEARTBEAT_ACK = "HEARTBEAT_OK"
 
 
 class HeartbeatTarget(BaseModel):
-    """A specific chat/topic to send heartbeat checks to."""
+    """A specific chat/topic to send heartbeat checks to.
+
+    All optional fields override the global HeartbeatConfig when set.
+    """
 
     chat_id: int
     topic_id: int | None = None
+    prompt: str | None = None
+    ack_token: str | None = None
+    interval_minutes: int | None = None
+    quiet_start: int | None = None
+    quiet_end: int | None = None
 
 
 class HeartbeatConfig(BaseModel):

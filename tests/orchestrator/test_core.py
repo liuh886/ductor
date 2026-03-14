@@ -435,7 +435,7 @@ async def test_handle_heartbeat_delegates_to_flow(orch: Orchestrator) -> None:
         result = await orch.handle_heartbeat(SessionKey(chat_id=42))
 
     assert result == "Alert: something happened"
-    mock_flow.assert_awaited_once_with(orch, SessionKey(chat_id=42))
+    mock_flow.assert_awaited_once_with(orch, SessionKey(chat_id=42), prompt=None, ack_token=None)
 
 
 async def test_handle_heartbeat_returns_none_on_ack(orch: Orchestrator) -> None:

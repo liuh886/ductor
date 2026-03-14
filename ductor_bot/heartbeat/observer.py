@@ -13,12 +13,20 @@ from ductor_bot.log_context import set_log_context
 from ductor_bot.utils.quiet_hours import check_quiet_hour
 
 if TYPE_CHECKING:
-    from ductor_bot.config import AgentConfig, HeartbeatConfig
+    from ductor_bot.config import AgentConfig, HeartbeatConfig, HeartbeatTarget
 
 logger = logging.getLogger(__name__)
 
 # Callback signature: (chat_id, alert_text, topic_id)
 HeartbeatResultCallback = Callable[[int, str, int | None], Awaitable[None]]
+
+# Handler signature: (chat_id, topic_id, prompt_override, ack_token_override)
+HeartbeatHandler = Callable[[int, int | None, str | None, str | None], Awaitable[str | None]]
+
+# Validator signature: (chat_id) -> is_accessible
+ChatValidator = Callable[[int], Awaitable[bool]]
+
+_VALIDATION_TTL = 3600
 
 
 class HeartbeatObserver(BaseObserver):
@@ -33,9 +41,12 @@ class HeartbeatObserver(BaseObserver):
         super().__init__()
         self._config = config
         self._on_result: HeartbeatResultCallback | None = None
-        self._handle_heartbeat: Callable[[int, int | None], Awaitable[str | None]] | None = None
+        self._handle_heartbeat: HeartbeatHandler | None = None
         self._is_chat_busy: Callable[[int], bool] | None = None
         self._stale_cleanup: Callable[[], Awaitable[int]] | None = None
+        self._chat_validator: ChatValidator | None = None
+        self._valid_targets: dict[int, float] = {}
+        self._target_last_run: dict[tuple[int, int | None], float] = {}
 
     @property
     def _hb(self) -> HeartbeatConfig:
@@ -45,10 +56,7 @@ class HeartbeatObserver(BaseObserver):
         """Set callback for delivering alert messages to the user."""
         self._on_result = handler
 
-    def set_heartbeat_handler(
-        self,
-        handler: Callable[[int, int | None], Awaitable[str | None]],
-    ) -> None:
+    def set_heartbeat_handler(self, handler: HeartbeatHandler) -> None:
         """Set the function that executes a heartbeat turn (orchestrator.handle_heartbeat)."""
         self._handle_heartbeat = handler
 
@@ -59,6 +67,10 @@ class HeartbeatObserver(BaseObserver):
     def set_stale_cleanup(self, cleanup: Callable[[], Awaitable[int]]) -> None:
         """Set the function that kills stale CLI processes (wall-clock based)."""
         self._stale_cleanup = cleanup
+
+    def set_chat_validator(self, validator: ChatValidator) -> None:
+        """Set the function that validates whether a group chat is accessible."""
+        self._chat_validator = validator
 
     async def start(self) -> None:
         """Start the heartbeat background loop."""
@@ -81,18 +93,66 @@ class HeartbeatObserver(BaseObserver):
         await super().stop()
         logger.info("Heartbeat stopped")
 
+    def _resolve_target_settings(self, target: HeartbeatTarget) -> tuple[str, str, int, int]:
+        """Resolve per-target settings with global fallback.
+
+        Returns ``(prompt, ack_token, quiet_start, quiet_end)``.
+        """
+        prompt = target.prompt or self._hb.prompt
+        ack_token = target.ack_token or self._hb.ack_token
+        quiet_start = target.quiet_start if target.quiet_start is not None else self._hb.quiet_start
+        quiet_end = target.quiet_end if target.quiet_end is not None else self._hb.quiet_end
+        return prompt, ack_token, quiet_start, quiet_end
+
+    async def _validate_target(self, chat_id: int) -> bool:
+        """Check if a group target is accessible, with TTL cache."""
+        if self._chat_validator is None:
+            return True
+
+        now = time.time()
+        last = self._valid_targets.get(chat_id)
+        if last is not None and (now - last) < _VALIDATION_TTL:
+            return True
+
+        try:
+            valid = await self._chat_validator(chat_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Chat validation failed for %d", chat_id)
+            return False
+
+        if valid:
+            self._valid_targets[chat_id] = now
+            return True
+
+        logger.warning("Heartbeat target %d is not accessible, skipping", chat_id)
+        return False
+
+    def _should_skip_target_interval(self, target: HeartbeatTarget, now: float) -> bool:
+        """Return True if the target has a custom interval that has not yet elapsed."""
+        if target.interval_minutes is None:
+            return False
+        key = (target.chat_id, target.topic_id)
+        last_run = self._target_last_run.get(key, 0.0)
+        if (now - last_run) < target.interval_minutes * 60:
+            logger.debug(
+                "Heartbeat target %d skipped: custom interval not elapsed",
+                target.chat_id,
+            )
+            return True
+        return False
+
     async def _run(self) -> None:
         """Sleep -> check -> execute -> repeat."""
         last_wall = time.time()
         try:
             while self._running:
-                # Read interval fresh each iteration so config-reload changes take effect.
                 interval = self._hb.interval_minutes * 60
                 await asyncio.sleep(interval)
                 if not self._running or not self._hb.enabled:
                     continue
 
-                # Detect system suspend via wall-clock gap.
                 now_wall = time.time()
                 wall_elapsed = now_wall - last_wall
                 if wall_elapsed > interval * 2:
@@ -112,18 +172,22 @@ class HeartbeatObserver(BaseObserver):
         except asyncio.CancelledError:
             logger.debug("Heartbeat loop cancelled")
 
+    async def _cleanup_stale(self) -> None:
+        """Kill stale CLI processes (catches suspend hangovers)."""
+        if not self._stale_cleanup:
+            return
+        try:
+            killed = await self._stale_cleanup()
+            if killed:
+                logger.info("Cleaned up %d stale process(es)", killed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Stale process cleanup failed")
+
     async def _tick(self) -> None:
-        """Run one heartbeat cycle for all allowed users."""
-        # Cleanup stale processes first (catches suspend hangovers).
-        if self._stale_cleanup:
-            try:
-                killed = await self._stale_cleanup()
-                if killed:
-                    logger.info("Cleaned up %d stale process(es)", killed)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Stale process cleanup failed")
+        """Run one heartbeat cycle for all allowed users and group targets."""
+        await self._cleanup_stale()
 
         is_quiet, now_hour, tz = check_quiet_hour(
             quiet_start=self._hb.quiet_start,
@@ -138,14 +202,65 @@ class HeartbeatObserver(BaseObserver):
 
         target_count = len(self._config.allowed_user_ids) + len(self._hb.group_targets)
         logger.debug("Heartbeat tick: checking %d chat(s)", target_count)
+
         for chat_id in self._config.allowed_user_ids:
             await self._run_for_chat(chat_id)
-        for target in self._hb.group_targets:
-            await self._run_for_chat(target.chat_id, target.topic_id)
 
-    async def _run_for_chat(self, chat_id: int, topic_id: int | None = None) -> None:
+        await self._tick_group_targets()
+
+    async def _tick_group_targets(self) -> None:
+        """Iterate group targets with validation, interval gating, and per-target settings."""
+        now = time.time()
+        for target in self._hb.group_targets:
+            if not await self._validate_target(target.chat_id):
+                continue
+            if self._should_skip_target_interval(target, now):
+                continue
+
+            prompt, ack_token, quiet_start, quiet_end = self._resolve_target_settings(target)
+            await self._run_for_chat(
+                target.chat_id,
+                target.topic_id,
+                prompt=prompt,
+                ack_token=ack_token,
+                quiet_start=quiet_start,
+                quiet_end=quiet_end,
+            )
+            if target.interval_minutes is not None:
+                self._target_last_run[(target.chat_id, target.topic_id)] = now
+
+    def _is_target_quiet(
+        self, chat_id: int, quiet_start: int | None, quiet_end: int | None
+    ) -> bool:
+        """Check per-target quiet hours. Returns True if quiet."""
+        if quiet_start is None or quiet_end is None:
+            return False
+        is_quiet, _hour, _tz = check_quiet_hour(
+            quiet_start=quiet_start,
+            quiet_end=quiet_end,
+            user_timezone=self._config.user_timezone,
+            global_quiet_start=self._hb.quiet_start,
+            global_quiet_end=self._hb.quiet_end,
+        )
+        if is_quiet:
+            logger.debug("Heartbeat skipped for %d: per-target quiet hours", chat_id)
+        return is_quiet
+
+    async def _run_for_chat(  # noqa: PLR0913
+        self,
+        chat_id: int,
+        topic_id: int | None = None,
+        *,
+        prompt: str | None = None,
+        ack_token: str | None = None,
+        quiet_start: int | None = None,
+        quiet_end: int | None = None,
+    ) -> None:
         """Execute a single heartbeat for one chat."""
         set_log_context(operation="hb", chat_id=chat_id)
+
+        if self._is_target_quiet(chat_id, quiet_start, quiet_end):
+            return
 
         if self._is_chat_busy and self._is_chat_busy(chat_id):
             logger.debug("Heartbeat skipped: chat is busy")
@@ -155,7 +270,7 @@ class HeartbeatObserver(BaseObserver):
             return
 
         try:
-            alert_text = await self._handle_heartbeat(chat_id, topic_id)
+            alert_text = await self._handle_heartbeat(chat_id, topic_id, prompt, ack_token)
         except asyncio.CancelledError:
             raise
         except Exception:

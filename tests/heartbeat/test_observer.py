@@ -130,8 +130,8 @@ class TestHeartbeatObserverTick:
             await obs._tick()
 
         assert handler.call_count == 2
-        handler.assert_any_await(100, None)
-        handler.assert_any_await(200, None)
+        handler.assert_any_await(100, None, None, None)
+        handler.assert_any_await(200, None, None, None)
 
     async def test_tick_skips_busy_chat(self) -> None:
         config = _make_config()
@@ -143,7 +143,7 @@ class TestHeartbeatObserverTick:
         with time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)):
             await obs._tick()
 
-        handler.assert_awaited_once_with(200, None)
+        handler.assert_awaited_once_with(200, None, None, None)
 
     async def test_tick_delivers_alert(self) -> None:
         config = _make_config()
@@ -255,9 +255,10 @@ class TestHeartbeatGroupTargets:
             await obs._tick()
 
         assert handler.call_count == 3
-        handler.assert_any_await(100, None)
-        handler.assert_any_await(-1001, 42)
-        handler.assert_any_await(-1002, None)
+        handler.assert_any_await(100, None, None, None)
+        # Group targets get resolved prompt/ack from global config
+        handler.assert_any_await(-1001, 42, config.heartbeat.prompt, config.heartbeat.ack_token)
+        handler.assert_any_await(-1002, None, config.heartbeat.prompt, config.heartbeat.ack_token)
 
     async def test_tick_group_target_delivers_alert_with_topic_id(self) -> None:
         config = AgentConfig(
@@ -297,3 +298,13 @@ class TestHeartbeatGroupTargets:
         await obs._run_for_chat(-1001, topic_id=42)
 
         result_handler.assert_awaited_once_with(-1001, "alert", 42)
+
+    async def test_run_for_chat_passes_prompt_ack_to_handler(self) -> None:
+        config = _make_config()
+        obs = HeartbeatObserver(config)
+        handler = AsyncMock(return_value=None)
+        obs.set_heartbeat_handler(handler)
+
+        await obs._run_for_chat(-1001, prompt="Custom", ack_token="OK")
+
+        handler.assert_awaited_once_with(-1001, None, "Custom", "OK")

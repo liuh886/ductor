@@ -664,14 +664,25 @@ async def named_session_streaming(
 # ---------------------------------------------------------------------------
 
 
-async def heartbeat_flow(orch: Orchestrator, key: SessionKey) -> str | None:
+async def heartbeat_flow(
+    orch: Orchestrator,
+    key: SessionKey,
+    *,
+    prompt: str | None = None,
+    ack_token: str | None = None,
+) -> str | None:
     """Run a heartbeat turn in the existing session.
 
     Returns the alert text if the model has something to say, or None if the
     response was a HEARTBEAT_OK acknowledgment. Does NOT update session state
     (last_active, message_count) for ack responses.
+
+    *prompt* and *ack_token* override the global heartbeat config when set
+    (used by per-target overrides in HeartbeatObserver).
     """
     hb_cfg = orch._config.heartbeat
+    effective_prompt = prompt or hb_cfg.prompt
+    effective_ack = ack_token or hb_cfg.ack_token
     req_model, req_provider = orch.resolve_runtime_target(orch._config.model)
 
     # Read-only check: never create/overwrite a session from the heartbeat path.
@@ -704,7 +715,7 @@ async def heartbeat_flow(orch: Orchestrator, key: SessionKey) -> str | None:
         return None
 
     request = AgentRequest(
-        prompt=hb_cfg.prompt,
+        prompt=effective_prompt,
         model_override=req_model,
         provider_override=req_provider,
         chat_id=key.chat_id,
@@ -719,7 +730,7 @@ async def heartbeat_flow(orch: Orchestrator, key: SessionKey) -> str | None:
         logger.warning("Heartbeat CLI error result=%s", response.result[:200])
         return None
 
-    alert_text = _strip_ack_token(response.result, hb_cfg.ack_token)
+    alert_text = _strip_ack_token(response.result, effective_ack)
     if not alert_text:
         logger.info("Heartbeat OK (suppressed)")
         return None
