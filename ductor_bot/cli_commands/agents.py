@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 
 _console = Console()
@@ -101,17 +102,17 @@ def print_agents_status(agents: list[dict[str, object]], *, bot_running: bool = 
     live_health = fetch_live_health() if bot_running else {}
 
     table = Table(show_header=True, box=None, padding=(0, 2))
-    table.add_column("Agent", style="bold")
-    table.add_column("Status")
-    table.add_column("Uptime")
-    table.add_column("Provider")
-    table.add_column("Model")
+    table.add_column(t_rich("agents.col_agent"), style="bold")
+    table.add_column(t_rich("agents.col_status"))
+    table.add_column(t_rich("agents.col_uptime"))
+    table.add_column(t_rich("agents.col_provider"))
+    table.add_column(t_rich("agents.col_model"))
 
     status_style = {
-        "running": "[bold green]running[/bold green]",
-        "starting": "[yellow]starting[/yellow]",
-        "crashed": "[bold red]crashed[/bold red]",
-        "stopped": "[dim]stopped[/dim]",
+        "running": t_rich("agents.status_running"),
+        "starting": t_rich("agents.status_starting"),
+        "crashed": t_rich("agents.status_crashed"),
+        "stopped": t_rich("agents.status_stopped"),
     }
 
     for agent in agents:
@@ -160,14 +161,14 @@ def _parse_int_list(raw: str, *, allow_negative: bool = False) -> list[int]:
 def validate_agent_name(name: str | None, agents: list[dict[str, object]]) -> str | None:
     """Validate an agent name for ``ductor agents add``. Returns clean name or None on error."""
     if not name:
-        _console.print("[bold red]Usage: ductor agents add <name>[/bold red]")
+        _console.print(t_rich("agents.add.usage"))
         return None
     name = name.lower().strip()
     if name == "main":
-        _console.print("[bold red]Name 'main' is reserved.[/bold red]")
+        _console.print(t_rich("agents.add.reserved"))
         return None
     if any(str(a.get("name", "")).lower() == name for a in agents):
-        _console.print(f"[bold red]Agent '{name}' already exists.[/bold red]")
+        _console.print(t_rich("agents.add.exists", name=name))
         return None
     return name
 
@@ -177,8 +178,8 @@ def agents_list() -> None:
     paths = resolve_paths()
     agents = load_agents_registry(paths)
     if not agents:
-        _console.print("[dim]No sub-agents configured.[/dim]")
-        _console.print("[dim]Use 'ductor agents add <name>' to create one.[/dim]")
+        _console.print(t_rich("agents.empty"))
+        _console.print(t_rich("agents.add_hint"))
         return
     # Check if bot is running for live health
     pid_file = paths.ductor_home / "bot.pid"
@@ -205,46 +206,46 @@ def agents_add(rest: list[str]) -> None:
         return
 
     token: str | None = questionary.text(
-        f"Telegram bot token for '{name}':",
+        t_rich("agents.add.prompt_token", name=name),
     ).ask()
     if not token or not token.strip():
-        _console.print("[dim]Cancelled.[/dim]")
+        _console.print(t_rich("agents.add.cancelled"))
         return
 
     users_raw: str | None = questionary.text(
-        "Allowed user IDs (comma-separated):",
+        t_rich("agents.add.prompt_users"),
     ).ask()
     if users_raw is None:
-        _console.print("[dim]Cancelled.[/dim]")
+        _console.print(t_rich("agents.add.cancelled"))
         return
 
     user_ids = _parse_int_list(users_raw)
 
     groups_raw: str | None = questionary.text(
-        "Allowed group IDs (comma-separated, leave empty for none):",
+        t_rich("agents.add.prompt_groups"),
         default="",
     ).ask()
     if groups_raw is None:
-        _console.print("[dim]Cancelled.[/dim]")
+        _console.print(t_rich("agents.add.cancelled"))
         return
 
     group_ids = _parse_int_list(groups_raw, allow_negative=True)
 
     provider: str | None = questionary.select(
-        "Provider:",
+        t_rich("agents.add.prompt_provider"),
         choices=["claude", "codex", "gemini"],
         default="claude",
     ).ask()
     if provider is None:
-        _console.print("[dim]Cancelled.[/dim]")
+        _console.print(t_rich("agents.add.cancelled"))
         return
 
     model: str | None = questionary.text(
-        "Model (e.g. opus, sonnet, o3):",
+        t_rich("agents.add.prompt_model"),
         default="sonnet",
     ).ask()
     if model is None:
-        _console.print("[dim]Cancelled.[/dim]")
+        _console.print(t_rich("agents.add.cancelled"))
         return
 
     new_agent: dict[str, object] = {
@@ -262,8 +263,8 @@ def agents_add(rest: list[str]) -> None:
     agents_path = paths.ductor_home / "agents.json"
     atomic_json_save(agents_path, agents)
 
-    _console.print(f"[green]Agent '{name}' added to agents.json.[/green]")
-    _console.print("[dim]It will be started automatically on next bot (re)start.[/dim]")
+    _console.print(t_rich("agents.add.done", name=name))
+    _console.print(t_rich("agents.add.auto_start"))
 
 
 def agents_remove(rest: list[str]) -> None:
@@ -272,7 +273,7 @@ def agents_remove(rest: list[str]) -> None:
 
     name = rest[0] if rest else None
     if not name:
-        _console.print("[bold red]Usage: ductor agents remove <name>[/bold red]")
+        _console.print(t_rich("agents.remove.usage"))
         return
 
     name = name.lower().strip()
@@ -280,15 +281,15 @@ def agents_remove(rest: list[str]) -> None:
     agents = load_agents_registry(paths)
     match = [a for a in agents if str(a.get("name", "")).lower() == name]
     if not match:
-        _console.print(f"[bold red]Agent '{name}' not found.[/bold red]")
+        _console.print(t_rich("agents.remove.not_found", name=name))
         return
 
     confirmed: bool | None = questionary.confirm(
-        f"Remove agent '{name}'? (This does not delete its workspace data.)",
+        t_rich("agents.remove.confirm", name=name),
         default=False,
     ).ask()
     if not confirmed:
-        _console.print("[dim]Cancelled.[/dim]")
+        _console.print(t_rich("agents.add.cancelled"))
         return
 
     from ductor_bot.infra.json_store import atomic_json_save
@@ -296,8 +297,8 @@ def agents_remove(rest: list[str]) -> None:
     remaining = [a for a in agents if str(a.get("name", "")).lower() != name]
     agents_path = paths.ductor_home / "agents.json"
     atomic_json_save(agents_path, remaining)
-    _console.print(f"[green]Agent '{name}' removed from agents.json.[/green]")
-    _console.print(f"[dim]Workspace data remains at {paths.ductor_home / 'agents' / name}[/dim]")
+    _console.print(t_rich("agents.remove.done", name=name))
+    _console.print(t_rich("agents.remove.data_hint", path=paths.ductor_home / "agents" / name))
 
 
 def cmd_agents(args: list[str]) -> None:

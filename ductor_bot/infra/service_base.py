@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from rich.panel import Panel
 
+from ductor_bot.i18n import t_rich
+
 if TYPE_CHECKING:
     from rich.console import Console
 
@@ -53,58 +55,50 @@ def collect_nvm_bin_dirs(home: Path) -> list[str]:
 # Standardised messages
 # ---------------------------------------------------------------------------
 
-_NOT_INSTALLED_MSG = "[dim]Service not installed. Run [bold]ductor service install[/bold].[/dim]"
-_NOT_RUNNING_MSG = "[dim]Service is not running.[/dim]"
-_NO_SERVICE_MSG = "[dim]No service installed.[/dim]"
-_BINARY_NOT_FOUND_MSG = "[bold red]Could not find the ductor binary in PATH.[/bold red]"
-_REMOVED_MSG = "[green]Service removed.[/green]"
-_STARTED_MSG = "[green]Service started.[/green]"
-_STOPPED_MSG = "[green]Service stopped.[/green]"
-
 
 def print_not_installed(console: Console) -> None:
     """Print the 'service not installed' hint."""
-    console.print(_NOT_INSTALLED_MSG)
+    console.print(t_rich("service.not_installed"))
 
 
 def print_not_running(console: Console) -> None:
     """Print the 'service is not running' hint."""
-    console.print(_NOT_RUNNING_MSG)
+    console.print(t_rich("service.not_running"))
 
 
 def print_no_service(console: Console) -> None:
     """Print the 'no service installed' hint (for uninstall)."""
-    console.print(_NO_SERVICE_MSG)
+    console.print(t_rich("service.no_service"))
 
 
 def print_binary_not_found(console: Console) -> None:
     """Print the 'ductor binary not found' error."""
-    console.print(_BINARY_NOT_FOUND_MSG)
+    console.print(t_rich("service.no_binary"))
 
 
 def print_removed(console: Console) -> None:
     """Print the 'service removed' confirmation."""
-    console.print(_REMOVED_MSG)
+    console.print(t_rich("service.removed"))
 
 
 def print_started(console: Console) -> None:
     """Print the 'service started' confirmation."""
-    console.print(_STARTED_MSG)
+    console.print(t_rich("service.started"))
 
 
 def print_stopped(console: Console) -> None:
     """Print the 'service stopped' confirmation."""
-    console.print(_STOPPED_MSG)
+    console.print(t_rich("service.stopped"))
 
 
 def print_start_failed(console: Console, stderr: str) -> None:
     """Print a start-failure message with stderr detail."""
-    console.print(f"[red]Failed to start: {stderr}[/red]")
+    console.print(t_rich("service.start_failed", error=stderr))
 
 
 def print_stop_failed(console: Console, stderr: str) -> None:
     """Print a stop-failure message with stderr detail."""
-    console.print(f"[red]Failed to stop: {stderr}[/red]")
+    console.print(t_rich("service.stop_failed", error=stderr))
 
 
 def print_install_success(
@@ -120,14 +114,8 @@ def print_install_success(
     """
     console.print(
         Panel(
-            "[bold green]ductor is now running as a background service.[/bold green]\n\n"
-            f"{detail}\n\n"
-            "[bold]Useful commands:[/bold]\n\n"
-            "  [cyan]ductor service status[/cyan]     Check if it's running\n"
-            "  [cyan]ductor service stop[/cyan]       Stop the service\n"
-            f"  [cyan]ductor service logs[/cyan]       {logs_hint}\n"
-            "  [cyan]ductor service uninstall[/cyan]  Remove the service",
-            title="[bold green]Service Installed[/bold green]",
+            t_rich("service.install.body", detail=detail, logs_hint=logs_hint),
+            title=t_rich("service.install.title"),
             border_style="green",
             padding=(1, 2),
         ),

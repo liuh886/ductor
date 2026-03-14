@@ -45,6 +45,7 @@ from ductor_bot.config import (
     AgentConfig,
     deep_merge_config,
 )
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.json_store import atomic_json_save
 from ductor_bot.workspace.init import init_workspace
 from ductor_bot.workspace.paths import resolve_paths
@@ -224,31 +225,25 @@ def _validate_telegram_config(config: AgentConfig) -> None:
     missing_token = not config.telegram_token or config.telegram_token.startswith("YOUR_")
     needs_users = not config.allowed_user_ids
     if missing_token or needs_users:
-        _console.print(
-            "[bold yellow]Config is incomplete. Run [bold]ductor onboarding[/bold].[/bold yellow]"
-        )
+        _console.print(t_rich("config.incomplete"))
         sys.exit(1)
 
 
 def _validate_matrix_config(config: AgentConfig) -> None:
     """Validate Matrix transport requirements."""
     m = config.matrix
-    hint = " Run [bold]ductor onboarding[/bold] to reconfigure."
+    hint = t_rich("config.onboarding_hint")
     if not m.homeserver:
-        _console.print(f"[bold yellow]Matrix homeserver URL is required.{hint}[/bold yellow]")
+        _console.print(t_rich("config.matrix_no_homeserver", hint=hint))
         sys.exit(1)
     if not m.user_id:
-        _console.print(f"[bold yellow]Matrix user_id is required.{hint}[/bold yellow]")
+        _console.print(t_rich("config.matrix_no_user", hint=hint))
         sys.exit(1)
     if not m.password and not m.access_token:
-        _console.print(
-            f"[bold yellow]Matrix password or access_token is required.{hint}[/bold yellow]"
-        )
+        _console.print(t_rich("config.matrix_no_auth", hint=hint))
         sys.exit(1)
     if not m.allowed_rooms and not m.allowed_users:
-        _console.print(
-            f"[bold yellow]At least one allowed_room or allowed_user is required.{hint}[/bold yellow]"
-        )
+        _console.print(t_rich("config.matrix_no_target", hint=hint))
         sys.exit(1)
 
 
@@ -273,8 +268,7 @@ def _cmd_status() -> None:
     else:
         _console.print(
             Panel(
-                "[bold yellow]Not configured.[/bold yellow]\n\n"
-                "Run [bold]ductor[/bold] to start the setup wizard.",
+                t_rich("status.not_configured"),
                 title="[bold]Status[/bold]",
                 border_style="yellow",
                 padding=(1, 2),

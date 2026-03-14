@@ -12,6 +12,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from rich.panel import Panel
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.service_base import (
     ensure_console,
     find_ductor_binary,
@@ -39,16 +40,15 @@ _CREATE_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 _ACCESS_DENIED_HINTS = ("access is denied", "zugriff verweigert", "zugriff wurde verweigert")
 
-_ADMIN_HINT_PANEL = Panel(
-    "[bold yellow]Administrator privileges required.[/bold yellow]\n\n"
-    "Open a terminal as Administrator and try again:\n\n"
-    "  [bold]1.[/bold] Right-click on CMD or PowerShell\n"
-    "  [bold]2.[/bold] Select [cyan]'Run as administrator'[/cyan]\n"
-    "  [bold]3.[/bold] Run: [cyan]ductor service install[/cyan]",
-    title="[bold yellow]Admin Required[/bold yellow]",
-    border_style="yellow",
-    padding=(1, 2),
-)
+
+def _admin_hint_panel() -> Panel:
+    """Build the admin-required hint panel (deferred to allow i18n init)."""
+    return Panel(
+        t_rich("service.windows.admin_body"),
+        title=t_rich("service.windows.admin_title"),
+        border_style="yellow",
+        padding=(1, 2),
+    )
 
 
 def _run_schtasks(*args: str) -> subprocess.CompletedProcess[str]:
@@ -172,9 +172,7 @@ def install_service(console: Console | None = None) -> bool:
     console = ensure_console(console)
 
     if not is_service_available():
-        console.print(
-            "[bold red]Task Scheduler not available. Service install requires Windows.[/bold red]"
-        )
+        console.print(t_rich("service.windows.no_scheduler"))
         return False
 
     # Resolve command: prefer pythonw.exe (no console window) over ductor binary
@@ -189,13 +187,13 @@ def install_service(console: Console | None = None) -> bool:
             return False
         command = binary
         arguments = ""
-        console.print("[dim]Note: pythonw.exe not found. A console window may be visible.[/dim]")
+        console.print(t_rich("service.windows.no_pythonw"))
 
     # Remove existing task if present (clean re-install)
     if is_service_installed():
         delete_result = _run_schtasks("/Delete", "/TN", _TASK_NAME, "/F")
         if delete_result.returncode != 0 and _is_access_denied(delete_result):
-            console.print(_ADMIN_HINT_PANEL)
+            console.print(_admin_hint_panel())
             return False
 
     # Write XML and create task
@@ -210,11 +208,9 @@ def install_service(console: Console | None = None) -> bool:
 
     if result.returncode != 0:
         if _is_access_denied(result):
-            console.print(_ADMIN_HINT_PANEL)
+            console.print(_admin_hint_panel())
         else:
-            console.print(
-                f"[bold red]Failed to create scheduled task:[/bold red] {result.stderr.strip()}"
-            )
+            console.print(t_rich("service.windows.create_failed", error=result.stderr.strip()))
         return False
 
     logger.info("Scheduled task created: %s", _TASK_NAME)
@@ -222,14 +218,12 @@ def install_service(console: Console | None = None) -> bool:
     # Start it immediately
     run_result = _run_schtasks("/Run", "/TN", _TASK_NAME)
     if run_result.returncode != 0:
-        console.print(
-            f"[bold red]Task created but failed to start:[/bold red] {run_result.stderr.strip()}"
-        )
+        console.print(t_rich("service.windows.start_failed", error=run_result.stderr.strip()))
         return False
 
     print_install_success(
         console,
-        detail="It starts 10s after login and restarts on crash (up to 3 retries, 1 min apart).",
+        detail=t_rich("service.windows.detail"),
     )
     return True
 
@@ -248,9 +242,9 @@ def uninstall_service(console: Console | None = None) -> bool:
 
     if result.returncode != 0:
         if _is_access_denied(result):
-            console.print(_ADMIN_HINT_PANEL)
+            console.print(_admin_hint_panel())
         else:
-            console.print(f"[red]Failed to remove task: {result.stderr.strip()}[/red]")
+            console.print(t_rich("service.windows.remove_failed", error=result.stderr.strip()))
         return False
 
     print_removed(console)
@@ -299,7 +293,7 @@ def print_service_status(console: Console | None = None) -> None:
     if result.returncode == 0:
         console.print(result.stdout)
     else:
-        console.print(f"[red]Could not query task status: {result.stderr.strip()}[/red]")
+        console.print(t_rich("service.windows.query_failed", error=result.stderr.strip()))
 
 
 def print_service_logs(console: Console | None = None) -> None:

@@ -7,6 +7,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.infra.restart import consume_restart_sentinel
 from ductor_bot.infra.updater import UpdateObserver, consume_upgrade_sentinel
 from ductor_bot.infra.version import get_current_version
@@ -23,7 +24,7 @@ async def _handle_restart_sentinel(bot: TelegramBot) -> dict[str, object] | None
     sentinel = await asyncio.to_thread(consume_restart_sentinel, sentinel_path=sentinel_path)
     if sentinel:
         chat_id = int(sentinel.get("chat_id", 0))
-        msg = str(sentinel.get("message", "Restart completed."))
+        msg = str(sentinel.get("message", t("startup.restart_default")))
         if chat_id:
             await bot.notification_service.notify(chat_id, msg)
     return sentinel
@@ -38,7 +39,7 @@ async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None)
         new_v = upgrade.get("new_version", get_current_version())
         if uid:
             await bot.notification_service.notify(
-                uid, f"**Upgrade complete** `{old_v}` -> `{new_v}`"
+                uid, t("startup.upgrade_complete", old=old_v, new=new_v)
             )
 
     from ductor_bot.infra.startup_state import detect_startup_kind, save_startup_state

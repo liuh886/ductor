@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.platform import is_windows
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 
@@ -37,22 +38,20 @@ def build_status_lines(status: StatusSummary, *, paths: DuctorPaths) -> list[str
     """Assemble the status panel content lines."""
     lines: list[str] = []
     if status.bot_running:
-        lines.append(
-            f"[bold green]Running[/bold green]  pid={status.bot_pid}  uptime: {status.bot_uptime}"
-        )
+        lines.append(t_rich("status.running", pid=status.bot_pid, uptime=status.bot_uptime))
     else:
-        lines.append("[dim]Not running[/dim]")
-    lines.append(f"Provider:  [cyan]{status.provider}[/cyan] ({status.model})")
+        lines.append(t_rich("status.not_running"))
+    lines.append(t_rich("status.provider", provider=status.provider, model=status.model))
     if status.docker_enabled:
-        lines.append(f"Docker:    [green]enabled[/green] ({status.docker_name})")
+        lines.append(t_rich("status.docker_enabled", name=status.docker_name))
     else:
-        lines.append("Docker:    [dim]disabled[/dim]")
+        lines.append(t_rich("status.docker_disabled"))
     if status.error_count > 0:
-        lines.append(f"Errors:    [bold red]{status.error_count}[/bold red] in latest log")
+        lines.append(t_rich("status.errors_found", count=status.error_count))
     else:
-        lines.append("Errors:    [green]0[/green]")
+        lines.append(t_rich("status.errors_none"))
     lines.append("")
-    lines.append("[bold]Paths:[/bold]")
+    lines.append(t_rich("status.paths_header"))
     lines.append(f"  Home:       [cyan]{paths.ductor_home}[/cyan]")
     lines.append(f"  Config:     [cyan]{paths.config_path}[/cyan]")
     lines.append(f"  Workspace:  [cyan]{paths.workspace}[/cyan]")
@@ -163,7 +162,7 @@ def print_usage() -> None:
     _console.print(
         Panel(
             Text(banner_text, style="bold cyan"),
-            subtitle="[dim]ductor.dev[/dim]",
+            subtitle=f"[dim]{t_rich('wizard.common.subtitle')}[/dim]",
             border_style="cyan",
             padding=(0, 2),
         ),
@@ -172,24 +171,24 @@ def print_usage() -> None:
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="bold green", min_width=24)
     table.add_column()
-    table.add_row("ductor", "Start the bot (runs onboarding if needed)")
-    table.add_row("ductor onboarding", "Setup wizard (resets if already configured)")
-    table.add_row("ductor stop", "Stop running bot and Docker container")
-    table.add_row("ductor restart", "Restart the bot")
-    table.add_row("ductor reset", "Full reset and re-setup")
-    table.add_row("ductor upgrade", "Stop, upgrade to latest, restart")
-    table.add_row("ductor uninstall", "Remove everything and uninstall")
+    table.add_row("ductor", t_rich("help.ductor"))
+    table.add_row("ductor onboarding", t_rich("help.onboarding"))
+    table.add_row("ductor stop", t_rich("help.stop"))
+    table.add_row("ductor restart", t_rich("help.restart"))
+    table.add_row("ductor reset", t_rich("help.reset"))
+    table.add_row("ductor upgrade", t_rich("help.upgrade"))
+    table.add_row("ductor uninstall", t_rich("help.uninstall"))
     is_macos = sys.platform == "darwin"
     svc_hint = "Task Scheduler" if is_windows() else ("launchd" if is_macos else "systemd")
-    table.add_row("ductor service install", f"Run as background service ({svc_hint})")
-    table.add_row("ductor service", "Service management (status/stop/logs/...)")
-    table.add_row("ductor agents", "Sub-agent management (list/add/remove)")
-    table.add_row("ductor docker", "Docker management (rebuild/enable/disable)")
-    table.add_row("ductor api", "API server management (enable/disable) [beta]")
-    table.add_row("ductor install <extra>", "Install optional extras (matrix, api)")
-    table.add_row("ductor status", "Show bot status, paths, and agents")
-    table.add_row("ductor help", "Show this message")
-    table.add_row("-v, --verbose", "Verbose logging output")
+    table.add_row("ductor service install", t_rich("help.service_install", hint=svc_hint))
+    table.add_row("ductor service", t_rich("help.service"))
+    table.add_row("ductor agents", t_rich("help.agents"))
+    table.add_row("ductor docker", t_rich("help.docker"))
+    table.add_row("ductor api", t_rich("help.api"))
+    table.add_row("ductor install <extra>", t_rich("help.install"))
+    table.add_row("ductor status", t_rich("help.status"))
+    table.add_row("ductor help", t_rich("help.help"))
+    table.add_row("-v, --verbose", t_rich("help.verbose"))
 
     _console.print(
         Panel(table, title="[bold]Commands[/bold]", border_style="blue", padding=(1, 0)),
@@ -200,8 +199,7 @@ def print_usage() -> None:
     else:
         _console.print(
             Panel(
-                "[bold yellow]Not configured.[/bold yellow]\n\n"
-                "Run [bold]ductor[/bold] to start the setup wizard.",
+                t_rich("status.not_configured"),
                 title="[bold]Status[/bold]",
                 border_style="yellow",
                 padding=(1, 2),

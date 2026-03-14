@@ -6,6 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram.callbacks import button_grid_to_markup
 from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich
 from ductor_bot.messenger.telegram.topic import (
@@ -42,7 +43,7 @@ async def handle_interrupt(
 
     interrupted = orchestrator.interrupt(chat_id)
     logger.info("Interrupt requested interrupted=%d", interrupted)
-    msg = f"Interrupted {interrupted} process(es)." if interrupted else "No active processes."
+    msg = t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
     await send_rich(
         bot,
         chat_id,
@@ -101,10 +102,7 @@ async def handle_abort_all(
         killed += await abort_all_callback()
 
     logger.info("Abort ALL requested killed=%d", killed)
-    if killed:
-        text = f"Stopped {killed} process(es) across all agents."
-    else:
-        text = "No active processes found on any agent."
+    text = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
     await send_rich(
         bot,
         chat_id,
@@ -167,7 +165,7 @@ async def handle_new_session(
             await send_rich(
                 bot,
                 chat_id,
-                f'Topic "{topic_name}" not found.',
+                t("new.topic_not_found", name=topic_name),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -178,7 +176,7 @@ async def handle_new_session(
         await send_rich(
             bot,
             chat_id,
-            f"New session for **{resolved_name}** ({provider}).",
+            t("new.topic_reset", name=resolved_name, provider=provider),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
         )
         return

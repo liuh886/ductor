@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.infra.restart import consume_restart_marker
 
 if TYPE_CHECKING:
@@ -38,7 +39,9 @@ async def run_matrix_startup(bot: MatrixBot) -> None:
 
         # Notify restart
         if restart_reason:
-            await bot.notification_service.notify_all(f"**Bot restarted** ({restart_reason})")
+            await bot.notification_service.notify_all(
+                t("startup.matrix_restart", reason=restart_reason)
+            )
 
         # Update checker
         try:
@@ -50,7 +53,7 @@ async def run_matrix_startup(bot: MatrixBot) -> None:
 
                 async def _on_update(info: VersionInfo) -> None:
                     await bot.notification_service.notify_all(
-                        f"**Update available:** `{info.latest}`\nUse `/upgrade` to update."
+                        t("startup.matrix_update", version=info.latest)
                     )
 
                 bot._update_observer = UpdateObserver(notify=_on_update)

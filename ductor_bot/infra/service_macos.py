@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.service_base import (
     collect_nvm_bin_dirs,
     ensure_console,
@@ -125,7 +126,7 @@ def install_service(console: Console | None = None) -> bool:
     console = ensure_console(console)
 
     if not is_service_available():
-        console.print("[bold red]launchctl not found. Service install requires macOS.[/bold red]")
+        console.print(t_rich("service.macos.no_launchctl"))
         return False
 
     binary = find_ductor_binary()
@@ -152,14 +153,14 @@ def install_service(console: Console | None = None) -> bool:
     # Load and enable
     result = _run_launchctl("load", "-w", str(plist_path))
     if result.returncode != 0:
-        console.print(f"[bold red]Failed to load Launch Agent:[/bold red] {result.stderr.strip()}")
+        console.print(t_rich("service.macos.start_failed", error=result.stderr.strip()))
         return False
 
     logger.info("Launch Agent loaded: %s", _LABEL)
 
     print_install_success(
         console,
-        detail="It starts on login and restarts on crash (10s throttle).",
+        detail=t_rich("service.macos.detail"),
     )
     return True
 
@@ -174,7 +175,7 @@ def uninstall_service(console: Console | None = None) -> bool:
 
     result = _run_launchctl("unload", "-w", str(_plist_path()))
     if result.returncode != 0:
-        console.print(f"[red]Failed to unload agent: {result.stderr.strip()}[/red]")
+        console.print(t_rich("service.macos.unload_failed", error=result.stderr.strip()))
         return False
 
     _plist_path().unlink(missing_ok=True)
@@ -224,7 +225,7 @@ def print_service_status(console: Console | None = None) -> None:
     if result.returncode == 0:
         console.print(result.stdout)
     else:
-        console.print("[red]Agent not loaded. Try: [bold]ductor service install[/bold][/red]")
+        console.print(t_rich("service.macos.not_loaded"))
 
 
 def print_service_logs(console: Console | None = None) -> None:

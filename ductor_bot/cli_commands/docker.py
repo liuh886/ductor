@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.workspace.paths import resolve_paths
 
 _console = Console()
@@ -84,12 +85,12 @@ def docker_read_config() -> tuple[Path, dict[str, object]] | None:
     paths = resolve_paths()
     config_path = paths.config_path
     if not config_path.exists():
-        _console.print("[bold red]Config not found. Run ductor first.[/bold red]")
+        _console.print(t_rich("docker.config_not_found"))
         return None
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        _console.print("[bold red]Failed to read config.[/bold red]")
+        _console.print(t_rich("docker.config_read_error"))
         return None
     return config_path, data
 
@@ -98,7 +99,7 @@ def _stop_docker_container(container_name: str) -> None:
     """Stop and remove a Docker container."""
     if not shutil.which("docker"):
         return
-    _console.print(f"[dim]Stopping Docker container '{container_name}'...[/dim]")
+    _console.print(t_rich("lifecycle.stopping_docker", name=container_name))
     subprocess.run(
         ["docker", "stop", "-t", "5", container_name],
         capture_output=True,
@@ -109,7 +110,7 @@ def _stop_docker_container(container_name: str) -> None:
         capture_output=True,
         check=False,
     )
-    _console.print("[green]Docker container stopped.[/green]")
+    _console.print(t_rich("lifecycle.docker_stopped"))
 
 
 def docker_set_enabled(*, enabled: bool) -> None:
@@ -131,9 +132,11 @@ def docker_set_enabled(*, enabled: bool) -> None:
         container = str(docker.get("container_name", "ductor-sandbox"))
         _stop_docker_container(container)
 
-    state = "[green]enabled[/green]" if enabled else "[dim]disabled[/dim]"
-    _console.print(f"Docker sandboxing: {state}")
-    _console.print("[dim]Restart the bot to apply.[/dim]")
+    if enabled:
+        _console.print(t_rich("docker.enabled"))
+    else:
+        _console.print(t_rich("docker.disabled"))
+    _console.print(t_rich("docker.restart_hint"))
 
 
 def docker_rebuild() -> None:
@@ -154,19 +157,16 @@ def docker_rebuild() -> None:
             container = str(docker.get("container_name", container))
             image = str(docker.get("image_name", image))
 
-    _console.print("[dim]Stopping bot...[/dim]")
+    _console.print(t_rich("docker.rebuild.stopping"))
     stop_bot()
 
-    _console.print(f"[dim]Removing container '{container}'...[/dim]")
+    _console.print(t_rich("docker.rebuild.removing_container", name=container))
     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
 
-    _console.print(f"[dim]Removing image '{image}'...[/dim]")
+    _console.print(t_rich("docker.rebuild.removing_image", name=image))
     subprocess.run(["docker", "rmi", image], capture_output=True, check=False)
 
-    _console.print(
-        "[green]Done.[/green] Image will be rebuilt on next bot start.\n"
-        "[dim]If running as a service, it will restart automatically.[/dim]"
-    )
+    _console.print(t_rich("docker.rebuild.done"))
 
 
 def _expand_path(raw: str) -> Path:
@@ -203,17 +203,17 @@ def docker_mount(args: list[str]) -> None:
     """Add a host directory to the Docker sandbox mounts."""
     raw_path = _parse_docker_mount_arg(args)
     if not raw_path:
-        _console.print("[bold red]Usage: ductor docker mount <path>[/bold red]")
+        _console.print(t_rich("docker.mount.usage"))
         return
 
     expanded = _expand_path(raw_path)
     try:
         resolved = expanded.resolve(strict=True)
     except OSError:
-        _console.print(f"[bold red]Path does not exist: {raw_path}[/bold red]")
+        _console.print(t_rich("docker.mount.not_exist", path=raw_path))
         return
     if not resolved.is_dir():
-        _console.print(f"[bold red]Not a directory: {raw_path}[/bold red]")
+        _console.print(t_rich("docker.mount.not_dir", path=raw_path))
         return
 
     result = docker_read_config()
@@ -224,7 +224,7 @@ def docker_mount(args: list[str]) -> None:
     resolved_str = str(resolved)
 
     if _is_duplicate_mount(mounts, resolved_str):
-        _console.print(f"[dim]Already mounted: {resolved}[/dim]")
+        _console.print(t_rich("docker.mount.already", path=resolved))
         return
 
     from ductor_bot.infra.json_store import atomic_json_save
@@ -236,8 +236,8 @@ def docker_mount(args: list[str]) -> None:
 
     pair = resolve_mount_target(resolved_str, set())
     target_info = f" -> [cyan]{pair[1]}[/cyan]" if pair else ""
-    _console.print(f"[green]Mounted:[/green] {resolved}{target_info}")
-    _console.print("[dim]Restart the bot (or rebuild the container) to apply.[/dim]")
+    _console.print(t_rich("docker.mount.done", path=resolved, target=target_info))
+    _console.print(t_rich("docker.mount.apply_hint"))
 
 
 def _find_mount_entry(mounts: list[object], raw_path: str) -> str | None:
@@ -268,7 +268,7 @@ def docker_unmount(args: list[str]) -> None:
     """Remove a host directory from the Docker sandbox mounts."""
     raw_path = _parse_docker_mount_arg(args)
     if not raw_path:
-        _console.print("[bold red]Usage: ductor docker unmount <path>[/bold red]")
+        _console.print(t_rich("docker.unmount.usage"))
         return
 
     result = docker_read_config()
@@ -278,21 +278,21 @@ def docker_unmount(args: list[str]) -> None:
 
     docker = data.get("docker", {})
     if not isinstance(docker, dict) or not isinstance(docker.get("mounts"), list):
-        _console.print("[dim]No mounts configured.[/dim]")
+        _console.print(t_rich("docker.mounts.empty"))
         return
     mounts: list[object] = docker["mounts"]
 
     to_remove = _find_mount_entry(mounts, raw_path)
     if to_remove is None:
-        _console.print(f"[bold red]Mount not found: {raw_path}[/bold red]")
+        _console.print(t_rich("docker.unmount.not_found", path=raw_path))
         return
 
     from ductor_bot.infra.json_store import atomic_json_save
 
     mounts.remove(to_remove)
     atomic_json_save(config_path, data)
-    _console.print(f"[green]Unmounted:[/green] {to_remove}")
-    _console.print("[dim]Restart the bot (or rebuild the container) to apply.[/dim]")
+    _console.print(t_rich("docker.unmount.done", path=to_remove))
+    _console.print(t_rich("docker.mount.apply_hint"))
 
 
 def docker_list_mounts() -> None:
@@ -305,8 +305,8 @@ def docker_list_mounts() -> None:
     docker = data.get("docker", {})
     mounts = docker.get("mounts", []) if isinstance(docker, dict) else []
     if not isinstance(mounts, list) or not mounts:
-        _console.print("[dim]No mounts configured.[/dim]")
-        _console.print("[dim]Use 'ductor docker mount <path>' to add one.[/dim]")
+        _console.print(t_rich("docker.mounts.empty"))
+        _console.print(t_rich("docker.mounts.add_hint"))
         return
 
     from ductor_bot.infra.docker import resolve_mount_target
@@ -360,16 +360,20 @@ def docker_extras_list() -> None:
                 selected = {str(e) for e in raw}
 
     table = Table(show_header=True, box=None, padding=(0, 2))
-    table.add_column("Package", style="bold", min_width=18)
-    table.add_column("What it does", min_width=30)
+    table.add_column(t_rich("docker.extras.col_package"), style="bold", min_width=18)
+    table.add_column(t_rich("docker.extras.col_description"), min_width=30)
     table.add_column("ID", style="dim")
     table.add_column("Size", style="cyan", justify="right")
-    table.add_column("Status")
+    table.add_column(t_rich("docker.extras.col_status"))
 
     for category, extras in extras_for_display():
         table.add_row(f"[bold yellow]{category}[/bold yellow]", "", "", "", "")
         for extra in extras:
-            status = "[green]selected[/green]" if extra.id in selected else "[dim]—[/dim]"
+            status = (
+                t_rich("docker.extras.selected")
+                if extra.id in selected
+                else t_rich("docker.extras.not_selected")
+            )
             table.add_row(
                 f"  {extra.name}", extra.description, extra.id, extra.size_estimate, status
             )
@@ -377,12 +381,10 @@ def docker_extras_list() -> None:
     _console.print(table)
     if selected:
         _console.print()
-        _console.print(
-            "[dim]Run 'ductor docker rebuild' to apply selected extras to the image.[/dim]"
-        )
+        _console.print(t_rich("docker.extras.apply_hint"))
     _console.print()
-    _console.print("[dim]Use 'ductor docker extras-add <id>' to add an extra.[/dim]")
-    _console.print("[dim]Use 'ductor docker extras-remove <id>' to remove an extra.[/dim]")
+    _console.print(t_rich("docker.extras.add_hint"))
+    _console.print(t_rich("docker.extras.remove_hint"))
 
 
 def docker_extras_add(args: list[str]) -> None:
@@ -393,13 +395,13 @@ def docker_extras_add(args: list[str]) -> None:
     extra_id = positionals[2] if len(positionals) >= 3 else None
 
     if not extra_id:
-        _console.print("[bold red]Usage: ductor docker extras-add <id>[/bold red]")
-        _console.print("[dim]Run 'ductor docker extras' to see available IDs.[/dim]")
+        _console.print(t_rich("docker.extras.usage_add"))
+        _console.print(t_rich("docker.extras.see_ids"))
         return
 
     if extra_id not in DOCKER_EXTRAS_BY_ID:
-        _console.print(f"[bold red]Unknown extra: {extra_id}[/bold red]")
-        _console.print("[dim]Run 'ductor docker extras' to see available IDs.[/dim]")
+        _console.print(t_rich("docker.extras.unknown", id=extra_id))
+        _console.print(t_rich("docker.extras.see_ids"))
         return
 
     result = docker_read_config()
@@ -410,7 +412,7 @@ def docker_extras_add(args: list[str]) -> None:
     current_set = {str(e) for e in extras}
 
     if extra_id in current_set:
-        _console.print(f"[dim]Already installed: {extra_id}[/dim]")
+        _console.print(t_rich("docker.extras.already_installed", id=extra_id))
         return
 
     # Collect the extra plus its transitive dependencies.
@@ -434,12 +436,12 @@ def docker_extras_add(args: list[str]) -> None:
     atomic_json_save(config_path, data)
 
     added_names = [DOCKER_EXTRAS_BY_ID[i].name for i in new_ids]
-    _console.print(f"[green]Added:[/green] {', '.join(added_names)}")
+    _console.print(t_rich("docker.extras.added", names=", ".join(added_names)))
     dep_ids = [i for i in new_ids if i != extra_id]
     if dep_ids:
         dep_names = [DOCKER_EXTRAS_BY_ID[i].name for i in dep_ids]
-        _console.print(f"[dim]Auto-added dependencies: {', '.join(dep_names)}[/dim]")
-    _console.print("[yellow]Run 'ductor docker rebuild' to apply.[/yellow]")
+        _console.print(t_rich("docker.extras.auto_deps", names=", ".join(dep_names)))
+    _console.print(t_rich("docker.extras.rebuild_hint"))
 
 
 def docker_extras_remove(args: list[str]) -> None:
@@ -450,8 +452,8 @@ def docker_extras_remove(args: list[str]) -> None:
     extra_id = positionals[2] if len(positionals) >= 3 else None
 
     if not extra_id:
-        _console.print("[bold red]Usage: ductor docker extras-remove <id>[/bold red]")
-        _console.print("[dim]Run 'ductor docker extras' to see installed IDs.[/dim]")
+        _console.print(t_rich("docker.extras.usage_remove"))
+        _console.print(t_rich("docker.extras.see_installed"))
         return
 
     result = docker_read_config()
@@ -462,7 +464,7 @@ def docker_extras_remove(args: list[str]) -> None:
     current_set = {str(e) for e in extras}
 
     if extra_id not in current_set:
-        _console.print(f"[bold red]Not installed: {extra_id}[/bold red]")
+        _console.print(t_rich("docker.extras.not_installed", id=extra_id))
         return
 
     # Warn about reverse dependencies that are still installed.
@@ -473,8 +475,11 @@ def docker_extras_remove(args: list[str]) -> None:
     ]
     if dependents:
         _console.print(
-            f"[yellow]Warning: {', '.join(dependents)} depend on "
-            f"{DOCKER_EXTRAS_BY_ID[extra_id].name}.[/yellow]"
+            t_rich(
+                "docker.extras.dep_warning",
+                dependents=", ".join(dependents),
+                name=DOCKER_EXTRAS_BY_ID[extra_id].name,
+            )
         )
 
     from ductor_bot.infra.json_store import atomic_json_save
@@ -483,8 +488,8 @@ def docker_extras_remove(args: list[str]) -> None:
     atomic_json_save(config_path, data)
 
     name = DOCKER_EXTRAS_BY_ID[extra_id].name if extra_id in DOCKER_EXTRAS_BY_ID else extra_id
-    _console.print(f"[green]Removed:[/green] {name}")
-    _console.print("[yellow]Run 'ductor docker rebuild' to apply.[/yellow]")
+    _console.print(t_rich("docker.extras.removed", name=name))
+    _console.print(t_rich("docker.extras.rebuild_hint"))
 
 
 def cmd_docker(args: list[str]) -> None:

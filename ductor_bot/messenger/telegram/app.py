@@ -22,6 +22,7 @@ from ductor_bot.commands import BOT_COMMANDS as _COMMAND_DEFS
 from ductor_bot.commands import MULTIAGENT_SUB_COMMANDS as _MA_SUB_DEFS
 from ductor_bot.config import AgentConfig
 from ductor_bot.files.allowed_roots import resolve_allowed_roots
+from ductor_bot.i18n import t
 from ductor_bot.infra.restart import EXIT_RESTART, consume_restart_marker
 from ductor_bot.infra.updater import UpdateObserver
 from ductor_bot.infra.version import VersionInfo, get_current_version
@@ -113,19 +114,20 @@ def _help_line(command: str) -> str:
     return f"/{command} -- {description}" if description else f"/{command}"
 
 
-_HELP_TEXT = fmt(
-    "**Command Reference**",
-    SEP,
-    f"Daily\n{_help_line('new')}\n{_help_line('stop')}\n{_help_line('interrupt')}\n{_help_line('stop_all')}\n"
-    f"{_help_line('model')}\n{_help_line('status')}\n{_help_line('memory')}",
-    f"Automation\n{_help_line('session')}\n{_help_line('tasks')}\n{_help_line('cron')}",
-    f"Multi-Agent\n{_help_line('agent_commands')}",
-    f"Browse & Info\n{_help_line('where')}\n{_help_line('leave')}\n"
-    f"{_help_line('showfiles')}\n{_help_line('info')}\n{_help_line('help')}",
-    f"Maintenance\n{_help_line('diagnose')}\n{_help_line('upgrade')}\n{_help_line('restart')}",
-    SEP,
-    "Send any message to start working with your agent.",
-)
+def _build_help_text() -> str:
+    return fmt(
+        t("help.header"),
+        SEP,
+        f"{t('help.cat_daily')}\n{_help_line('new')}\n{_help_line('stop')}\n{_help_line('interrupt')}\n{_help_line('stop_all')}\n"
+        f"{_help_line('model')}\n{_help_line('status')}\n{_help_line('memory')}",
+        f"{t('help.cat_automation')}\n{_help_line('session')}\n{_help_line('tasks')}\n{_help_line('cron')}",
+        f"{t('help.cat_multiagent')}\n{_help_line('agent_commands')}",
+        f"{t('help.cat_browse')}\n{_help_line('where')}\n{_help_line('leave')}\n"
+        f"{_help_line('showfiles')}\n{_help_line('info')}\n{_help_line('help')}",
+        f"{t('help.cat_maintenance')}\n{_help_line('diagnose')}\n{_help_line('upgrade')}\n{_help_line('restart')}",
+        SEP,
+        t("help.footer"),
+    )
 
 
 async def _cancel_task(task: asyncio.Task[None] | None) -> None:
@@ -374,7 +376,7 @@ class TelegramBot:
             with contextlib.suppress(TelegramAPIError):
                 await self._bot.send_message(
                     chat.id,
-                    "This bot is not authorized for this group.",
+                    t("telegram.group_rejected"),
                 )
             with contextlib.suppress(TelegramAPIError):
                 await self._bot.leave_chat(chat.id)
@@ -460,10 +462,10 @@ class TelegramBot:
     def _format_where(self) -> str:
         """Build the /where response text."""
         if not self._chat_tracker:
-            return fmt("**Where**", SEP, "Chat tracker not available.")
+            return fmt(t("telegram.where_header"), SEP, t("telegram.where_no_tracker"))
         records = self._chat_tracker.get_all()
         if not records:
-            return fmt("**Where**", SEP, "No chat activity recorded yet.")
+            return fmt(t("telegram.where_header"), SEP, t("telegram.where_empty"))
 
         sections: list[str] = []
         active = [r for r in records if r.status == "active" and r.allowed]
@@ -483,7 +485,7 @@ class TelegramBot:
             lines = [f"{self._where_line(r)} [{r.status}]" for r in left]
             sections.append("**Left**\n" + "\n".join(lines))
 
-        return fmt("**Where**", SEP, *sections)
+        return fmt(t("telegram.where_header"), SEP, *sections)
 
     async def _handle_where(self, chat_id: int, message: Message) -> None:
         """Handle /where: show all tracked chats/groups."""
@@ -505,7 +507,7 @@ class TelegramBot:
             await send_rich(
                 self._bot,
                 chat_id,
-                fmt("**Usage**", SEP, "`/leave <group_id>`"),
+                fmt(t("telegram.leave_usage_header"), SEP, t("telegram.leave_usage")),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -516,7 +518,7 @@ class TelegramBot:
             await send_rich(
                 self._bot,
                 chat_id,
-                "Invalid group ID.",
+                t("telegram.leave_invalid_id"),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -527,7 +529,7 @@ class TelegramBot:
             await send_rich(
                 self._bot,
                 chat_id,
-                f"Failed to leave: {exc}",
+                t("telegram.leave_failed", error=exc),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -538,7 +540,7 @@ class TelegramBot:
         await send_rich(
             self._bot,
             chat_id,
-            f"Left group <code>{group_id}</code>.",
+            t("telegram.left_group", group_id=group_id),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
         )
 
@@ -634,7 +636,7 @@ class TelegramBot:
         await send_rich(
             self._bot,
             message.chat.id,
-            _HELP_TEXT,
+            _build_help_text(),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
         )
 
@@ -648,22 +650,18 @@ class TelegramBot:
         thread_id = get_thread_id(message)
 
         lines = [
-            "The multi-agent system lets you run additional bots as "
-            "sub-agents — each with its own Telegram token, workspace, "
-            "and user list. All agents share a single process and can "
-            "communicate via the inter-agent bus.",
+            t("agents.telegram_explanation"),
             "",
-            "**Commands**",
+            t("agents.commands_header"),
             "`/agents` — list all agents and their status",
             "`/agent_start <name>` — start a sub-agent",
             "`/agent_stop <name>` — stop a sub-agent",
             "`/agent_restart <name>` — restart a sub-agent",
             "",
-            "**Setup**",
-            "Ask your agent to create a new sub-agent or edit "
-            "`agents.json` in your ductor home directory.",
+            t("agents.setup_header"),
+            t("agents.setup_instruction"),
         ]
-        text = fmt("**Multi-Agent System**", SEP, "\n".join(lines))
+        text = fmt(t("agents.system_header"), SEP, "\n".join(lines))
         await send_rich(
             self._bot,
             chat_id,
@@ -681,11 +679,10 @@ class TelegramBot:
 
         version = get_current_version()
         text = fmt(
-            "**ductor.dev**",
-            f"Version: `{version}`",
+            t("info.header"),
+            t("info.version", version=version),
             SEP,
-            "AI coding agents (Claude, Codex, Gemini) on Telegram.\n"
-            "Named sessions, persistent memory, cron jobs, webhooks, live streaming.",
+            t("info.telegram_description"),
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -802,8 +799,7 @@ class TelegramBot:
                 await send_rich(
                     self._bot,
                     chat_id,
-                    "**Model switched.** Current process still running"
-                    " — new model applies to the next message.",
+                    t("model.switched_while_busy"),
                     SendRichOpts(
                         reply_to_message_id=message.message_id, thread_id=get_thread_id(message)
                     ),
@@ -878,44 +874,42 @@ class TelegramBot:
         """Build the /session hub: explain the system + show commands."""
         providers = self._orch.available_providers
         lines: list[str] = [
-            "Background sessions run tasks in parallel without blocking "
-            "the main chat. Each session gets a unique name and runs "
-            "independently — you can have multiple sessions active at once.",
+            t("session_help.telegram_explanation"),
             "",
-            "**Usage**",
+            t("session_help.usage_header"),
         ]
 
         if len(providers) == 1:
             p = next(iter(providers))
             if p == "claude":
-                lines.append("`/session <prompt>` — runs on Claude")
-                lines.append("`/session @opus <prompt>` — specific model")
+                lines.append(t("session_help.claude_single"))
+                lines.append(t("session_help.claude_model"))
             elif p == "codex":
-                lines.append("`/session <prompt>` — runs on Codex")
+                lines.append(t("session_help.codex_single"))
             else:
-                lines.append("`/session <prompt>` — runs on Gemini")
-                lines.append("`/session @flash <prompt>` — specific model")
+                lines.append(t("session_help.gemini_single"))
+                lines.append(t("session_help.gemini_model"))
         else:
-            lines.append("`/session <prompt>` — default provider")
+            lines.append(t("session_help.default_provider"))
             if "claude" in providers:
-                lines.append("`/session @opus <prompt>` — Claude (opus)")
+                lines.append(t("session_help.claude_multi"))
             if "codex" in providers:
-                lines.append("`/session @codex <prompt>` — Codex")
+                lines.append(t("session_help.codex_multi"))
             if "gemini" in providers:
-                lines.append("`/session @flash <prompt>` — Gemini (flash)")
-            lines.append("`/session @provider model <prompt>` — explicit")
+                lines.append(t("session_help.gemini_multi"))
+            lines.append(t("session_help.explicit"))
 
         lines += [
             "",
-            "**Follow up**",
-            "`@session-name <message>` — send a follow-up to a running session",
+            t("session_help.followup_header"),
+            t("session_help.followup_line"),
             "",
-            "**Commands**",
-            "`/sessions` — view and manage all background sessions",
-            "`/stop` — cancel the running session",
+            t("session_help.commands_header"),
+            t("session_help.telegram_sessions_cmd"),
+            t("session_help.telegram_stop_cmd"),
         ]
 
-        return fmt("**Background Sessions**", SEP, "\n".join(lines))
+        return fmt(t("session_help.header"), SEP, "\n".join(lines))
 
     async def _on_session(self, message: Message) -> None:
         """Handle /session: submit a named background session."""

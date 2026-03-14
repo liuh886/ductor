@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.service_base import (
     collect_nvm_bin_dirs,
     ensure_console,
@@ -125,9 +126,7 @@ def install_service(console: Console | None = None) -> bool:
     console = ensure_console(console)
 
     if not _has_systemd():
-        console.print(
-            "[bold red]systemd not found. Service install requires Linux with systemd.[/bold red]"
-        )
+        console.print(t_rich("service.linux.no_systemd"))
         return False
 
     binary = find_ductor_binary()
@@ -146,10 +145,7 @@ def install_service(console: Console | None = None) -> bool:
     logger.info("Service enabled")
 
     if not _has_linger():
-        console.print(
-            "\n[bold yellow]Linger must be enabled so ductor keeps running "
-            "after you log out.[/bold yellow]"
-        )
+        console.print(f"\n{t_rich('service.linux.linger_warning')}")
         user = getpass.getuser()
         result = subprocess.run(
             ["sudo", "loginctl", "enable-linger", user],
@@ -158,21 +154,18 @@ def install_service(console: Console | None = None) -> bool:
             check=False,
         )
         if result.returncode == 0:
-            console.print("[green]Linger enabled.[/green]")
+            console.print(t_rich("service.linux.linger_enabled"))
         else:
-            console.print(
-                f"[yellow]Could not enable linger automatically.[/yellow]\n"
-                f"Run manually: [bold]sudo loginctl enable-linger {user}[/bold]"
-            )
+            console.print(t_rich("service.linux.linger_manual", user=user))
 
     result = _run_systemctl("start", _SERVICE_NAME)
     if result.returncode != 0:
-        console.print(f"[bold red]Failed to start service:[/bold red] {result.stderr.strip()}")
+        console.print(t_rich("service.linux.start_failed", error=result.stderr.strip()))
         return False
 
     print_install_success(
         console,
-        detail="It starts on boot and restarts on crash.",
+        detail=t_rich("service.linux.detail"),
         logs_hint="View live logs",
     )
     return True

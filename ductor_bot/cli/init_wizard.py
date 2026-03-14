@@ -19,6 +19,7 @@ from rich.text import Text
 
 from ductor_bot.cli.auth import AuthStatus, check_claude_auth, check_codex_auth, check_gemini_auth
 from ductor_bot.config import DEFAULT_EMPTY_GEMINI_API_KEY, AgentConfig, deep_merge_config
+from ductor_bot.i18n import t_rich
 from ductor_bot.workspace.init import init_workspace
 from ductor_bot.workspace.paths import resolve_paths
 
@@ -71,7 +72,7 @@ _MANUAL_TZ_OPTION = "-> Enter manually"
 
 def _abort() -> NoReturn:
     """Print abort message and exit."""
-    Console().print("\n[dim]Setup cancelled.[/dim]\n")
+    Console().print(f"\n{t_rich('wizard.common.cancelled')}\n")
     sys.exit(0)
 
 
@@ -81,7 +82,7 @@ def _show_banner(console: Console) -> None:
     console.print(
         Panel(
             banner,
-            subtitle="[dim]ductor.dev[/dim]",
+            subtitle=f"[dim]{t_rich('wizard.common.subtitle')}[/dim]",
             border_style="cyan",
             padding=(0, 2),
         ),
@@ -102,10 +103,10 @@ def _check_clis(console: Console) -> None:
     gemini = check_gemini_auth()
 
     lines = [
-        "[bold]Detected AI Backends:[/bold]\n",
-        f"  Claude Code CLI   {_STATUS_ICON[claude.status]}",
-        f"  OpenAI Codex CLI  {_STATUS_ICON[codex.status]}",
-        f"  Google Gemini CLI {_STATUS_ICON[gemini.status]}",
+        t_rich("wizard.cli_backends.header"),
+        t_rich("wizard.cli_backends.claude", status=_STATUS_ICON[claude.status]),
+        t_rich("wizard.cli_backends.codex", status=_STATUS_ICON[codex.status]),
+        t_rich("wizard.cli_backends.gemini", status=_STATUS_ICON[gemini.status]),
     ]
 
     has_auth = claude.is_authenticated or codex.is_authenticated or gemini.is_authenticated
@@ -114,17 +115,12 @@ def _check_clis(console: Console) -> None:
         border = "green"
     else:
         border = "red"
-        lines.append(
-            "\n[bold red]At least one CLI must be installed and authenticated.[/bold red]\n\n"
-            "  Claude: [dim]https://docs.anthropic.com/en/docs/claude-code[/dim]\n"
-            "  Codex:  [dim]https://github.com/openai/codex[/dim]\n"
-            "  Gemini: [dim]https://github.com/google-gemini/gemini-cli[/dim]"
-        )
+        lines.append(t_rich("wizard.cli_backends.no_auth"))
 
     console.print(
         Panel(
             "\n".join(lines),
-            title="[bold]CLI Backends[/bold]",
+            title=t_rich("wizard.cli_backends.title"),
             border_style=border,
             padding=(1, 2),
         ),
@@ -137,29 +133,17 @@ def _check_clis(console: Console) -> None:
 
 def _show_disclaimer(console: Console) -> None:
     """Display the risk disclaimer and require confirmation."""
-    disclaimer = (
-        "[bold]Important -- please read before continuing.[/bold]\n\n"
-        "ductor connects to [bold]Anthropic Claude CLI[/bold] and "
-        "[bold]OpenAI Codex CLI[/bold] as AI agent backends.\n\n"
-        "The bot operates in [bold yellow]full permission bypass mode[/bold yellow]. "
-        "The agent can read, write, and delete files, execute commands, "
-        "and interact with your system without asking for confirmation.\n\n"
-        "While safeguards are in place, [bold red]unintended actions can occur[/bold red] "
-        "-- including data loss, unexpected file changes, or unintended command execution.\n\n"
-        "[bold green]We strongly recommend running ductor inside a Docker container[/bold green] "
-        "to isolate it from your host system."
-    )
     console.print(
         Panel(
-            disclaimer,
-            title="[bold yellow]Disclaimer[/bold yellow]",
+            t_rich("wizard.disclaimer.body"),
+            title=t_rich("wizard.disclaimer.title"),
             border_style="yellow",
             padding=(1, 2),
         )
     )
 
     accepted = questionary.confirm(
-        "I understand the risks and want to continue.",
+        t_rich("wizard.disclaimer.confirm"),
         default=False,
     ).ask()
     if not accepted:
@@ -175,17 +159,15 @@ def _ask_transport(console: Console) -> str:
     """Prompt for the messaging transport (Telegram or Matrix)."""
     console.print(
         Panel(
-            "[bold]Choose how users will talk to the bot:[/bold]\n\n"
-            "  [bold cyan]Telegram[/bold cyan]  — Requires a bot token from @BotFather\n"
-            "  [bold cyan]Matrix[/bold cyan]    — Requires a Matrix account on a homeserver (e.g. Element)",
-            title="[bold]Messaging Transport[/bold]",
+            t_rich("wizard.transport.body"),
+            title=t_rich("wizard.transport.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     selected: str | None = questionary.select(
-        "Select transport:",
+        t_rich("wizard.transport.prompt"),
         choices=["Telegram", "Matrix"],
     ).ask()
     if selected is None:
@@ -200,62 +182,48 @@ def _ask_transport(console: Console) -> str:
 
 def _ask_telegram_token(console: Console) -> str:
     """Prompt for the Telegram bot token with instructions."""
-    instructions = (
-        "[bold]How to get your Telegram Bot Token:[/bold]\n\n"
-        "  1. Open Telegram and search for [bold cyan]@BotFather[/bold cyan]\n"
-        "  2. Send [bold]/newbot[/bold] and follow the prompts\n"
-        "  3. Choose a name and username for your bot\n"
-        "  4. BotFather will reply with your bot token\n\n"
-        "[dim]Token format: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz[/dim]"
-    )
     console.print(
         Panel(
-            instructions,
-            title="[bold]Telegram Bot Token[/bold]",
+            t_rich("wizard.telegram.token.body"),
+            title=t_rich("wizard.telegram.token.title"),
             border_style="blue",
             padding=(1, 2),
         )
     )
 
     while True:
-        token: str | None = questionary.text("Paste your bot token:").ask()
+        token: str | None = questionary.text(t_rich("wizard.telegram.token.prompt")).ask()
         if token is None:
             _abort()
         token = token.strip()
         if _TOKEN_PATTERN.match(token):
             return str(token)
-        console.print(
-            "[red]Invalid token format. Expected: digits:alphanumeric (e.g. 123456:ABC-xyz)[/red]"
-        )
+        console.print(t_rich("wizard.telegram.token.error"))
 
 
 def _ask_user_id(console: Console) -> list[int]:
     """Prompt for the Telegram user ID with instructions."""
-    instructions = (
-        "[bold]How to find your Telegram User ID:[/bold]\n\n"
-        "  1. Open Telegram and search for [bold cyan]@userinfobot[/bold cyan]\n"
-        "  2. Send [bold]/start[/bold] to the bot\n"
-        "  3. It will reply with your numeric user ID\n\n"
-        "[dim]Only messages from this user ID will be accepted by the bot.[/dim]"
-    )
     console.print(
         Panel(
-            instructions, title="[bold]Telegram User ID[/bold]", border_style="blue", padding=(1, 2)
+            t_rich("wizard.telegram.user_id.body"),
+            title=t_rich("wizard.telegram.user_id.title"),
+            border_style="blue",
+            padding=(1, 2),
         )
     )
 
     while True:
-        raw = questionary.text("Enter your numeric user ID:").ask()
+        raw = questionary.text(t_rich("wizard.telegram.user_id.prompt")).ask()
         if raw is None:
             _abort()
         raw = raw.strip()
         try:
             uid = int(raw)
         except ValueError:
-            console.print("[red]Please enter a valid number.[/red]")
+            console.print(t_rich("wizard.telegram.user_id.error_nan"))
             continue
         if uid <= 0:
-            console.print("[red]User ID must be a positive number.[/red]")
+            console.print(t_rich("wizard.telegram.user_id.error_negative"))
             continue
         return [uid]
 
@@ -269,95 +237,84 @@ def _ask_matrix_homeserver(console: Console) -> str:
     """Prompt for the Matrix homeserver URL."""
     console.print(
         Panel(
-            "[bold]Enter your Matrix homeserver URL.[/bold]\n\n"
-            "  This is the server where your bot account lives.\n\n"
-            "[dim]Example: https://matrix.example.com[/dim]",
-            title="[bold]Matrix Homeserver[/bold]",
+            t_rich("wizard.matrix.homeserver.body"),
+            title=t_rich("wizard.matrix.homeserver.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     while True:
-        url: str | None = questionary.text("Homeserver URL:").ask()
+        url: str | None = questionary.text(t_rich("wizard.matrix.homeserver.prompt")).ask()
         if url is None:
             _abort()
         url = url.strip().rstrip("/")
         if url.startswith("https://") and len(url) > len("https://"):
             return url
-        console.print("[red]Must be an HTTPS URL (e.g. https://matrix.example.com)[/red]")
+        console.print(t_rich("wizard.matrix.homeserver.error"))
 
 
 def _ask_matrix_user_id(console: Console) -> str:
     """Prompt for the Matrix bot user ID."""
     console.print(
         Panel(
-            "[bold]Enter the bot's Matrix user ID.[/bold]\n\n"
-            "  Create a dedicated account for the bot on your homeserver.\n\n"
-            "[dim]Format: @botname:homeserver.domain[/dim]",
-            title="[bold]Matrix Bot User ID[/bold]",
+            t_rich("wizard.matrix.user_id.body"),
+            title=t_rich("wizard.matrix.user_id.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     while True:
-        uid: str | None = questionary.text("Bot user ID:").ask()
+        uid: str | None = questionary.text(t_rich("wizard.matrix.user_id.prompt")).ask()
         if uid is None:
             _abort()
         uid = uid.strip()
         if _MATRIX_USER_RE.match(uid):
             return uid
-        console.print(
-            "[red]Invalid format. Expected: @localpart:domain (e.g. @mybot:matrix.org)[/red]"
-        )
+        console.print(t_rich("wizard.matrix.user_id.error"))
 
 
 def _ask_matrix_password(console: Console) -> str:
     """Prompt for the Matrix account password."""
     console.print(
         Panel(
-            "[bold]Enter the bot account's password.[/bold]\n\n"
-            "  Used for the initial login only. After first login, an access\n"
-            "  token is saved and the password is no longer needed.",
-            title="[bold]Matrix Password[/bold]",
+            t_rich("wizard.matrix.password.body"),
+            title=t_rich("wizard.matrix.password.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     while True:
-        pw: str | None = questionary.password("Password:").ask()
+        pw: str | None = questionary.password(t_rich("wizard.matrix.password.prompt")).ask()
         if pw is None:
             _abort()
         pw = pw.strip()
         if pw:
             return pw
-        console.print("[red]Password cannot be empty.[/red]")
+        console.print(t_rich("wizard.matrix.password.error"))
 
 
 def _ask_matrix_allowed_users(console: Console) -> list[str]:
     """Prompt for allowed Matrix user IDs."""
     console.print(
         Panel(
-            "[bold]Who should be allowed to talk to this bot?[/bold]\n\n"
-            "  Enter your Matrix user ID. Only messages from allowed users\n"
-            "  will be processed.\n\n"
-            "[dim]Format: @username:homeserver.domain[/dim]",
-            title="[bold]Allowed Users[/bold]",
+            t_rich("wizard.matrix.allowed_users.body"),
+            title=t_rich("wizard.matrix.allowed_users.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     while True:
-        raw: str | None = questionary.text("Your Matrix user ID:").ask()
+        raw: str | None = questionary.text(t_rich("wizard.matrix.allowed_users.prompt")).ask()
         if raw is None:
             _abort()
         raw = raw.strip()
         if _MATRIX_USER_RE.match(raw):
             return [raw]
-        console.print("[red]Invalid format. Expected: @user:domain (e.g. @nik:matrix.org)[/red]")
+        console.print(t_rich("wizard.matrix.allowed_users.error"))
 
 
 # ---------------------------------------------------------------------------
@@ -372,16 +329,14 @@ def _ask_docker(console: Console) -> bool:
     if docker_found:
         console.print(
             Panel(
-                "[bold green]Docker detected on your system.[/bold green]\n\n"
-                "Running ductor inside Docker isolates it from your host.\n"
-                "This is the recommended setup for safety.",
-                title="[bold]Docker Sandboxing[/bold]",
+                t_rich("wizard.docker.found_body"),
+                title=t_rich("wizard.docker.title"),
                 border_style="green",
                 padding=(1, 2),
             ),
         )
         enabled: bool | None = questionary.confirm(
-            "Enable Docker sandboxing? (Recommended)",
+            t_rich("wizard.docker.found_prompt"),
             default=True,
         ).ask()
         if enabled is None:
@@ -390,11 +345,8 @@ def _ask_docker(console: Console) -> bool:
 
     console.print(
         Panel(
-            "[bold yellow]Docker was not found on your system.[/bold yellow]\n\n"
-            "We recommend installing Docker to run the bot in an isolated container.\n"
-            "You can enable Docker sandboxing later in the config.\n\n"
-            "[dim]https://docs.docker.com/get-docker/[/dim]",
-            title="[bold]Docker Sandboxing[/bold]",
+            t_rich("wizard.docker.not_found_body"),
+            title=t_rich("wizard.docker.title"),
             border_style="yellow",
             padding=(1, 2),
         ),
@@ -413,12 +365,12 @@ def _build_extras_table(console: Console) -> None:
         header_style="bold",
         box=None,
         padding=(0, 2),
-        title="[bold]Available Docker Extras[/bold]",
+        title=t_rich("wizard.docker.extras.title"),
         title_style="bold blue",
     )
-    table.add_column("Package", style="bold green", min_width=18)
-    table.add_column("What it does", min_width=40)
-    table.add_column("Size", style="cyan", justify="right")
+    table.add_column(t_rich("wizard.docker.extras.col_package"), style="bold green", min_width=18)
+    table.add_column(t_rich("wizard.docker.extras.col_description"), min_width=40)
+    table.add_column(t_rich("wizard.docker.extras.col_size"), style="cyan", justify="right")
 
     for category, extras in extras_for_display():
         table.add_row(f"[bold yellow]{category}[/bold yellow]", "", "")
@@ -441,11 +393,7 @@ def _build_extras_table(console: Console) -> None:
     console.print()
     console.print(table)
     console.print()
-    console.print(
-        "[dim]These packages are optional and increase image build time.\n"
-        "You can change this later with"
-        " [cyan]ductor docker extras-add / extras-remove[/cyan].[/dim]"
-    )
+    console.print(t_rich("wizard.docker.extras.hint"))
     console.print()
 
 
@@ -472,7 +420,7 @@ def _ask_docker_extras(console: Console) -> list[str]:
         )
 
     selected: list[str] | None = questionary.checkbox(
-        "Select extras (Space to toggle, Enter to confirm):",
+        t_rich("wizard.docker.extras.prompt"),
         choices=choices,
     ).ask()
 
@@ -492,7 +440,7 @@ def _ask_docker_extras(console: Console) -> list[str]:
             DOCKER_EXTRAS_BY_ID[d].name for d in added_deps if d in DOCKER_EXTRAS_BY_ID
         )
         if dep_names:
-            console.print(f"[dim]Auto-added dependencies: {dep_names}[/dim]")
+            console.print(t_rich("wizard.docker.extras.auto_deps", names=dep_names))
 
     return resolved_ids
 
@@ -501,16 +449,17 @@ def _ask_timezone(console: Console) -> str:
     """Prompt for timezone selection."""
     console.print(
         Panel(
-            "Your timezone is used for cron scheduling, heartbeat quiet hours,\n"
-            "and daily session resets.",
-            title="[bold]Timezone[/bold]",
+            t_rich("wizard.timezone.body"),
+            title=t_rich("wizard.timezone.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     choices = [*_TIMEZONES, _MANUAL_TZ_OPTION]
-    selected: str | None = questionary.select("Select your timezone:", choices=choices).ask()
+    selected: str | None = questionary.select(
+        t_rich("wizard.timezone.prompt"), choices=choices
+    ).ask()
     if selected is None:
         _abort()
 
@@ -518,14 +467,14 @@ def _ask_timezone(console: Console) -> str:
         return str(selected)
 
     while True:
-        manual: str | None = questionary.text("Enter IANA timezone (e.g. Europe/Berlin):").ask()
+        manual: str | None = questionary.text(t_rich("wizard.timezone.manual_prompt")).ask()
         if manual is None:
             _abort()
         manual = manual.strip()
         try:
             ZoneInfo(manual)
         except (ZoneInfoNotFoundError, KeyError):
-            console.print(f"[red]Unknown timezone: {manual}[/red]")
+            console.print(t_rich("wizard.timezone.error", tz=manual))
             continue
         return str(manual)
 
@@ -551,20 +500,15 @@ def _offer_service_install(console: Console) -> bool:
 
     console.print(
         Panel(
-            f"[bold]Run ductor as a background service?[/bold]\n\n"
-            f"This creates a {mechanism} that:\n\n"
-            f"  - Starts ductor on {trigger}\n"
-            "  - Restarts automatically on crash\n"
-            "  - Keeps running in the background\n\n"
-            "[dim]Recommended for VPS or always-on setups.[/dim]",
-            title="[bold]Background Service[/bold]",
+            t_rich("wizard.service.body", mechanism=mechanism, trigger=trigger),
+            title=t_rich("wizard.service.title"),
             border_style="blue",
             padding=(1, 2),
         ),
     )
 
     enabled: bool | None = questionary.confirm(
-        "Install as background service? (Recommended for VPS)",
+        t_rich("wizard.service.prompt"),
         default=True,
     ).ask()
     if enabled is None:
@@ -741,16 +685,27 @@ def run_onboarding() -> bool:
     # Offer background service setup on Linux with systemd
     run_as_service = _offer_service_install(console)
 
+    action = (
+        t_rich("wizard.complete.installing_service")
+        if run_as_service
+        else t_rich("wizard.complete.starting_bot")
+    )
     console.print(
         Panel(
-            "[bold green]Setup complete![/bold green]\n\n"
-            "[bold]Your ductor files:[/bold]\n\n"
-            f"  Home:       [cyan]{paths.ductor_home}[/cyan]\n"
-            f"  Config:     [cyan]{config_path}[/cyan]\n"
-            f"  Workspace:  [cyan]{paths.workspace}[/cyan]\n"
-            f"  Logs:       [cyan]{paths.logs_dir}[/cyan]\n\n"
-            + ("Installing service..." if run_as_service else "Starting bot..."),
-            title="[bold green]Ready[/bold green]",
+            t_rich("wizard.complete.header")
+            + "\n\n"
+            + t_rich("wizard.complete.files_header")
+            + "\n\n"
+            + t_rich("wizard.complete.home", path=paths.ductor_home)
+            + "\n"
+            + t_rich("wizard.complete.config", path=config_path)
+            + "\n"
+            + t_rich("wizard.complete.workspace", path=paths.workspace)
+            + "\n"
+            + t_rich("wizard.complete.logs", path=paths.logs_dir)
+            + "\n\n"
+            + action,
+            title=t_rich("wizard.complete.title"),
             border_style="green",
             padding=(1, 2),
         ),
@@ -789,11 +744,8 @@ def run_smart_reset(ductor_home: Path) -> None:
     # Warning panel
     console.print(
         Panel(
-            "[bold yellow]You already have a configured setup.[/bold yellow]\n\n"
-            "Re-running onboarding will perform a [bold red]full reset[/bold red]:\n\n"
-            f"  [dim]{ductor_home}[/dim] will be deleted entirely.\n"
-            "  All sessions, configs, memory, and cron tasks will be lost.",
-            title="[bold yellow]Existing Setup Detected[/bold yellow]",
+            t_rich("wizard.reset.body", home=ductor_home),
+            title=t_rich("wizard.reset.title"),
             border_style="yellow",
             padding=(1, 2),
         ),
@@ -804,22 +756,24 @@ def run_smart_reset(ductor_home: Path) -> None:
         console.print()
         console.print(
             Panel(
-                "[bold]Docker sandboxing is enabled in your current config.[/bold]\n\n"
-                f"  Container: [cyan]{docker_container}[/cyan]\n"
-                f"  Image:     [cyan]{docker_image}[/cyan]",
-                title="[bold]Docker Cleanup[/bold]",
+                t_rich(
+                    "wizard.reset.docker.body",
+                    container=docker_container,
+                    image=docker_image,
+                ),
+                title=t_rich("wizard.reset.docker.title"),
                 border_style="blue",
                 padding=(1, 2),
             ),
         )
         remove_docker: bool | None = questionary.confirm(
-            "Remove the Docker container and image?",
+            t_rich("wizard.reset.docker.prompt"),
             default=True,
         ).ask()
         if remove_docker is None:
             _abort()
         if remove_docker:
-            console.print("[dim]Removing Docker resources...[/dim]")
+            console.print(t_rich("wizard.reset.docker.removing"))
             subprocess.run(
                 ["docker", "stop", "-t", "5", docker_container],
                 capture_output=True,
@@ -836,12 +790,12 @@ def run_smart_reset(ductor_home: Path) -> None:
                     capture_output=True,
                     check=False,
                 )
-            console.print("[green]Docker cleanup done.[/green]")
+            console.print(t_rich("wizard.reset.docker.done"))
 
     # Final confirmation
     console.print()
     confirmed: bool | None = questionary.confirm(
-        "Delete everything and start fresh?",
+        t_rich("wizard.reset.confirm.prompt"),
         default=False,
     ).ask()
     if not confirmed:
@@ -851,8 +805,6 @@ def run_smart_reset(ductor_home: Path) -> None:
 
     robust_rmtree(ductor_home)
     if ductor_home.exists():
-        console.print(
-            f"[yellow]Warning: Could not fully delete {ductor_home}. Remove manually.[/yellow]\n"
-        )
+        console.print(t_rich("wizard.reset.confirm.warning", home=ductor_home) + "\n")
     else:
-        console.print("[dim]Workspace deleted.[/dim]\n")
+        console.print(t_rich("wizard.reset.confirm.deleted") + "\n")

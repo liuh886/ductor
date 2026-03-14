@@ -294,6 +294,7 @@ class AgentConfig(BaseModel):
     tasks: TasksConfig = Field(default_factory=TasksConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
     user_timezone: str = ""
+    language: str = "en"
     update_check: bool = True
     group_mention_only: bool = False
     interagent_port: int = 8799
