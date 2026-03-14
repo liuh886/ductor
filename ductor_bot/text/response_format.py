@@ -4,6 +4,13 @@ from __future__ import annotations
 
 SEP = "\u2500\u2500\u2500"
 
+_SHELL_TOOLS = frozenset({"bash", "powershell", "cmd", "sh", "zsh", "shell"})
+
+
+def normalize_tool_name(name: str) -> str:
+    """Normalize shell-related tool names to 'Shell' for display."""
+    return "Shell" if name.lower() in _SHELL_TOOLS else name
+
 
 def fmt(*blocks: str) -> str:
     """Join non-empty blocks with double newlines."""
@@ -143,13 +150,6 @@ def startup_notification_text(kind: str) -> str:
 # -- Auto-recovery messages --
 
 
-def recovery_notification_text(
-    kind: str,
-    prompt_preview: str,
-    session_name: str = "",
-) -> str:
-    """Notification that interrupted work is being recovered."""
-    preview = prompt_preview[:80] + ("…" if len(prompt_preview) > 80 else "")
 def format_technical_footer(
     model_name: str,
     total_tokens: int,
@@ -169,6 +169,13 @@ def format_technical_footer(
     return "\n---\n" + " | ".join(parts)
 
 
+def recovery_notification_text(
+    kind: str,
+    prompt_preview: str,
+    session_name: str = "",
+) -> str:
+    """Notification that interrupted work is being recovered."""
+    preview = prompt_preview[:80] + ("…" if len(prompt_preview) > 80 else "")
     if kind == "named_session":
         return fmt(
             "**Auto-Recovery**",
