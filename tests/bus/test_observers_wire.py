@@ -99,6 +99,7 @@ class TestWebhookWakeFilter:
         mgr.webhook = MagicMock()
         bus = MessageBus()
         transport = AsyncMock()
+        transport.transport_name = "tg"
         bus.register_transport(transport)
         mgr.wire_to_bus(bus)
 
@@ -122,6 +123,7 @@ class TestWebhookWakeFilter:
         mgr.webhook = MagicMock()
         bus = MessageBus()
         transport = AsyncMock()
+        transport.transport_name = "tg"
         bus.register_transport(transport)
         mgr.wire_to_bus(bus)
 
@@ -150,6 +152,7 @@ class TestWireIntegration:
         mgr = _make_observers()
         bus = MessageBus()
         transport = AsyncMock()
+        transport.transport_name = "tg"
         bus.register_transport(transport)
         mgr.wire_to_bus(bus)
 
@@ -167,6 +170,7 @@ class TestWireIntegration:
         mgr = _make_observers()
         bus = MessageBus()
         transport = AsyncMock()
+        transport.transport_name = "tg"
         bus.register_transport(transport)
         mgr.wire_to_bus(bus)
 
@@ -185,6 +189,7 @@ class TestWireIntegration:
         mgr.cron = MagicMock()
         bus = MessageBus()
         transport = AsyncMock()
+        transport.transport_name = "tg"
         bus.register_transport(transport)
         mgr.wire_to_bus(bus)
 
@@ -201,6 +206,7 @@ class TestWireIntegration:
         mgr.background = MagicMock()
         bus = MessageBus()
         transport = AsyncMock()
+        transport.transport_name = "tg"
         bus.register_transport(transport)
         mgr.wire_to_bus(bus)
 

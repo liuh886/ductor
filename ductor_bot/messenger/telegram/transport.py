@@ -36,6 +36,10 @@ class TelegramTransport:
 
     # -- Protocol methods ---------------------------------------------------
 
+    @property
+    def transport_name(self) -> str:
+        return "tg"
+
     async def deliver(self, envelope: Envelope) -> None:
         """Deliver a unicast envelope to the target chat_id."""
         handler = _HANDLERS.get(envelope.origin)
@@ -212,10 +216,6 @@ class TelegramTransport:
                 SendRichOpts(allowed_roots=self._roots()),
             )
 
-    # -- Origin handlers (broadcast) ----------------------------------------
-
-    async def _broadcast_cron(self, env: Envelope) -> None:
-        title = env.metadata.get("title", "?")
     async def _deliver_cron(self, env: Envelope) -> None:
         """Deliver cron result to a specific chat/topic (unicast).
 
@@ -264,6 +264,10 @@ class TelegramTransport:
                 SendRichOpts(allowed_roots=self._roots()),
             )
 
+    # -- Origin handlers (broadcast) ----------------------------------------
+
+    async def _broadcast_cron(self, env: Envelope) -> None:
+        title = env.metadata.get("title", "?")
         clean_result = sanitize_cron_result_text(env.result_text)
         if env.result_text and not clean_result and env.status == "success":
             logger.debug(
@@ -294,11 +298,11 @@ _Handler = Callable[[TelegramTransport, Envelope], Awaitable[None]]
 
 _HANDLERS: dict[Origin, _Handler] = {
     Origin.BACKGROUND: TelegramTransport._deliver_background,
+    Origin.CRON: TelegramTransport._deliver_cron,
     Origin.HEARTBEAT: TelegramTransport._deliver_heartbeat,
     Origin.INTERAGENT: TelegramTransport._deliver_interagent,
     Origin.TASK_RESULT: TelegramTransport._deliver_task_result,
     Origin.TASK_QUESTION: TelegramTransport._deliver_task_question,
-    Origin.CRON: TelegramTransport._deliver_cron,
     Origin.WEBHOOK_WAKE: TelegramTransport._deliver_webhook_wake,
 }
 

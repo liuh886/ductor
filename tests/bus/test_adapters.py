@@ -111,6 +111,19 @@ def test_from_cron_result() -> None:
     assert env.result_text == "all good"
 
 
+def test_from_cron_result_with_chat_id_creates_unicast() -> None:
+    env = from_cron_result("Title", "Result", "success", chat_id=12345, topic_id=99)
+    assert env.chat_id == 12345
+    assert env.topic_id == 99
+    assert env.delivery == DeliveryMode.UNICAST
+
+
+def test_from_cron_result_without_chat_id_broadcasts() -> None:
+    env = from_cron_result("Title", "Result", "success")
+    assert env.chat_id == 0
+    assert env.delivery == DeliveryMode.BROADCAST
+
+
 def test_from_heartbeat() -> None:
     env = from_heartbeat(200, "alert text")
     assert env.origin == Origin.HEARTBEAT

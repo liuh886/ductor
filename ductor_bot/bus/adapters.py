@@ -100,6 +100,7 @@ def from_heartbeat(
         origin=Origin.HEARTBEAT,
         chat_id=chat_id,
         topic_id=topic_id,
+        transport=transport,
         result_text=text,
         status="success",
         delivery=DeliveryMode.UNICAST,
