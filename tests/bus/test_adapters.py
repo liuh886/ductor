@@ -111,13 +111,36 @@ def test_from_cron_result() -> None:
     assert env.result_text == "all good"
 
 
+def test_from_cron_result_with_chat_id_creates_unicast() -> None:
+    env = from_cron_result("Title", "Result", "success", chat_id=12345, topic_id=99)
+    assert env.chat_id == 12345
+    assert env.topic_id == 99
+    assert env.delivery == DeliveryMode.UNICAST
+
+
+def test_from_cron_result_without_chat_id_broadcasts() -> None:
+    env = from_cron_result("Title", "Result", "success")
+    assert env.chat_id == 0
+    assert env.delivery == DeliveryMode.BROADCAST
+
+
 def test_from_heartbeat() -> None:
     env = from_heartbeat(200, "alert text")
     assert env.origin == Origin.HEARTBEAT
     assert env.chat_id == 200
+    assert env.topic_id is None
     assert env.delivery == DeliveryMode.UNICAST
     assert env.lock_mode == LockMode.NONE
     assert env.result_text == "alert text"
+
+
+def test_from_heartbeat_with_topic_id() -> None:
+    env = from_heartbeat(-1001, "group alert", topic_id=42)
+    assert env.origin == Origin.HEARTBEAT
+    assert env.chat_id == -1001
+    assert env.topic_id == 42
+    assert env.delivery == DeliveryMode.UNICAST
+    assert env.result_text == "group alert"
 
 
 def test_from_webhook_cron_result() -> None:

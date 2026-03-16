@@ -68,7 +68,7 @@ Matrix lacks inline keyboards. Workaround:
 
 Same command set as Telegram, with `!` or `/` prefix:
 
-- Transport-level: `!stop`, `!stop_all`, `!restart`, `!new`, `!help`, `!info`, `!session`, `!showfiles`, `!agent_commands`
+- Transport-level: `!stop`, `!stop_all`, `!interrupt`, `!restart`, `!new`, `!help`, `!info`, `!session`, `!showfiles`, `!agent_commands`
 - Orchestrator-routed: `!status`, `!model`, `!memory`, `!cron`, `!diagnose`, `!upgrade`, `!sessions`, `!tasks`
 - Main-agent only: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart`
 
@@ -78,7 +78,10 @@ Matrix can be configured via the interactive setup wizard (`ductor onboarding`) 
 
 The wizard prompts for: homeserver URL, bot user ID, password, and allowed users. See [setup_wizard.md](setup_wizard.md).
 
-Sub-agents can be created via `create_agent.py --transport matrix` (see agent tools RULES.md).
+Runtime support for Matrix sub-agents is built in, but there is one CLI caveat:
+
+- `ductor agents add <name>` currently scaffolds Telegram sub-agents only
+- Matrix sub-agents are added through `agents.json` or `create_agent.py --transport matrix` (see agent tools `RULES.md`)
 
 ## Configuration
 
@@ -104,6 +107,6 @@ matrix = ["matrix-nio>=0.25.0"]
 
 ### Credential flow
 
-1. On first start, the bot logs in with the `password` and saves an `access_token` to `matrix_store/credentials.json` (mode 0o600)
+1. On first start, the bot logs in with the `password` and saves credentials to `~/.ductor/<store_path>/credentials.json` (mode `0o600`)
 2. On subsequent starts, the saved token is restored — password is no longer needed
-3. If `access_token` is set in config (instead of password), it is used directly
+3. If `access_token` and `device_id` are both set in config instead of password, they are used directly and mirrored into the credentials store

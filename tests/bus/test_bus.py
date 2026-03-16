@@ -20,10 +20,11 @@ def _env(**kwargs: object) -> Envelope:
     return Envelope(**defaults)  # type: ignore[arg-type]
 
 
-def _mock_transport() -> AsyncMock:
+def _mock_transport(name: str = "tg") -> AsyncMock:
     transport = AsyncMock()
     transport.deliver = AsyncMock()
     transport.deliver_broadcast = AsyncMock()
+    transport.transport_name = name
     return transport
 
 

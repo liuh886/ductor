@@ -7,6 +7,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.infra.restart import consume_restart_sentinel
 from ductor_bot.infra.updater import UpdateObserver, consume_upgrade_sentinel
 from ductor_bot.infra.version import get_current_version
@@ -23,10 +24,55 @@ async def _handle_restart_sentinel(bot: TelegramBot) -> dict[str, object] | None
     sentinel = await asyncio.to_thread(consume_restart_sentinel, sentinel_path=sentinel_path)
     if sentinel:
         chat_id = int(sentinel.get("chat_id", 0))
-        msg = str(sentinel.get("message", "Restart completed."))
+        msg = str(sentinel.get("message", t("startup.restart_default")))
         if chat_id:
             await bot.notification_service.notify(chat_id, msg)
     return sentinel
+
+
+async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None) -> None:
+    """Handle upgrade sentinel, startup lifecycle, and auto-recovery of interrupted work."""
+    upgrade = await asyncio.to_thread(consume_upgrade_sentinel, bot._orch.paths.ductor_home)
+    if upgrade:
+        uid = int(upgrade.get("chat_id", 0))
+        old_v = upgrade.get("old_version", "?")
+        new_v = upgrade.get("new_version", get_current_version())
+        if uid:
+            await bot.notification_service.notify(
+                uid, t("startup.upgrade_complete", old=old_v, new=new_v)
+            )
+
+    from ductor_bot.infra.startup_state import detect_startup_kind, save_startup_state
+    from ductor_bot.text.response_format import startup_notification_text
+
+    startup_info = await asyncio.to_thread(detect_startup_kind, bot._orch.paths.startup_state_path)
+    await asyncio.to_thread(save_startup_state, bot._orch.paths.startup_state_path, startup_info)
+    if sentinel is None and startup_info.kind.value != "service_restart":
+        note = startup_notification_text(startup_info.kind.value)
+        if note:
+            await bot.notification_service.notify_all(note)
+
+    from ductor_bot.infra.recovery import RecoveryPlanner
+    from ductor_bot.text.response_format import recovery_notification_text
+
+    planner = RecoveryPlanner(
+        inflight=bot._orch.inflight_tracker,
+        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
+        max_age_seconds=bot.config.timeouts.normal * 2,
+    )
+    for action in planner.plan():
+        note = recovery_notification_text(action.kind, action.prompt_preview, action.session_name)
+        await bot.notification_service.notify(action.chat_id, note)
+        if action.kind == "named_session" and action.session_name:
+            with contextlib.suppress(Exception):
+                bot._orch.submit_named_followup_bg(
+                    action.chat_id,
+                    action.session_name,
+                    action.prompt_preview,
+                    message_id=0,
+                    thread_id=None,
+                )
+    bot._orch.inflight_tracker.clear()
 
 
 async def _run_primary_startup(bot: TelegramBot) -> None:
@@ -57,55 +103,22 @@ async def _run_primary_startup(bot: TelegramBot) -> None:
     bot._orch.wire_observers_to_bus(bot._bus, wake_handler=bot._handle_webhook_wake)
     bot._orchestrator.set_config_hot_reload_handler(bot._on_auth_hot_reload)
 
-    # Check for post-upgrade notification
-    upgrade = await asyncio.to_thread(consume_upgrade_sentinel, bot._orch.paths.ductor_home)
-    if upgrade:
-        uid = int(upgrade.get("chat_id", 0))
-        old_v = upgrade.get("old_version", "?")
-        new_v = upgrade.get("new_version", get_current_version())
-        if uid:
-            await bot.notification_service.notify(
-                uid, f"**Upgrade complete** `{old_v}` -> `{new_v}`"
-            )
+    async def _validate_chat(chat_id: int) -> bool:
+        try:
+            await bot.bot_instance.get_chat(chat_id)
+        except Exception:
+            return False
+        else:
+            return True
 
-    # -- Startup lifecycle detection --
-    from ductor_bot.infra.startup_state import detect_startup_kind, save_startup_state
-    from ductor_bot.text.response_format import startup_notification_text
+    bot._orch._observers.heartbeat.set_chat_validator(_validate_chat)
 
-    startup_info = await asyncio.to_thread(detect_startup_kind, bot._orch.paths.startup_state_path)
-    await asyncio.to_thread(save_startup_state, bot._orch.paths.startup_state_path, startup_info)
-    if sentinel is None and startup_info.kind.value != "service_restart":
-        note = startup_notification_text(startup_info.kind.value)
-        if note:
-            await bot.notification_service.notify_all(note)
-
-    # -- Auto-recovery of interrupted work --
-    from ductor_bot.infra.recovery import RecoveryPlanner
-    from ductor_bot.text.response_format import recovery_notification_text
-
-    planner = RecoveryPlanner(
-        inflight=bot._orch.inflight_tracker,
-        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
-        max_age_seconds=bot.config.timeouts.normal * 2,
-    )
-    for action in planner.plan():
-        note = recovery_notification_text(action.kind, action.prompt_preview, action.session_name)
-        await bot.notification_service.notify(action.chat_id, note)
-        if action.kind == "named_session" and action.session_name:
-            with contextlib.suppress(Exception):
-                bot._orch.submit_named_followup_bg(
-                    action.chat_id,
-                    action.session_name,
-                    action.prompt_preview,
-                    message_id=0,
-                    thread_id=None,
-                )
-    bot._orch.inflight_tracker.clear()
+    await _handle_recovery(bot, sentinel)
 
     # Start background version checker (skip for dev/source installs)
     from ductor_bot.infra.install import is_upgradeable
 
-    if is_upgradeable() and bot.config.update_check:
+    if is_upgradeable() and bot.config.update_check and bot._agent_name == "main":
         bot._update_observer = UpdateObserver(notify=bot._on_update_available)
         bot._update_observer.start()
 

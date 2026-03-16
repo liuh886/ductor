@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
+
 if TYPE_CHECKING:
     from ductor_bot.multiagent.stack import AgentStack
 
@@ -386,10 +388,12 @@ class InterAgentBus:
             else:
                 preview = task.message if len(task.message) <= 200 else task.message[:200] + "…"
             session_name = f"ia-{task.sender}"
-            text = (
-                f"📥 **Async task received** from `{task.sender}`\n"
-                f"Session: `{session_name}` · Task ID: `{task.task_id}`\n\n"
-                f"_{preview}_"
+            text = t(
+                "multiagent.async_task_received",
+                sender=task.sender,
+                session=session_name,
+                task_id=task.task_id,
+                preview=preview,
             )
 
             chat_id = target.config.allowed_user_ids[0] if target.config.allowed_user_ids else 0

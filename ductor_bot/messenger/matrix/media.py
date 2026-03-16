@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ductor_bot.files.image_processor import process_image
 from ductor_bot.files.prompt import MediaInfo
 from ductor_bot.files.prompt import build_media_prompt as _build_media_prompt_generic
 from ductor_bot.files.storage import prepare_destination as _prepare_destination
@@ -118,9 +119,10 @@ async def download_matrix_media(
 
     logger.info("Downloaded Matrix %s -> %s (%s)", original_type, dest, mime)
 
-    # Extract caption: for Matrix, body is typically the filename, not a caption.
-    # If msgtype is m.image/m.video/m.audio, body is usually just the filename.
-    # We don't treat it as a user caption unless it differs from the file_name.
+    dest = await asyncio.to_thread(process_image, dest)
+    if dest.suffix == ".webp":
+        mime = "image/webp"
+
     caption: str | None = None
     if body and body not in (file_name, dest.name):
         caption = body

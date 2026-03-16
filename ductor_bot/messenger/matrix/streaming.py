@@ -11,6 +11,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+from ductor_bot.text.response_format import normalize_tool_name
+
 if TYPE_CHECKING:
     from nio import AsyncClient
 
@@ -57,6 +59,7 @@ class MatrixStreamEditor:
 
     async def on_tool(self, tool_name: str) -> None:
         """Flush the buffer on tool activity and log the segment."""
+        tool_name = normalize_tool_name(tool_name)
         self._segment_count += 1
         logger.info(
             "Matrix streaming: tool=%s segment=%d buf_len=%d",

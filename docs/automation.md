@@ -34,7 +34,8 @@ Restart behavior:
 
 - active asyncio task objects are lost on restart,
 - persisted named sessions can still be resumed,
-- startup recovery automatically retries safe named sessions that were `running` before restart.
+- startup recovery automatically retries safe named sessions that were `running` before restart when Telegram is the primary transport
+- Matrix-primary startup currently has no equivalent auto-recovery pipeline
 
 Status values for named-session runs: `ok`, `error:timeout`, `error:cli`, `error:internal`, `aborted`.
 
@@ -91,7 +92,9 @@ Runtime behavior:
 5. build provider command (`claude`, `codex`, or `gemini`)
 6. execute with timeout (`cli_timeout`)
 7. parse output
-8. send result callback to chat
+8. send result callback to chat when the run actually executes and produces a callback path
+   - routing: UNICAST to originating chat when the job has `chat_id` set; BROADCAST to all users when `chat_id` is zero/unset
+   - if UNICAST delivery fails (e.g. transport unavailable), the bus cascading fallback delivers to an available transport with an explanation
 9. persist status (`last_run_status`, `last_run_at`)
 
 Per-job override fields in `cron_jobs.json`:
@@ -113,6 +116,7 @@ Notes:
 - `reasoning_effort` is only used for Codex models that support it.
 - task `cli_parameters` are task-level only (no merge with global provider args).
 - cron status includes `error:cli_not_found_<provider>` for missing provider binaries.
+- `error:folder_missing` updates `last_run_status` but does not emit a result callback.
 - quiet-hour skips do not emit result callbacks and do not update `last_run_status`.
 
 ## Webhooks
@@ -131,7 +135,7 @@ Validation order:
 
 Modes:
 
-- `wake`: inject rendered prompt into active chat flow
+- `wake`: inject rendered prompt into active Telegram chat flow
 - `cron_task`: run isolated one-shot execution in task folder
 
 Prompt payload is wrapped with safety markers before execution.
@@ -156,6 +160,12 @@ Typical status values:
 - `error:exit_<code>`
 - `skipped:quiet_hours`
 
+Current transport limitation:
+
+- webhook `wake` depends on a configured wake handler and is currently wired by Telegram startup only
+- Matrix-primary setups do not provide that handler right now, so `wake` returns `error:no_wake_handler`
+- for Matrix-only deployments, use `cron_task` mode instead of `wake`
+
 ## Heartbeat
 
 Heartbeat runs only when `heartbeat.enabled=true`.
@@ -179,6 +189,41 @@ Observer behavior:
 Default ACK token: `HEARTBEAT_OK`.
 
 Default prompt asks the model to review memory + cron context and either send something useful or respond exactly with `HEARTBEAT_OK`.
+
+### Group targets
+
+`group_targets` allows heartbeat to run in specific group chats/topics in addition to private user chats. Each target supports per-target overrides for prompt, ack token, interval, and quiet hours.
+
+```json
+{
+  "heartbeat": {
+    "enabled": true,
+    "interval_minutes": 30,
+    "quiet_start": 21,
+    "quiet_end": 8,
+    "group_targets": [
+      {
+        "chat_id": -1001234567890,
+        "topic_id": 42,
+        "interval_minutes": 60,
+        "prompt": "Check project status and report if anything needs attention.",
+        "quiet_start": 23,
+        "quiet_end": 6
+      },
+      {
+        "chat_id": -1009876543210
+      }
+    ]
+  }
+}
+```
+
+Per-target override fields (all optional, fall back to global heartbeat values when unset):
+
+- `prompt`
+- `ack_token`
+- `interval_minutes`
+- `quiet_start` / `quiet_end`
 
 Lifecycle note:
 

@@ -19,6 +19,12 @@ Core fields:
 - `timezone` (optional per-job IANA override)
 - `created_at`, `last_run_at`, `last_run_status`
 
+Routing fields:
+
+- `chat_id` (default `0`) -- target chat for result delivery
+- `topic_id` (default `None`) -- optional forum topic within target chat
+- `transport` (default `"tg"`) -- transport identifier (`"tg"` or `"mx"`)
+
 Execution overrides:
 
 - `provider`
@@ -64,7 +70,7 @@ When a job fires:
 6. build provider command (`build_cmd`)
 7. execute one-shot subprocess with timeout
 8. parse provider output
-9. invoke optional result callback
+9. invoke optional result callback when the execution path reaches callback emission
 10. update run status (`last_run_status`, `last_run_at`)
 11. schedule next occurrence
 
@@ -103,6 +109,38 @@ Quiet-hour skips are silent:
 
 - no `last_run_status` update
 - no result callback
+
+Folder-missing nuance:
+
+- `error:folder_missing` updates `last_run_status`
+- no result callback is emitted for that path
+
+## Result routing
+
+Cron results are delivered through `MessageBus` using `Envelope` objects built by `bus/adapters.py::cron_result_envelope(...)`.
+
+- **UNICAST**: when `chat_id` is non-zero, the result is delivered to that specific chat/topic on the matching transport.
+- **BROADCAST**: when `chat_id` is `0` (default), the result is broadcast to all authorized users.
+
+Fallback behavior (Telegram):
+
+- if unicast delivery fails (e.g. bot removed from group, topic deleted), the result falls back to the main user's private chat (`allowed_user_ids[0]`) with an explanation of the delivery failure.
+
+Fallback behavior (Matrix):
+
+- if the target room cannot be resolved, the result falls back to broadcast across all allowed rooms.
+
+## Environment variables
+
+The CLI subprocess receives routing context via environment variables:
+
+- `DUCTOR_CHAT_ID` -- current chat ID (set when `chat_id` is non-zero)
+- `DUCTOR_TOPIC_ID` -- current topic ID (set when `topic_id` is non-None)
+- `DUCTOR_TRANSPORT` -- transport identifier (`"tg"` or `"mx"`)
+
+These are injected by `_build_subprocess_env()` (host mode) and `docker_wrap()` (container mode).
+
+The `cron_add.py` tool script auto-reads these env vars to populate the job's routing fields, so jobs created from within a chat/topic automatically route results back to that location.
 
 ## Timezone resolution
 

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ductor_bot.files.browser import list_directory
+from ductor_bot.i18n import t
 from ductor_bot.security.paths import is_path_safe
 from ductor_bot.text.response_format import SEP, fmt
 
@@ -53,10 +54,7 @@ async def handle_file_browser_callback(
     if data.startswith(SF_FILE_PREFIX):
         rel = data[len(SF_FILE_PREFIX) :]
         abs_dir = (paths.ductor_home / rel).resolve() if rel else paths.ductor_home.resolve()
-        prompt = (
-            f"List all files in {abs_dir}/ and send me whichever one I ask for. "
-            "Deliver files using file tags."
-        )
+        prompt = t("file_browser.file_request_prompt", dir=abs_dir)
         return "", None, prompt
 
     rel = data[len(SF_PREFIX) :]
@@ -75,8 +73,12 @@ def _build_view(paths: DuctorPaths, rel: str) -> tuple[str, InlineKeyboardMarkup
     target = (base / rel).resolve() if rel else base
 
     if not is_path_safe(target, [base]) or not target.is_dir():
-        return fmt("**File Browser**", SEP, "Directory not found."), InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="<< Back", callback_data="sf:")]]
+        return fmt(
+            t("file_browser.header"), SEP, t("file_browser.directory_not_found")
+        ), InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=t("file_browser.btn_back"), callback_data="sf:")]
+            ]
         )
 
     dirs, files = list_directory(target)
@@ -89,9 +91,9 @@ def _build_view(paths: DuctorPaths, rel: str) -> tuple[str, InlineKeyboardMarkup
     body_lines.extend(f"  {f}" for f in files)
 
     if not body_lines:
-        body_lines.append("  (empty)")
+        body_lines.append(f"  {t('file_browser.empty')}")
 
-    text = fmt("**File Browser**", SEP, f"`{display_path}`\n\n" + "\n".join(body_lines), SEP)
+    text = fmt(t("file_browser.header"), SEP, f"`{display_path}`\n\n" + "\n".join(body_lines), SEP)
 
     # Build keyboard: folder buttons in rows of _MAX_BUTTONS_PER_ROW
     rows: list[list[InlineKeyboardButton]] = []
@@ -109,11 +111,13 @@ def _build_view(paths: DuctorPaths, rel: str) -> tuple[str, InlineKeyboardMarkup
     if rel:
         parent = str(Path(rel).parent)
         parent_cb = "sf:" if parent == "." else f"sf:{parent}"
-        rows.append([InlineKeyboardButton(text="<< Back", callback_data=parent_cb)])
+        rows.append(
+            [InlineKeyboardButton(text=t("file_browser.btn_back"), callback_data=parent_cb)]
+        )
 
     # File request button
     rows.append(
-        [InlineKeyboardButton(text="Send me a file from this folder", callback_data=f"sf!{rel}")]
+        [InlineKeyboardButton(text=t("file_browser.btn_request_files"), callback_data=f"sf!{rel}")]
     )
 
     return text, InlineKeyboardMarkup(inline_keyboard=rows)

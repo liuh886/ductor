@@ -47,6 +47,13 @@ Orchestrator-routed commands:
 
 `group_mention_only` is not auth. It is applied later as message-content gating.
 
+Media messages in groups also respect `group_mention_only`:
+
+- when `group_mention_only=false`: media is always processed in authorized groups (no mention required)
+- when `group_mention_only=true`: media requires a mention or reply addressing the bot (same gate as text messages)
+
+This is checked in `_resolve_text()` via `is_media_addressed(message, bot_id, bot_username)`.
+
 ### `SequentialMiddleware`
 
 Flow order:
@@ -145,6 +152,11 @@ Webhook wake path:
 - acquires lock for target chat
 - runs orchestrator message flow
 - submits final wake result envelope for delivery
+
+Current limitation:
+
+- Telegram startup wires the webhook wake handler
+- Matrix startup currently does not, so webhook `wake` is effectively Telegram-only right now
 
 ## Startup lifecycle (`messenger/telegram/startup.py`)
 

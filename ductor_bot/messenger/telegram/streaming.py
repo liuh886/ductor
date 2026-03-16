@@ -22,6 +22,7 @@ from ductor_bot.messenger.telegram.formatting import (
     markdown_to_telegram_html,
     split_html_message,
 )
+from ductor_bot.text.response_format import normalize_tool_name
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -86,6 +87,7 @@ class StreamEditor:
 
     async def append_tool(self, tool_name: str) -> None:
         """Send a tool indicator as a new message."""
+        tool_name = normalize_tool_name(tool_name)
         indicator = f"<b>[TOOL: {html.escape(tool_name)}]</b>"
         await self._send(indicator)
 

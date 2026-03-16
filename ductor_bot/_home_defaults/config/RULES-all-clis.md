@@ -9,7 +9,7 @@ Edit only when the user asks for behavior changes.
 2. Preserve unrelated values and structure.
 3. Never expose secrets (`telegram_token`, webhook tokens) in chat output.
 4. Keep valid JSON.
-5. Tell the user to run `/restart` after config changes.
+5. Most settings are hot-reloadable (take effect within seconds). Only `telegram_token`, `docker`, `api`, `webhooks`, `log_level`, and `gemini_api_key` require `/restart`.
 
 ## Important Key Groups
 
@@ -100,8 +100,86 @@ Parameters are inserted before the `--` separator in commands.
 }
 ```
 
+### Language
+
+- `language`: UI language for bot messages — `en`, `de`, `nl`, `fr`, `ru`, `es`, `pt`
+- Hot-reloadable: change without restart.
+
+### Image Processing
+
+- `image.max_dimension`: max width/height in pixels (default `2000`). Images larger than this are resized.
+- `image.output_format`: target format — `webp` (default), `png`, or `jpeg`
+- `image.quality`: compression quality 1-100 (default `85`)
+- Incoming images from all transports are auto-converted after download.
+- Hot-reloadable.
+
+### Scene Indicators
+
+- `scene.seen_reaction`: `true`/`false` (default `false`) — show a 👀 reaction on received messages (Telegram: emoji reaction, Matrix: read receipt)
+- `scene.technical_footer`: `true`/`false` (default `false`) — append model name, token count, cost, and duration to the final response
+- Hot-reloadable.
+
+### Heartbeat
+
+- `heartbeat.enabled`: `true`/`false` — master switch
+- `heartbeat.interval_minutes`: global tick interval for private chats (default `30`)
+- `heartbeat.cooldown_minutes`: min gap between heartbeats per chat
+- `heartbeat.quiet_start`, `heartbeat.quiet_end`: quiet hours (0-23, in `user_timezone`)
+- `heartbeat.prompt`: the prompt sent to the agent during heartbeat
+- `heartbeat.ack_token`: token the agent replies with when nothing to report (default `HEARTBEAT_OK`)
+- `heartbeat.group_targets`: list of per-group/topic heartbeat targets, each with:
+  - `enabled`: `true`/`false` — toggle this target without removing it
+  - `chat_id`: Telegram group ID (use `null` for template entries that are skipped)
+  - `topic_id`: forum topic ID within the group (or `null` for the whole group)
+  - `prompt`: override prompt for this target (or `null` to use global)
+  - `ack_token`: override ack token (or `null` to use global)
+  - `interval_minutes`: independent interval for this target (or `null` to use global). Each target with its own interval runs in its own loop, independent of the global tick.
+  - `quiet_start`, `quiet_end`: override quiet hours (or `null` to use global)
+
+**Example:**
+```json
+{
+  "heartbeat": {
+    "enabled": true,
+    "interval_minutes": 30,
+    "group_targets": [
+      {
+        "enabled": true,
+        "chat_id": -1001234567890,
+        "topic_id": 5,
+        "prompt": "Check server status and report anomalies.",
+        "interval_minutes": 5
+      },
+      {
+        "enabled": false,
+        "chat_id": -1009876543210,
+        "prompt": "Paused target — enable when ready."
+      }
+    ]
+  }
+}
+```
+
+Heartbeat is hot-reloadable. Changing `enabled` from false to true starts the observer without restart.
+
+### Timeouts
+
+- `timeouts.normal`: max seconds for a normal CLI call (default `600`)
+- `timeouts.background`: max seconds for background tasks (default `1800`)
+- `timeouts.subagent`: max seconds for sub-agent tasks (default `3600`)
+- `timeouts.extend_on_activity`: auto-extend timeout when tool activity detected
+- `timeouts.activity_extension`: seconds to extend per activity burst
+- `timeouts.max_extensions`: max number of auto-extensions
+
+### Tasks
+
+- `tasks.enabled`: `true`/`false` — enable background task system
+- `tasks.max_parallel`: max concurrent background tasks (default `5`)
+- `tasks.timeout_seconds`: default timeout per task
+
 ### Access Control
 
 - `allowed_user_ids`
 - `allowed_group_ids`
+- `group_mention_only`: when `true`, bot only responds in groups when @mentioned or replied to (applies to both text and media messages)
 - `telegram_token`

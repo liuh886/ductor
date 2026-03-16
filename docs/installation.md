@@ -10,7 +10,7 @@
    - Gemini CLI: `npm install -g @google/gemini-cli` and authenticate in `gemini`
 4. One of these messaging transports:
    - **Telegram**: Bot token from [@BotFather](https://t.me/BotFather) + user ID from [@userinfobot](https://t.me/userinfobot)
-   - **Matrix**: Account on any homeserver (e.g. matrix.org) — homeserver URL, user ID, and password
+   - **Matrix**: install Matrix support first (`ductor install matrix` or `pip install \"ductor[matrix]\"`), then provide homeserver URL, user ID, and password/access token
 5. Docker optional (recommended for sandboxing)
 
 ## Install
@@ -182,6 +182,7 @@ Manual config equivalent:
     "host": "0.0.0.0",
     "port": 8741,
     "token": "",
+    "chat_id": 0,
     "allow_public": false
   }
 }
@@ -216,6 +217,8 @@ ductor service stop
 ductor service logs
 ductor service uninstall
 ```
+
+Backend details and platform quirks: [Service Management](modules/service_management.md)
 
 Backends:
 

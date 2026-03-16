@@ -153,6 +153,8 @@ Both require bot restart to apply.
 - macOS: launchd Launch Agent
 - Windows: Task Scheduler
 
+Detailed backend behavior: [service_management](service_management.md)
+
 `ductor service logs`:
 
 - Linux: `journalctl --user -u ductor -f`

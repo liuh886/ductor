@@ -8,8 +8,10 @@ Provider-agnostic CLI execution layer for Claude Code, Codex, and Gemini.
 - `base.py`: `BaseCLI`, `CLIConfig`, `docker_wrap()`, Windows helpers
 - `factory.py`: provider factory (`claude` / `codex` / `gemini`)
 - `service.py`: `CLIService` gateway for orchestrator
+- `init_wizard.py`: interactive onboarding and smart reset flow
 - `executor.py`: shared subprocess lifecycle helpers for provider wrappers
 - `timeout_controller.py`: configurable timeout warnings + activity-based extension controller
+- `model_cache.py`: shared base classes for provider model-cache persistence and refresh observers
 - `claude_provider.py`: Claude subprocess wrapper
 - `codex_provider.py`: Codex subprocess wrapper
 - `gemini_provider.py`: Gemini subprocess wrapper
@@ -33,6 +35,12 @@ Provider-agnostic CLI execution layer for Claude Code, Codex, and Gemini.
 4. `create_cli()` selects provider wrapper.
 5. provider executes subprocess and returns `CLIResponse`.
 6. service converts to `AgentResponse`.
+
+Environment variables injected into every CLI subprocess (`executor.py` and `docker_wrap`):
+
+- `DUCTOR_CHAT_ID`
+- `DUCTOR_TOPIC_ID` (when set)
+- `DUCTOR_TRANSPORT` (active transport identifier, e.g. `"tg"`, `"mx"`)
 
 ## Main-chat CLI parameters
 
@@ -109,7 +117,8 @@ Recovery triggers handled in orchestrator flows:
 
 ### Codex
 
-- uses `codex exec --json --color never --skip-git-repo-check`
+- fresh runs use `codex exec --json --color never --skip-git-repo-check`
+- resumed runs use `codex exec resume [--json] -- <session_id>` and do not go through the same `--color never --skip-git-repo-check` path
 - sandbox/approval flag selection from `permission_mode`
 - reasoning effort via `-c model_reasoning_effort=...`
 - `continue_session=True` is ignored for Codex
@@ -158,7 +167,8 @@ Statuses: `AUTHENTICATED`, `INSTALLED`, `NOT_FOUND`.
 
 `ProcessRegistry` provides:
 
-- registration/unregistration by chat
+- registration/unregistration by chat with optional `topic_id` tracking
+- `has_active(chat_id, topic_id=None)`: when `topic_id` is given, only processes for that specific topic are considered active; otherwise any process for the chat qualifies
 - abort markers (`was_aborted`, `clear_abort`)
 - `kill_all(chat_id)`
 - stale wall-clock cleanup (`kill_stale`)
@@ -172,7 +182,7 @@ Windows uses process-tree termination (`taskkill /F /T`) to avoid orphaned child
 - host mode (`config.docker_container == ""`): return original command + resolved local cwd
 - container mode:
   - wraps command as `docker exec ... <container> ...`,
-  - injects `DUCTOR_CHAT_ID`, optional `DUCTOR_TOPIC_ID`, `DUCTOR_AGENT_NAME`, `DUCTOR_INTERAGENT_PORT`, `DUCTOR_HOME`, `DUCTOR_SHARED_MEMORY_PATH`, and `DUCTOR_INTERAGENT_HOST`,
+  - injects `DUCTOR_CHAT_ID`, optional `DUCTOR_TOPIC_ID`, `DUCTOR_TRANSPORT`, `DUCTOR_AGENT_NAME`, `DUCTOR_INTERAGENT_PORT`, `DUCTOR_HOME`, `DUCTOR_SHARED_MEMORY_PATH`, and `DUCTOR_INTERAGENT_HOST`,
   - merges user secrets from `~/.ductor/.env` (never overrides existing vars),
   - forwards optional env vars via `-e` flags (`extra_env`, overrides `.env`),
   - uses `-i` when `interactive=True` (required for stdin-fed providers like Gemini),

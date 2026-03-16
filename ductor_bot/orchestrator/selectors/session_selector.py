@@ -6,6 +6,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
 from ductor_bot.orchestrator.selectors.utils import format_age
 from ductor_bot.text.response_format import SEP, fmt
@@ -46,24 +47,28 @@ async def handle_session_callback(
 
     if action == "endall":
         count = orch._named_sessions.end_all(chat_id)
-        note = f"All {count} session(s) ended." if count else "No active sessions."
+        note = t("sessions.ended_all_one", count=count) if count else t("sessions.ended_all_none")
         return await _build_page(orch, chat_id, note=note)
 
     if action.startswith("end:"):
         name = action[4:]
         ended = await orch.end_named_session(chat_id, name)
-        note = f"Session '{name}' ended." if ended else f"Session '{name}' not found."
+        note = (
+            t("sessions.ended_one", name=name)
+            if ended
+            else t("sessions.ended_not_found", name=name)
+        )
         return await _build_page(orch, chat_id, note=note)
 
     logger.warning("Unknown session selector callback: %s", data)
-    return await _build_page(orch, chat_id, note="Unknown action.")
+    return await _build_page(orch, chat_id, note=t("sessions.unknown_action"))
 
 
 def _format_topic_block(topic_sessions: list[SessionData]) -> str:
     """Build the topic sessions section for the selector."""
     if not topic_sessions:
         return ""
-    lines: list[str] = ["Topics:"]
+    lines: list[str] = [t("sessions.topics_header")]
     for idx, ts in enumerate(topic_sessions, 1):
         name = ts.topic_name or f"Topic #{ts.topic_id}"
         msgs = f"{ts.message_count} msg" if ts.message_count == 1 else f"{ts.message_count} msgs"
@@ -83,16 +88,16 @@ async def _build_page(
     topic_block = _format_topic_block(topic_sessions)
 
     if not sessions and not topic_sessions:
-        body = "No active sessions."
+        body = t("sessions.empty")
         if note:
             body = f"{note}\n\n{body}"
         return SelectorResponse(
             text=fmt(
-                "**Sessions**",
+                t("sessions.header"),
                 SEP,
                 body,
                 SEP,
-                "Start one with `/session <prompt>`.",
+                t("sessions.start_hint"),
             ),
         )
 
@@ -104,7 +109,7 @@ async def _build_page(
         lines.append(topic_block)
 
     if sessions:
-        lines.append("Named:")
+        lines.append(t("sessions.named_header"))
         for idx, ns in enumerate(sessions, 1):
             status_label = ns.status
             age_seconds = now - ns.created_at
@@ -121,32 +126,32 @@ async def _build_page(
             rows.append(
                 [
                     Button(
-                        text=f"End {ns.name}",
+                        text=t("sessions.btn_end", name=ns.name),
                         callback_data=f"nsc:end:{ns.name}",
                     ),
                 ]
             )
     elif topic_block:
-        lines.append("Named:\n  No active sessions.\n  Start one with `/session <prompt>`.")
+        lines.append(f"{t('sessions.named_header')}\n  {t('sessions.named_empty')}")
 
     nav_row: list[Button] = [
-        Button(text="Refresh", callback_data="nsc:r"),
+        Button(text=t("sessions.btn_refresh"), callback_data="nsc:r"),
     ]
     rows.append(nav_row)
     if len(sessions) > 1:
-        rows.append([Button(text="End All", callback_data="nsc:endall")])
+        rows.append([Button(text=t("sessions.btn_end_all"), callback_data="nsc:endall")])
 
     total = len(sessions) + len(topic_sessions)
-    info_lines: list[str] = [f"Active: {total}"]
+    info_lines: list[str] = [t("sessions.active_count", count=total)]
     if note:
         info_lines.append(note)
 
     text = fmt(
-        "**Sessions**",
+        t("sessions.header"),
         SEP,
         "\n".join(lines),
         SEP,
         "\n".join(info_lines),
-        "Follow up: `@<name> <message>`",
+        t("sessions.followup_hint"),
     )
     return SelectorResponse(text=text, buttons=ButtonGrid(rows=rows))

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 import time_machine
 
-from ductor_bot.config import AgentConfig, HeartbeatConfig
+from ductor_bot.config import AgentConfig, HeartbeatConfig, HeartbeatTarget
 from ductor_bot.heartbeat.observer import HeartbeatObserver
 from ductor_bot.orchestrator.flows import _strip_ack_token
 from ductor_bot.utils.quiet_hours import is_quiet_hour
@@ -130,8 +130,8 @@ class TestHeartbeatObserverTick:
             await obs._tick()
 
         assert handler.call_count == 2
-        handler.assert_any_await(100)
-        handler.assert_any_await(200)
+        handler.assert_any_await(100, None, None, None)
+        handler.assert_any_await(200, None, None, None)
 
     async def test_tick_skips_busy_chat(self) -> None:
         config = _make_config()
@@ -143,7 +143,7 @@ class TestHeartbeatObserverTick:
         with time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)):
             await obs._tick()
 
-        handler.assert_awaited_once_with(200)
+        handler.assert_awaited_once_with(200, None, None, None)
 
     async def test_tick_delivers_alert(self) -> None:
         config = _make_config()
@@ -156,8 +156,8 @@ class TestHeartbeatObserverTick:
             await obs._tick()
 
         assert result_handler.call_count == 2
-        result_handler.assert_any_await(100, "Hey, check this out!")
-        result_handler.assert_any_await(200, "Hey, check this out!")
+        result_handler.assert_any_await(100, "Hey, check this out!", None)
+        result_handler.assert_any_await(200, "Hey, check this out!", None)
 
     async def test_tick_suppresses_none_result(self) -> None:
         config = _make_config()
@@ -230,3 +230,81 @@ class TestHeartbeatObserverTick:
 
         with pytest.raises(asyncio.CancelledError):
             await obs._run_for_chat(100)
+
+
+# ---------------------------------------------------------------------------
+# Group targets
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatGroupTargets:
+    async def test_tick_iterates_group_targets(self) -> None:
+        config = AgentConfig(
+            heartbeat=HeartbeatConfig(enabled=True),
+            allowed_user_ids=[100],
+        )
+        config.heartbeat.group_targets = [
+            HeartbeatTarget(chat_id=-1001, topic_id=42),
+            HeartbeatTarget(chat_id=-1002),
+        ]
+        obs = HeartbeatObserver(config)
+        handler = AsyncMock(return_value=None)
+        obs.set_heartbeat_handler(handler)
+
+        with time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)):
+            await obs._tick()
+
+        assert handler.call_count == 3
+        handler.assert_any_await(100, None, None, None)
+        # Group targets get resolved prompt/ack from global config
+        handler.assert_any_await(-1001, 42, config.heartbeat.prompt, config.heartbeat.ack_token)
+        handler.assert_any_await(-1002, None, config.heartbeat.prompt, config.heartbeat.ack_token)
+
+    async def test_tick_group_target_delivers_alert_with_topic_id(self) -> None:
+        config = AgentConfig(
+            heartbeat=HeartbeatConfig(enabled=True),
+            allowed_user_ids=[],
+        )
+        config.heartbeat.group_targets = [HeartbeatTarget(chat_id=-1001, topic_id=7)]
+        obs = HeartbeatObserver(config)
+        obs.set_heartbeat_handler(AsyncMock(return_value="group alert"))
+        result_handler = AsyncMock()
+        obs.set_result_handler(result_handler)
+
+        with time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)):
+            await obs._tick()
+
+        result_handler.assert_awaited_once_with(-1001, "group alert", 7)
+
+    async def test_default_group_targets_with_null_chat_id_are_skipped(self) -> None:
+        config = _make_config()
+        assert all(t.chat_id is None for t in config.heartbeat.group_targets)
+        obs = HeartbeatObserver(config)
+        handler = AsyncMock(return_value=None)
+        obs.set_heartbeat_handler(handler)
+
+        with time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)):
+            await obs._tick()
+
+        assert handler.call_count == 2
+
+    async def test_topic_id_flows_through_run_for_chat(self) -> None:
+        config = _make_config()
+        obs = HeartbeatObserver(config)
+        obs.set_heartbeat_handler(AsyncMock(return_value="alert"))
+        result_handler = AsyncMock()
+        obs.set_result_handler(result_handler)
+
+        await obs._run_for_chat(-1001, topic_id=42)
+
+        result_handler.assert_awaited_once_with(-1001, "alert", 42)
+
+    async def test_run_for_chat_passes_prompt_ack_to_handler(self) -> None:
+        config = _make_config()
+        obs = HeartbeatObserver(config)
+        handler = AsyncMock(return_value=None)
+        obs.set_heartbeat_handler(handler)
+
+        await obs._run_for_chat(-1001, prompt="Custom", ack_token="OK")
+
+        handler.assert_awaited_once_with(-1001, None, "Custom", "OK")

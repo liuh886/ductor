@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 class TransportAdapter(Protocol):
     """Protocol for transport-specific delivery."""
 
+    @property
+    def transport_name(self) -> str:
+        """Short identifier for this transport (e.g. ``"tg"``, ``"mx"``)."""
+        ...
+
     async def deliver(self, envelope: Envelope) -> None:
         """Send the envelope's result to the targeted chat."""
         ...
@@ -148,7 +153,7 @@ class MessageBus:
         await self._deliver(envelope)
 
     async def _deliver(self, envelope: Envelope) -> None:
-        """Fan out to all registered transports."""
+        """Route to the correct transport(s) with cascading fallback."""
         if not self._transports:
             logger.warning(
                 "No transports registered — envelope lost: origin=%s chat=%d",
@@ -156,15 +161,61 @@ class MessageBus:
                 envelope.chat_id,
             )
             return
-        for transport in self._transports:
-            try:
-                if envelope.delivery == DeliveryMode.BROADCAST:
+
+        # BROADCAST goes to all transports unconditionally.
+        if envelope.delivery == DeliveryMode.BROADCAST:
+            for transport in self._transports:
+                try:
                     await transport.deliver_broadcast(envelope)
-                else:
-                    await transport.deliver(envelope)
+                except Exception:
+                    logger.exception(
+                        "Broadcast delivery failed: %s",
+                        type(transport).__name__,
+                    )
+            return
+
+        # UNICAST: filter by transport name.
+        target_transport = envelope.transport
+        if target_transport:
+            matching = [t for t in self._transports if t.transport_name == target_transport]
+            others = [t for t in self._transports if t.transport_name != target_transport]
+        else:
+            # No transport specified -> deliver to all (backward compat).
+            matching = list(self._transports)
+            others = []
+
+        for transport in matching:
+            try:
+                await transport.deliver(envelope)
             except Exception:
                 logger.exception(
                     "Transport delivery failed: origin=%s transport=%s",
                     envelope.origin.value,
                     type(transport).__name__,
                 )
+
+        # Cascading fallback: target transport not registered at all.
+        if not matching and others:
+            logger.warning(
+                "Transport '%s' not available for envelope origin=%s, falling back to %s",
+                target_transport,
+                envelope.origin.value,
+                others[0].transport_name,
+            )
+            fallback_env = Envelope(
+                origin=envelope.origin,
+                chat_id=0,
+                result_text=(
+                    f"**Delivery fallback**\n\n"
+                    f"Target transport '{target_transport}' is not available.\n\n"
+                    f"---\n{envelope.result_text or ''}"
+                ),
+                status=envelope.status,
+                delivery=DeliveryMode.BROADCAST,
+                lock_mode=envelope.lock_mode,
+                metadata=envelope.metadata,
+            )
+            try:
+                await others[0].deliver_broadcast(fallback_env)
+            except Exception:
+                logger.exception("Fallback delivery also failed")

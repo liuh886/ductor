@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Callback signature: (job_title, result_text, status)
-CronResultCallback = Callable[[str, str, str], Awaitable[None]]
+# Callback signature: (job_title, result_text, status, chat_id, topic_id, transport)
+CronResultCallback = Callable[[str, str, str, int, int | None, str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -64,6 +64,7 @@ class CronObserver(BaseTaskObserver):
         self._manager = manager
         self._on_result: CronResultCallback | None = None
         self._scheduled: dict[str, asyncio.Task[None]] = {}
+        self._executing: set[str] = set()
         self._reschedule_lock = asyncio.Lock()
         self._requested_reschedule_task: asyncio.Task[None] | None = None
         self._running = False
@@ -151,18 +152,21 @@ class CronObserver(BaseTaskObserver):
                 )
 
     async def _reschedule_all(self) -> None:
-        """Cancel existing schedules, await their termination, then reschedule.
+        """Cancel idle schedules, await their termination, then reschedule.
 
-        Awaiting cancellation prevents a race where the old task (executing a
-        subprocess via asyncio.to_thread) is not yet interrupted and runs
-        concurrently with the newly created replacement task.
+        Jobs that are currently executing are left running so that a
+        ``cron_jobs.json`` change mid-execution does not cancel an active
+        subprocess.  Awaiting cancellation of idle tasks prevents a race
+        where the old task runs concurrently with its replacement.
         """
-        tasks = list(self._scheduled.values())
-        for task in tasks:
-            task.cancel()
-        self._scheduled.clear()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        cancelled: list[asyncio.Task[None]] = []
+        for job_id, task in list(self._scheduled.items()):
+            if job_id not in self._executing:
+                task.cancel()
+                cancelled.append(task)
+                del self._scheduled[job_id]
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
         await self._schedule_all()
         logger.info("Rescheduled %d jobs", len(self._scheduled))
 
@@ -243,27 +247,36 @@ class CronObserver(BaseTaskObserver):
         except Exception:
             logger.exception("Cron job %s failed unexpectedly", scheduled_job.id)
         if self._running:
-            self._schedule_job(
-                scheduled_job.id,
-                scheduled_job.schedule,
-                scheduled_job.instruction,
-                scheduled_job.task_folder,
-                scheduled_job.timezone,
-            )
+            job = self._manager.get_job(scheduled_job.id)
+            if job and job.enabled:
+                self._schedule_job(
+                    scheduled_job.id,
+                    scheduled_job.schedule,
+                    scheduled_job.instruction,
+                    scheduled_job.task_folder,
+                    scheduled_job.timezone,
+                )
 
     # -- Execution --
 
     async def _deliver_result(
-        self, job_id: str, job_title: str, result_text: str, status: str
+        self,
+        job_id: str,
+        job_title: str,
+        result_text: str,
+        status: str,
+        routing: tuple[int, int | None, str] = (0, None, "tg"),
     ) -> None:
         """Send result to the external handler (e.g. Telegram).
 
         Uses *job_title* (computed at execution start) so delivery works even
         if the job was removed from the manager mid-execution.
+        *routing* is ``(chat_id, topic_id, transport)``; ``(0, None, "tg")``
+        means broadcast.
         """
         if self._on_result:
             try:
-                await self._on_result(job_title, result_text, status)
+                await self._on_result(job_title, result_text, status, *routing)
             except Exception:
                 logger.exception("Error in cron result handler for job %s", job_id)
 
@@ -274,9 +287,26 @@ class CronObserver(BaseTaskObserver):
         task_folder: str,
     ) -> None:
         """Spawn a fresh CLI session in the cron_task folder."""
+        self._executing.add(job_id)
+        try:
+            await self._execute_job_inner(job_id, instruction, task_folder)
+        finally:
+            self._executing.discard(job_id)
+
+    async def _execute_job_inner(
+        self,
+        job_id: str,
+        instruction: str,
+        task_folder: str,
+    ) -> None:
         set_log_context(operation="cron")
         job = self._manager.get_job(job_id)
         job_title = job.title if job else job_id
+        routing = (job.chat_id, job.topic_id, job.transport) if job else (0, None, "tg")
+
+        if job and not job.enabled:
+            logger.info("Cron job %s is disabled, skipping execution", job_title)
+            return
 
         if self._is_quiet_hours(job, job_title):
             return
@@ -310,7 +340,13 @@ class CronObserver(BaseTaskObserver):
 
         if result.execution is None:
             logger.error("CLI not found for cron job %s", job_id)
-            await self._deliver_result(job_id, job_title, result.result_text, result.status)
+            await self._deliver_result(
+                job_id,
+                job_title,
+                result.result_text,
+                result.status,
+                routing,
+            )
             self._manager.update_run_status(job_id, status=result.status)
             return
 
@@ -329,7 +365,13 @@ class CronObserver(BaseTaskObserver):
         # cancels) running tasks.  Delivering first guarantees the
         # Telegram message is sent even if the task is cancelled during
         # the subsequent file I/O.
-        await self._deliver_result(job_id, job_title, result.result_text, result.status)
+        await self._deliver_result(
+            job_id,
+            job_title,
+            result.result_text,
+            result.status,
+            routing,
+        )
 
         self._manager.update_run_status(job_id, status=result.status)
         # Refresh our mtime baseline so the file-watcher doesn't treat the

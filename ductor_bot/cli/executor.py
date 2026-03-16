@@ -57,6 +57,7 @@ def _build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
         env["DUCTOR_CHAT_ID"] = str(config.chat_id)
     if config.topic_id:
         env["DUCTOR_TOPIC_ID"] = str(config.topic_id)
+    env["DUCTOR_TRANSPORT"] = config.transport
     working_dir = Path(config.working_dir)
     ductor_home = working_dir.parent if working_dir.name == "workspace" else working_dir
     env["DUCTOR_HOME"] = str(ductor_home)
@@ -153,7 +154,11 @@ async def run_streaming_subprocess(
     logger.info("%s subprocess starting pid=%s", provider_label, process.pid)
 
     reg = config.process_registry
-    tracked = reg.register(config.chat_id, process, config.process_label) if reg else None
+    tracked = (
+        reg.register(config.chat_id, process, config.process_label, topic_id=config.topic_id)
+        if reg
+        else None
+    )
     stderr_drain = asyncio.create_task(process.stderr.read())
 
     try:
@@ -288,7 +293,11 @@ async def run_oneshot_subprocess(
     logger.info("%s subprocess starting pid=%s", provider_label, process.pid)
 
     reg = config.process_registry
-    tracked = reg.register(config.chat_id, process, config.process_label) if reg else None
+    tracked = (
+        reg.register(config.chat_id, process, config.process_label, topic_id=config.topic_id)
+        if reg
+        else None
+    )
     try:
         stdin_data = spec.prompt.encode() if _IS_WINDOWS else None
         if spec.timeout_controller:

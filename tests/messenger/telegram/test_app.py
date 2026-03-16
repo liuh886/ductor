@@ -21,11 +21,13 @@ def _make_config(
     *,
     streaming_enabled: bool = True,
     user_ids: list[int] | None = None,
+    group_mention_only: bool = False,
 ) -> AgentConfig:
     return AgentConfig(
         telegram_token="test:token",
         allowed_user_ids=user_ids or [100],
         streaming=StreamingConfig(enabled=streaming_enabled),
+        group_mention_only=group_mention_only,
     )
 
 
@@ -551,15 +553,29 @@ class TestResolveText:
 
     @patch("ductor_bot.messenger.telegram.app.is_media_addressed", return_value=False)
     @patch("ductor_bot.messenger.telegram.app.has_media", return_value=True)
-    async def test_media_in_group_not_addressed(
+    async def test_media_in_group_not_addressed_mention_only(
         self, _mock_has: MagicMock, _mock_addr: MagicMock
     ) -> None:
-        tg_bot, _ = _make_tg_bot()
+        cfg = _make_config(group_mention_only=True)
+        tg_bot, _ = _make_tg_bot(cfg)
         tg_bot._orchestrator = _make_orchestrator()
         msg = _make_message(chat_type="group")
 
         result = await tg_bot._resolve_text(msg)
         assert result is None
+
+    @patch("ductor_bot.messenger.telegram.app.resolve_media_text", new_callable=AsyncMock)
+    @patch("ductor_bot.messenger.telegram.app.has_media", return_value=True)
+    async def test_media_in_group_not_addressed_mention_not_required(
+        self, _mock_has: MagicMock, mock_resolve: AsyncMock
+    ) -> None:
+        tg_bot, _ = _make_tg_bot()
+        tg_bot._orchestrator = _make_orchestrator()
+        msg = _make_message(chat_type="group")
+        mock_resolve.return_value = "[MEDIA]"
+
+        result = await tg_bot._resolve_text(msg)
+        assert result == "[MEDIA]"
 
     @patch("ductor_bot.messenger.telegram.app.resolve_media_text", new_callable=AsyncMock)
     @patch("ductor_bot.messenger.telegram.app.is_media_addressed", return_value=True)
@@ -574,6 +590,18 @@ class TestResolveText:
 
         result = await tg_bot._resolve_text(msg)
         assert result == "[MEDIA]"
+
+    @patch("ductor_bot.messenger.telegram.app.is_command_for_others", return_value=True)
+    @patch("ductor_bot.messenger.telegram.app.has_media", return_value=True)
+    async def test_media_in_group_for_other_bot(
+        self, _mock_has: MagicMock, _mock_others: MagicMock
+    ) -> None:
+        tg_bot, _ = _make_tg_bot()
+        tg_bot._orchestrator = _make_orchestrator()
+        msg = _make_message(chat_type="group")
+
+        result = await tg_bot._resolve_text(msg)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

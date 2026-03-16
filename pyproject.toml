@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ductor"
-version = "0.13.0"
+version = "0.15.0"
 description = "Control Claude Code and Codex CLI from Telegram. Live streaming, sessions, cron jobs, webhooks, Docker sandboxing."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,6 +40,7 @@ dependencies = [
     "rich>=14.3.2",
     "questionary>=2.1.1",
     "filetype>=1.2.0",
+    "Pillow>=10.0.0",
     "tzdata>=2024.1",
 ]
 
@@ -193,6 +194,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["nio.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["PIL.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

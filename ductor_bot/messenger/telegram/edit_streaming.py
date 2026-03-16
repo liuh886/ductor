@@ -22,6 +22,7 @@ from ductor_bot.messenger.telegram.formatting import (
     markdown_to_telegram_html,
     split_html_message,
 )
+from ductor_bot.text.response_format import normalize_tool_name
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -54,6 +55,8 @@ class _ToolTracker:
 
     def add(self, name: str, *, style: str = "tool") -> None:
         """Record an indicator, incrementing count if same as previous."""
+        if style == "tool":
+            name = normalize_tool_name(name)
         if self._entries and self._entries[-1].name == name and self._entries[-1].style == style:
             self._entries[-1].count += 1
         else:
@@ -138,6 +141,7 @@ class EditStreamEditor:
 
     async def append_tool(self, tool_name: str) -> None:
         """Record a tool event (collapsed with consecutive duplicates)."""
+        tool_name = normalize_tool_name(tool_name)
         if self._s.fallen_back:
             indicator = f"<b>[TOOL: {html.escape(tool_name)}]</b>"
             await self._send_new(indicator)

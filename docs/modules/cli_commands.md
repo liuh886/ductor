@@ -17,7 +17,7 @@ CLI command implementation package extracted from `__main__.py`.
 `ductor_bot/__main__.py` is now a thin entrypoint:
 
 - argument parsing + command dispatch
-- config helpers (`_is_configured`, `load_config`, `run_telegram`)
+- config helpers (`_is_configured`, `load_config`, `run_bot`)
 - imports/re-exports command handlers from `cli_commands/*`
 
 This keeps lifecycle logic testable and prevents command monolith growth.
@@ -26,7 +26,7 @@ This keeps lifecycle logic testable and prevents command monolith growth.
 
 - lifecycle: `ductor`, `stop`, `restart`, `upgrade`, `uninstall`, onboarding/reset flow
 - status/help: `ductor status`, `ductor help`
-- service: install/start/stop/logs/uninstall wrapper for platform backends
+- service: install/status/start/stop/logs/uninstall wrapper for platform backends
 - docker: enable/disable/rebuild/mount/unmount/mounts/extras/extras-add/extras-remove
 - api: enable/disable direct WebSocket API block in config
 - agents: list/add/remove sub-agent entries in `agents.json`
@@ -35,10 +35,10 @@ This keeps lifecycle logic testable and prevents command monolith growth.
 ## Notable behavior details
 
 - `stop_bot()` stops service first, then PID instance, then remaining ductor processes, then Docker container (if enabled).
-- `start_bot()` calls `load_config()` and starts `AgentSupervisor` via `run_telegram()`.
-- restart semantics:
-  - service/supervisor context -> exit with code `42`
-  - direct foreground context -> process re-exec
+- `start_bot()` calls `load_config()` and starts `AgentSupervisor` via `run_bot()`.
+- `ductor agents add <name>` is an interactive Telegram-focused scaffold; Matrix sub-agents are configured via `agents.json` or the bundled agent tool scripts.
+- `ductor restart` always runs `stop_bot()` and then re-execs the current process.
+- exit code `42` is the in-app runtime/supervisor restart signal (`/restart`, service-managed restarts), not the behavior of the CLI `ductor restart` command.
 - `status.py` currently counts errors from latest `ductor*.log`; runtime primary log file is `~/.ductor/logs/agent.log`.
 
 ## Why this matters for docs

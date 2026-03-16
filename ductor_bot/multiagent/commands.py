@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.text.response_format import SEP, fmt
 
@@ -29,7 +30,7 @@ async def cmd_agents(orch: Orchestrator, _key: SessionKey, _text: str) -> Orches
     """Handle /agents: list all agents with status."""
     supervisor = orch.supervisor
     if supervisor is None:
-        return OrchestratorResult(text="Multi-agent mode is not active.")
+        return OrchestratorResult(text=t("agents.not_active"))
 
     lines: list[str] = []
     for name in sorted(supervisor.health.keys()):
@@ -54,41 +55,41 @@ async def cmd_agents(orch: Orchestrator, _key: SessionKey, _text: str) -> Orches
         lines.append(info)
 
     if not lines:
-        return OrchestratorResult(text=fmt("**Agents**", SEP, "No agents."))
+        return OrchestratorResult(text=fmt(t("agents.header"), SEP, t("agents.empty")))
 
-    return OrchestratorResult(text=fmt("**Agents**", SEP, "\n".join(lines)))
+    return OrchestratorResult(text=fmt(t("agents.header"), SEP, "\n".join(lines)))
 
 
 async def cmd_agent_stop(orch: Orchestrator, _key: SessionKey, text: str) -> OrchestratorResult:
     """Handle /agent_stop <name>: stop a sub-agent."""
     supervisor = orch.supervisor
     if supervisor is None:
-        return OrchestratorResult(text="Multi-agent mode is not active.")
+        return OrchestratorResult(text=t("agents.not_active"))
 
     parts = text.split(None, 1)
     if len(parts) < 2:
-        return OrchestratorResult(text="Usage: /agent_stop <name>")
+        return OrchestratorResult(text=t("agents.usage_stop"))
 
     name = parts[1].strip().lower()
     if name == "main":
-        return OrchestratorResult(text="Cannot stop the main agent.")
+        return OrchestratorResult(text=t("agents.cannot_stop_main"))
 
     if name not in supervisor.stacks:
-        return OrchestratorResult(text=f"Agent '{name}' is not running.")
+        return OrchestratorResult(text=t("agents.not_running", name=name))
 
     await supervisor.stop_agent(name)
-    return OrchestratorResult(text=f"Agent '{name}' stopped.")
+    return OrchestratorResult(text=t("agents.stopped", name=name))
 
 
 async def cmd_agent_start(orch: Orchestrator, _key: SessionKey, text: str) -> OrchestratorResult:
     """Handle /agent_start <name>: start a sub-agent from the registry."""
     supervisor = orch.supervisor
     if supervisor is None:
-        return OrchestratorResult(text="Multi-agent mode is not active.")
+        return OrchestratorResult(text=t("agents.not_active"))
 
     parts = text.split(None, 1)
     if len(parts) < 2:
-        return OrchestratorResult(text="Usage: /agent_start <name>")
+        return OrchestratorResult(text=t("agents.usage_start"))
 
     name = parts[1].strip().lower()
     result = await supervisor.start_agent_by_name(name)
@@ -99,11 +100,11 @@ async def cmd_agent_restart(orch: Orchestrator, _key: SessionKey, text: str) -> 
     """Handle /agent_restart <name>: restart a sub-agent."""
     supervisor = orch.supervisor
     if supervisor is None:
-        return OrchestratorResult(text="Multi-agent mode is not active.")
+        return OrchestratorResult(text=t("agents.not_active"))
 
     parts = text.split(None, 1)
     if len(parts) < 2:
-        return OrchestratorResult(text="Usage: /agent_restart <name>")
+        return OrchestratorResult(text=t("agents.usage_restart"))
 
     name = parts[1].strip().lower()
     result = await supervisor.restart_agent(name)

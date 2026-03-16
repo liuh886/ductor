@@ -43,9 +43,23 @@ Lock key: `envelope.lock_key -> (chat_id, topic_id)`.
 3. if `lock_mode=REQUIRED`: lock via shared `LockPool`
 4. if `needs_injection`: call `SessionInjector.inject_prompt(...)` (orchestrator)
 5. run optional pre-delivery hook
-6. fan-out delivery to all registered transports
+6. transport-aware delivery routing (see below)
 
 Registered transports: `TelegramTransport`, `MatrixTransport`.
+
+## Transport-aware delivery
+
+Each `TransportAdapter` exposes a `transport_name` property (e.g. `"tg"`, `"mx"`). The `Envelope.transport` field identifies the target transport for routing.
+
+Delivery modes:
+
+- **BROADCAST**: delivered to all registered transports unconditionally via `deliver_broadcast()`.
+- **UNICAST**: filtered by `envelope.transport` — only the matching transport receives the envelope via `deliver()`. When `envelope.transport` is unset, all transports receive the envelope (backward compatibility).
+
+Cascading fallback for UNICAST:
+
+- If the target transport is not registered (e.g. envelope targets `"tg"` but only Matrix is running), the bus falls back to an available transport.
+- The fallback envelope is rewritten as a BROADCAST with a "Delivery fallback" explanation prepended to the result text, so the user understands the message was intended for a different transport.
 
 ## Adapter mapping (`adapters.py`)
 
@@ -78,7 +92,6 @@ Task/topic nuance:
 A single `LockPool` is shared by:
 
 - `SequentialMiddleware` (Telegram ingress)
-- `ApiServer` (WebSocket per-session locking)
 - `MessageBus` (observer/result routing)
 
-This prevents lock-scope drift across transports and background delivery paths.
+`ApiServer` currently creates its own `LockPool` for WebSocket session locking, so API locking is separate from the Telegram/message-bus lock domain.

@@ -84,7 +84,7 @@ class TestEditStreamEditor:
         await editor.finalize("")
         # Find the last call that contains the tool indicator
         last_text = self._get_last_message_text(bot)
-        assert "[TOOL: Bash] x3" in last_text
+        assert "[TOOL: Shell] x3" in last_text
 
     async def test_tool_collapse_mixed(self) -> None:
         bot, editor = _make_editor()
@@ -93,7 +93,7 @@ class TestEditStreamEditor:
         await editor.append_tool("Write")
         await editor.finalize("")
         last_text = self._get_last_message_text(bot)
-        assert "[TOOL: Bash] x2" in last_text
+        assert "[TOOL: Shell] x2" in last_text
         assert "[TOOL: Write]" in last_text
         assert "x1" not in last_text  # Single tools have no count
 
@@ -107,7 +107,7 @@ class TestEditStreamEditor:
         # Indicators are stripped from the final message
         assert "Before tools" in last_text
         assert "After tools" in last_text
-        assert "[TOOL: Bash]" not in last_text
+        assert "[TOOL: Shell]" not in last_text
         # Text ordering is preserved
         before_pos = last_text.find("Before tools")
         after_pos = last_text.find("After tools")
@@ -277,7 +277,7 @@ class TestToolTracker:
         tracker = _ToolTracker()
         tracker.add("Bash")
         result = tracker.render_html()
-        assert "[TOOL: Bash]</b>" in result
+        assert "[TOOL: Shell]</b>" in result
         assert "x" not in result
 
     def test_consecutive_same(self) -> None:
@@ -287,7 +287,7 @@ class TestToolTracker:
         for _ in range(4):
             tracker.add("Bash")
         result = tracker.render_html()
-        assert "[TOOL: Bash] x4</b>" in result
+        assert "[TOOL: Shell] x4</b>" in result
 
     def test_mixed_tools(self) -> None:
         from ductor_bot.messenger.telegram.edit_streaming import _ToolTracker
@@ -300,7 +300,7 @@ class TestToolTracker:
         tracker.add("Read")
         tracker.add("Read")
         result = tracker.render_html()
-        assert "[TOOL: Bash] x2" in result
+        assert "[TOOL: Shell] x2" in result
         assert "[TOOL: Write]" in result
         assert "[TOOL: Read] x3" in result
 
@@ -340,7 +340,7 @@ class TestToolTracker:
         tracker.add("THINKING", style="system")
         result = tracker.render_html()
         assert "<i>[THINKING]</i>" in result
-        assert "<b>[TOOL: Bash]</b>" in result
+        assert "<b>[TOOL: Shell]</b>" in result
         # Two separate THINKING entries (not collapsed across tool)
         assert "x" not in result
 

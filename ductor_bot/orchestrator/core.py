@@ -152,9 +152,20 @@ class Orchestrator:
         self._cron_manager = CronManager(jobs_path=paths.cron_jobs_path)
         self._webhook_manager = WebhookManager(hooks_path=paths.webhooks_path)
         self._observers = ObserverManager(config, paths)
-        self._observers.heartbeat.set_heartbeat_handler(
-            lambda chat_id: self.handle_heartbeat(SessionKey(chat_id=chat_id))
-        )
+
+        async def _heartbeat_handler(
+            chat_id: int,
+            topic_id: int | None = None,
+            prompt: str | None = None,
+            ack_token: str | None = None,
+        ) -> str | None:
+            return await self.handle_heartbeat(
+                SessionKey(chat_id=chat_id, topic_id=topic_id),
+                prompt=prompt,
+                ack_token=ack_token,
+            )
+
+        self._observers.heartbeat.set_heartbeat_handler(_heartbeat_handler)
         self._observers.heartbeat.set_busy_check(self._process_registry.has_active)
         stale_max = config.cli_timeout * 2
         self._observers.heartbeat.set_stale_cleanup(
@@ -453,10 +464,16 @@ class Orchestrator:
         self._observers.wire_to_bus(bus, wake_handler=wake_handler)
         bus.set_injector(self)
 
-    async def handle_heartbeat(self, key: SessionKey) -> str | None:
+    async def handle_heartbeat(
+        self,
+        key: SessionKey,
+        *,
+        prompt: str | None = None,
+        ack_token: str | None = None,
+    ) -> str | None:
         """Run a heartbeat turn in the main session. Returns alert text or None."""
         logger.debug("Heartbeat flow starting")
-        return await heartbeat_flow(self, key)
+        return await heartbeat_flow(self, key, prompt=prompt, ack_token=ack_token)
 
     def submit_named_session(
         self,
@@ -572,9 +589,9 @@ class Orchestrator:
             return []
         return self._observers.background.active_tasks(chat_id)
 
-    def is_chat_busy(self, chat_id: int) -> bool:
+    def is_chat_busy(self, chat_id: int, topic_id: int | None = None) -> bool:
         """Check if a chat has active CLI processes."""
-        return self._process_registry.has_active(chat_id)
+        return self._process_registry.has_active(chat_id, topic_id)
 
     async def _ensure_docker(self) -> None:
         """Health-check Docker before CLI calls; auto-recover or fall back."""
@@ -622,6 +639,22 @@ class Orchestrator:
 
         if "model" in hot:
             self._providers.refresh_known_model_ids()
+
+        if "language" in hot:
+            from ductor_bot.i18n import init as init_i18n
+
+            init_i18n(config.language)
+
+        if "heartbeat" in hot:
+            hb = self._observers.heartbeat
+            if config.heartbeat.enabled and not hb.running:
+                task = asyncio.create_task(hb.start())
+                task.add_done_callback(lambda _: None)
+                logger.info("Heartbeat observer started via hot-reload")
+            elif not config.heartbeat.enabled and hb.running:
+                task = asyncio.create_task(hb.stop())
+                task.add_done_callback(lambda _: None)
+                logger.info("Heartbeat observer stopped via hot-reload")
 
         handler = getattr(self, "_config_hot_reload_handler", None)
         if handler is not None:

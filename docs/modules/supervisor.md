@@ -8,7 +8,7 @@ In-process multi-agent supervisor (`AgentSupervisor`) for main agent + optional 
 
 ## Purpose
 
-`run_telegram()` always starts `AgentSupervisor`.
+`run_bot()` always starts `AgentSupervisor`.
 
 - main agent always runs under supervision
 - sub-agents are loaded from `~/.ductor/agents.json`
@@ -19,10 +19,10 @@ In-process multi-agent supervisor (`AgentSupervisor`) for main agent + optional 
 `AgentSupervisor.start()`:
 
 1. start `InterAgentBus`
-2. start `InternalAgentAPI` (`127.0.0.1:8799` in host mode, `0.0.0.0:8799` in Docker mode)
+2. start `InternalAgentAPI` on `config.interagent_port` (default `8799`): `127.0.0.1:<port>` in host mode, `0.0.0.0:<port>` in Docker mode
 3. if `tasks.enabled=true`: create shared `TaskHub` (`~/.ductor/tasks.json` + `~/.ductor/workspace/tasks/`) and attach it to `InternalAgentAPI`
 4. create/start main `AgentStack`
-5. wait up to 120s for main startup readiness (`_main_ready`) before sub-agent startup
+5. wait for main startup readiness (`_main_ready`) before sub-agent startup; the timeout uses a 120s base and is extended dynamically when Docker extras increase sandbox setup/build time
 6. load + start sub-agents from `agents.json`
 7. start `SharedKnowledgeSync` (`SHAREDMEMORY.md` -> agent memories)
 8. start `agents.json` watcher
@@ -36,7 +36,8 @@ Each agent runs in `_supervised_run(...)` with health tracking.
 - exit code `42`:
   - sub-agent: in-process restart (stack rebuild)
   - main agent: propagate restart to process/service runtime
-- crash: exponential backoff restarts (max 5 retries), then leave health as `crashed` until manual restart
+- main-agent crash: supervisor exits immediately with failure (no retry loop)
+- sub-agent crash: exponential backoff restarts (max 5 retries), then leave health as `crashed` until manual restart
 
 ## Dynamic agent registry
 
@@ -46,6 +47,7 @@ Each agent runs in `_supervised_run(...)` with health tracking.
 - removed entry: stop sub-agent
 - restart triggers for running sub-agents:
   - `transport` changed
+  - `transports` changed
   - Telegram identity changed (`telegram_token`)
   - Matrix identity changed (`matrix.homeserver` or `matrix.user_id`)
 - other config field changes in `agents.json` currently do not trigger auto-restart

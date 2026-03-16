@@ -19,6 +19,7 @@ from ductor_bot.bus.lock_pool import LockPool
 from ductor_bot.commands import BOT_COMMANDS, MULTIAGENT_SUB_COMMANDS
 from ductor_bot.config import AgentConfig
 from ductor_bot.files.allowed_roots import resolve_allowed_roots
+from ductor_bot.i18n import t
 from ductor_bot.infra.version import get_current_version
 from ductor_bot.messenger.commands import classify_command
 from ductor_bot.messenger.matrix.buttons import ButtonTracker
@@ -313,6 +314,9 @@ class MatrixBot:
         self._last_active_room = room_id
         chat_id = self._id_map.room_to_int(room_id)
 
+        if self._config.scene.seen_reaction:
+            await self._set_seen_read_receipt(room_id, event.event_id)
+
         # Check button match (text-input fallback for reactions)
         button_match = self._button_tracker.match_input(room_id, text)
         if button_match:
@@ -355,6 +359,9 @@ class MatrixBot:
         room_id = room.room_id
         self._last_active_room = room_id
         chat_id = self._id_map.room_to_int(room_id)
+
+        if self._config.scene.seen_reaction:
+            await self._set_seen_read_receipt(room_id, event.event_id)
 
         # Download and build prompt
         from ductor_bot.messenger.matrix.media import resolve_matrix_media
@@ -429,9 +436,9 @@ class MatrixBot:
         orch = self._orchestrator
         if orch:
             killed = await orch.abort(key.chat_id)
-            msg = f"Stopped {killed} process(es)." if killed else "No active processes."
+            msg = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
         else:
-            msg = "No active processes."
+            msg = t("abort_all.nothing")
         await self._send_rich(room_id, msg)
 
     async def _cmd_interrupt(
@@ -441,9 +448,7 @@ class MatrixBot:
         orch = self._orchestrator
         if orch:
             interrupted = orch.interrupt(key.chat_id)
-            msg = (
-                f"Interrupted {interrupted} process(es)." if interrupted else "No active processes."
-            )
+            msg = t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
             await self._send_rich(room_id, msg)
 
     async def _cmd_stop_all(
@@ -456,7 +461,7 @@ class MatrixBot:
             killed = await orch.abort_all()
         if self._abort_all_callback:
             killed += await self._abort_all_callback()
-        msg = f"Stopped {killed} process(es)." if killed else "No active processes."
+        msg = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
         await self._send_rich(room_id, msg)
 
     async def _cmd_restart(
@@ -469,7 +474,7 @@ class MatrixBot:
         write_restart_marker(marker_path=marker)
         await self._send_rich(
             room_id,
-            fmt("**Restarting**", SEP, "Bot is shutting down and will be back shortly."),
+            fmt(t("startup.restart_header"), SEP, t("startup.restart_body")),
         )
         self._exit_code = EXIT_RESTART
         if self._sync_task and not self._sync_task.done():
@@ -491,11 +496,10 @@ class MatrixBot:
         """Show bot version and feature summary."""
         version = get_current_version()
         text_out = fmt(
-            "**ductor.dev**",
-            f"Version: `{version}`",
+            t("info.header"),
+            t("info.version", version=version),
             SEP,
-            "AI coding agents (Claude, Codex, Gemini) on Matrix.\n"
-            "Named sessions, persistent memory, cron jobs, webhooks, live streaming.",
+            t("info.matrix_description"),
         )
         await self._send_rich(room_id, text_out)
 
@@ -504,24 +508,20 @@ class MatrixBot:
     ) -> None:
         """Show multi-agent command reference."""
         lines = [
-            "The multi-agent system lets you run additional bots as "
-            "sub-agents — each with its own workspace and user list. "
-            "All agents share a single process and can communicate "
-            "via the inter-agent bus.",
+            t("agents.matrix_explanation"),
             "",
-            "**Commands**",
+            t("agents.commands_header"),
             "`!agents` — list all agents and their status",
             "`!agent_start <name>` — start a sub-agent",
             "`!agent_stop <name>` — stop a sub-agent",
             "`!agent_restart <name>` — restart a sub-agent",
             "",
-            "**Setup**",
-            "Ask your agent to create a new sub-agent or edit "
-            "`agents.json` in your ductor home directory.",
+            t("agents.setup_header"),
+            t("agents.setup_instruction"),
         ]
         await self._send_rich(
             room_id,
-            fmt("**Multi-Agent System**", SEP, "\n".join(lines)),
+            fmt(t("agents.system_header"), SEP, "\n".join(lines)),
         )
 
     async def _cmd_showfiles(
@@ -549,11 +549,11 @@ class MatrixBot:
             await self._send_rich(
                 room_id,
                 fmt(
-                    "**Background Sessions**",
+                    t("session_help.header"),
                     SEP,
-                    "`!session <prompt>` — start a background session\n"
-                    "`!sessions` — view and manage all sessions\n"
-                    "`!stop` — cancel running session",
+                    f"{t('session_help.matrix_session_cmd')}\n"
+                    f"{t('session_help.matrix_sessions_cmd')}\n"
+                    f"{t('session_help.matrix_stop_cmd')}",
                 ),
             )
             return
@@ -655,17 +655,17 @@ class MatrixBot:
             return f"`!{c}` — {desc}" if desc else f"`!{c}`"
 
         return fmt(
-            "**Command Reference**",
+            t("help.header"),
             SEP,
-            f"**Daily**\n{_line('new')}\n{_line('stop')}\n{_line('stop_all')}\n"
+            f"**{t('help.cat_daily')}**\n{_line('new')}\n{_line('stop')}\n{_line('stop_all')}\n"
             f"{_line('model')}\n{_line('status')}\n{_line('memory')}",
-            f"**Automation**\n{_line('session')}\n{_line('tasks')}\n{_line('cron')}",
-            f"**Multi-Agent**\n{_line('agent_commands')}\n{_line('agents')}\n"
+            f"**{t('help.cat_automation')}**\n{_line('session')}\n{_line('tasks')}\n{_line('cron')}",
+            f"**{t('help.cat_multiagent')}**\n{_line('agent_commands')}\n{_line('agents')}\n"
             f"{_line('agent_start')}\n{_line('agent_stop')}\n{_line('agent_restart')}",
-            f"**Browse & Info**\n{_line('showfiles')}\n{_line('info')}\n{_line('help')}",
-            f"**Maintenance**\n{_line('diagnose')}\n{_line('upgrade')}\n{_line('restart')}",
+            f"**{t('help.cat_browse')}**\n{_line('showfiles')}\n{_line('info')}\n{_line('help')}",
+            f"**{t('help.cat_maintenance')}**\n{_line('diagnose')}\n{_line('upgrade')}\n{_line('restart')}",
             SEP,
-            "Use `!` or `/` prefix. Send any message to start.",
+            t("help.matrix_footer"),
         )
 
     async def _run_streaming(self, key: SessionKey, text: str, room_id: str, event: object) -> None:
@@ -688,6 +688,7 @@ class MatrixBot:
                 on_tool_activity=editor.on_tool,
                 on_system_status=editor.on_system,
             )
+        self._maybe_append_footer(result)
         await editor.finalize(result.text)
 
     async def _run_non_streaming(
@@ -701,6 +702,7 @@ class MatrixBot:
         async with MatrixTypingContext(self._client, room_id):
             result = await orch.handle_message(key, text)
 
+        self._maybe_append_footer(result)
         if result.text:
             formatted = self._button_tracker.extract_and_format(room_id, result.text)
             await self._send_rich(room_id, formatted)
@@ -725,6 +727,32 @@ class MatrixBot:
 
         user_ok = not mx.allowed_users or event.sender in mx.allowed_users
         return room_ok and user_ok
+
+    async def _set_seen_read_receipt(self, room_id: str, event_id: str) -> None:
+        """Send a read receipt for the event. Graceful degradation on failure."""
+        try:
+            await self._client.room_read_markers(room_id, event_id)
+        except Exception:
+            logger.debug("Failed to send read receipt", exc_info=True)
+
+    def _maybe_append_footer(self, result: object) -> None:
+        """Append technical footer to result text when enabled and metadata is available."""
+        from ductor_bot.orchestrator.registry import OrchestratorResult
+
+        if not isinstance(result, OrchestratorResult):
+            return
+        if not self._config.scene.technical_footer or not result.model_name:
+            return
+        from ductor_bot.text.response_format import format_technical_footer
+
+        footer = format_technical_footer(
+            result.model_name,
+            result.total_tokens,
+            result.input_tokens,
+            result.cost_usd,
+            result.duration_ms,
+        )
+        result.text += footer
 
     # --- Group / mention helpers ---
 
@@ -908,7 +936,7 @@ class MatrixBot:
     async def _handle_upgrade_callback(self, room_id: str, data: str) -> None:
         """Handle ``upg:cl:<version>``, ``upg:yes:<version>``, ``upg:no`` callbacks."""
         if data == "upg:no":
-            await self._send_rich(room_id, "Upgrade skipped.")
+            await self._send_rich(room_id, t("upgrade_handler.skipped"))
             return
 
         if data.startswith("upg:cl:"):
@@ -919,9 +947,11 @@ class MatrixBot:
 
             body = await fetch_changelog(version)
             if body:
-                await self._send_rich(room_id, f"**Changelog v{version}**\n\n{body}")
+                await self._send_rich(
+                    room_id, f"{t('upgrade_handler.changelog_header', version=version)}\n\n{body}"
+                )
             else:
-                await self._send_rich(room_id, f"No changelog found for v{version}.")
+                await self._send_rich(room_id, t("upgrade_handler.no_changelog", version=version))
             return
 
         if data.startswith("upg:yes:"):
@@ -937,7 +967,9 @@ class MatrixBot:
             if changed:
                 marker = _expand_marker(self._config.ductor_home)
                 write_restart_marker(marker_path=marker)
-                await self._send_rich(room_id, f"Upgraded {current} → {installed}. Restarting...")
+                await self._send_rich(
+                    room_id, t("startup.matrix_upgraded_restarting", old=current, new=installed)
+                )
                 self._exit_code = EXIT_RESTART
                 if self._sync_task and not self._sync_task.done():
                     self._sync_task.cancel()
@@ -1018,7 +1050,7 @@ class MatrixBot:
             self._leaving_rooms.add(room_id)
             try:
                 await self._client.join(room_id)
-                await self._send_rich(room_id, "This bot is not authorized for this room.")
+                await self._send_rich(room_id, t("matrix.room_rejected"))
                 await self._client.room_leave(room_id)
                 logger.info("Auto-left unauthorized room: %s", room_id)
             finally:

@@ -95,8 +95,10 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `webhooks` | `WebhookConfig` | see below | Webhook HTTP server config |
 | `api` | `ApiConfig` | see below | Direct WebSocket API server config |
 | `cli_parameters` | `CLIParametersConfig` | see below | Provider-specific extra CLI flags |
+| `image` | `ImageConfig` | see below | Incoming image processing settings |
 | `timeouts` | `TimeoutConfig` | see below | Path-specific timeout policy (`normal`, `background`, `subagent`) |
 | `tasks` | `TasksConfig` | see below | Delegated background task system (`TaskHub`) |
+| `scene` | `SceneConfig` | see below | Scene indicators and technical footer |
 | `update_check` | `bool` | `true` | Enables periodic update observer (`UpdateObserver`) |
 | `interagent_port` | `int` | `8799` | Port for internal localhost API (`InternalAgentAPI`) |
 
@@ -116,15 +118,16 @@ they stay consistent.
 | `homeserver` | `str` | `""` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `user_id` | `str` | `""` | Bot user ID (e.g. `@ductor:matrix.org`) |
 | `password` | `str` | `""` | Password for initial login |
-| `access_token` | `str` | `""` | Persisted after first login (auto-managed) |
-| `device_id` | `str` | `""` | Persisted after first login (auto-managed) |
+| `access_token` | `str` | `""` | Optional manual restore source; runtime normally persists credentials in the Matrix store |
+| `device_id` | `str` | `""` | Optional manual restore source paired with `access_token` |
 | `allowed_rooms` | `list[str]` | `[]` | Room IDs or aliases the bot may operate in |
 | `allowed_users` | `list[str]` | `[]` | Matrix user IDs allowed to interact |
 | `store_path` | `str` | `"matrix_store"` | E2EE key store directory, relative to `ductor_home` |
 
 Notes:
 
-- `access_token` and `device_id` are auto-populated after first successful login and persisted back to `config.json`.
+- first successful login persists credentials to `~/.ductor/<store_path>/credentials.json` (mode `0o600`), not back into `config.json`
+- when `access_token` and `device_id` are explicitly present in `config.json`, runtime restores from them and also mirrors them into the credentials store
 - The bot supports end-to-end encrypted rooms via `matrix-nio[e2e]`.
 - `allowed_rooms` and `allowed_users` together form the Matrix auth model.
 
@@ -137,6 +140,10 @@ Notes:
 | `gemini` | `list[str]` | `[]` | Extra args appended to Gemini CLI command |
 
 Used by `CLIServiceConfig` for main-chat calls.
+
+Argument shape note:
+
+- each list element is passed as one CLI argument; do not combine multiple shell flags into one string such as `"--verbose --chrome"`
 
 Automation note:
 
@@ -252,6 +259,7 @@ Disabled by default because it exposes the host cache directory to the sandbox.
 User-defined directory mounts for project/data access inside Docker sandbox.
 
 - each entry is expanded (`~`, env vars), resolved, and validated as an existing directory
+- each entry is just a host directory path (for example `"/home/you/projects"`), not Docker `host:container[:mode]` syntax
 - invalid or missing entries are skipped with warnings
 - container target path is derived from host basename: `/mnt/<sanitized-name>`
 - duplicate target names are disambiguated as `/mnt/name_2`, `/mnt/name_3`, ...
@@ -304,6 +312,38 @@ When extras are configured, the supervisor startup timeout is dynamically extend
 | `quiet_end` | `int` | `8` | Quiet end hour in `user_timezone` |
 | `prompt` | `str` | default prompt | Multiline default prompt references `MAINMEMORY.md` and `cron_tasks/` |
 | `ack_token` | `str` | `"HEARTBEAT_OK"` | Suppression token |
+| `group_targets` | `list[HeartbeatTarget]` | `[]` | Per-group/topic heartbeat targets with optional overrides |
+
+### `HeartbeatTarget`
+
+Each entry in `group_targets` identifies a specific group chat (and optional topic) to send heartbeat checks to. All optional fields override the global `HeartbeatConfig` when set; unset fields fall back to global values.
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `chat_id` | `int` | yes | | Target group chat ID |
+| `topic_id` | `int \| None` | no | `None` | Optional forum topic ID within the group |
+| `prompt` | `str \| None` | no | `None` | Per-target prompt override (falls back to global `prompt`) |
+| `ack_token` | `str \| None` | no | `None` | Per-target suppression token (falls back to global `ack_token`) |
+| `interval_minutes` | `int \| None` | no | `None` | Per-target interval override (falls back to global `interval_minutes`) |
+| `quiet_start` | `int \| None` | no | `None` | Per-target quiet-hour start (falls back to global `quiet_start`) |
+| `quiet_end` | `int \| None` | no | `None` | Per-target quiet-hour end (falls back to global `quiet_end`) |
+
+## `ImageConfig`
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `max_dimension` | `int` | `2000` | Maximum width/height in pixels; images exceeding this are resized proportionally |
+| `output_format` | `str` | `"webp"` | Target image format (e.g. `webp`, `jpeg`, `png`) |
+| `quality` | `int` | `85` | Compression quality for lossy formats (WebP, JPEG) |
+
+Applied to incoming images across all transports (Telegram, Matrix, API). See `files/image_processor.py` for implementation details.
+
+## `SceneConfig`
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `seen_reaction` | `bool` | `false` | Enables "seen" indicator on incoming messages (Telegram: emoji reaction, Matrix: read receipt) |
+| `technical_footer` | `bool` | `false` | Appends model/token/cost/time footer to agent responses |
 
 ## `CleanupConfig`
 
@@ -448,7 +488,7 @@ Top-level JSON array of `SubAgentConfig` objects. Each entry defines a sub-agent
 
 Managed via:
 
-- `ductor agents add <name>` (interactive CLI)
+- `ductor agents add <name>` (interactive CLI, currently Telegram-focused)
 - `ductor agents remove <name>` (CLI)
 - `create_agent.py` / `remove_agent.py` tool scripts (from within a CLI session)
 - manual file editing (auto-detected by `FileWatcher`)

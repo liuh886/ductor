@@ -140,6 +140,42 @@ async def test_kill_stale_kills_and_unregisters_old_entries() -> None:
     assert reg.has_active(1) is True  # fresh process remains
 
 
+def test_register_stores_topic_id() -> None:
+    reg = ProcessRegistry()
+    proc = _mock_process(pid=50)
+    tracked = reg.register(chat_id=1, process=proc, label="main", topic_id=42)
+    assert tracked.topic_id == 42
+
+
+def test_register_topic_id_defaults_to_none() -> None:
+    reg = ProcessRegistry()
+    proc = _mock_process(pid=51)
+    tracked = reg.register(chat_id=1, process=proc, label="main")
+    assert tracked.topic_id is None
+
+
+def test_has_active_with_topic_id_filters() -> None:
+    reg = ProcessRegistry()
+    proc1 = _mock_process(pid=60)
+    proc2 = _mock_process(pid=61)
+    reg.register(chat_id=1, process=proc1, label="main", topic_id=10)
+    reg.register(chat_id=1, process=proc2, label="main", topic_id=20)
+    assert reg.has_active(1, topic_id=10) is True
+    assert reg.has_active(1, topic_id=20) is True
+    assert reg.has_active(1, topic_id=99) is False
+    assert reg.has_active(1) is True  # no topic_id -> all
+
+
+def test_has_active_topic_id_ignores_exited() -> None:
+    reg = ProcessRegistry()
+    done = _mock_process(pid=70, returncode=0)
+    alive = _mock_process(pid=71)
+    reg.register(chat_id=1, process=done, label="done", topic_id=10)
+    reg.register(chat_id=1, process=alive, label="alive", topic_id=20)
+    assert reg.has_active(1, topic_id=10) is False
+    assert reg.has_active(1, topic_id=20) is True
+
+
 async def test_kill_stale_handles_already_exited() -> None:
     reg = ProcessRegistry()
     proc = _mock_process(pid=40, returncode=0)

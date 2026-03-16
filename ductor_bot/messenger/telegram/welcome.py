@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from ductor_bot.i18n import t
 from ductor_bot.text.response_format import SEP
 
 if TYPE_CHECKING:
@@ -14,29 +16,58 @@ if TYPE_CHECKING:
 
 _WELCOME_PREFIX = "w:"
 
-WELCOME_CALLBACKS: dict[str, str] = {
-    "w:1": (
-        "Hey, I just set up ductor.dev and I want you to get to know me. "
-        "Ask me everything you need to know so we can work well together -- "
-        "my name, what I do, what I'm working on, how I like to communicate. "
-        "Save what you learn to your memory."
-    ),
-    "w:2": (
-        "Take a look around the system you're running on. "
-        "Check the OS, installed tools, project folders, whatever you find interesting. "
-        "Give me a quick summary of what you see."
-    ),
-    "w:3": (
-        "Let's get started! Introduce yourself -- who are you, what can you do for me? "
-        "Then ask me who I am and what I need help with."
-    ),
-}
+_CALLBACK_KEYS = ("w:1", "w:2", "w:3")
 
-_BUTTON_LABELS: dict[str, str] = {
-    "w:1": "Let's get to know each other!",
-    "w:2": "Check out the system!",
-    "w:3": "Who are you? Who am I?",
-}
+
+def _welcome_callbacks() -> dict[str, str]:
+    return {
+        "w:1": t("welcome.prompt_know"),
+        "w:2": t("welcome.prompt_system"),
+        "w:3": t("welcome.prompt_who"),
+    }
+
+
+def _button_labels_dict() -> dict[str, str]:
+    return {
+        "w:1": t("welcome.btn_know"),
+        "w:2": t("welcome.btn_system"),
+        "w:3": t("welcome.btn_who"),
+    }
+
+
+class _LazyDict(dict[str, str]):
+    """Dict subclass that delegates to a builder function.
+
+    Supports ``in``, iteration, ``keys()``, ``values()``, ``items()``
+    and subscript access -- enough for production code and tests.
+    """
+
+    def __init__(self, builder: object) -> None:
+        super().__init__()
+        self._builder = builder  # type: ignore[assignment]
+
+    def _data(self) -> dict[str, str]:
+        return self._builder()  # type: ignore[no-any-return]
+
+    def __getitem__(self, key: str) -> str:
+        return self._data()[key]
+
+    def get(self, key: str, default: str | None = None) -> str | None:  # type: ignore[override]
+        return self._data().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data()
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data())
+
+    def __len__(self) -> int:
+        return len(self._data())
+
+
+# Backward-compatible module-level names used by tests.
+WELCOME_CALLBACKS: dict[str, str] = _LazyDict(_welcome_callbacks)  # type: ignore[assignment]
+_BUTTON_LABELS: dict[str, str] = _LazyDict(_button_labels_dict)  # type: ignore[assignment]
 
 
 def build_welcome_text(
@@ -50,24 +81,23 @@ def build_welcome_text(
     auth_block = _build_auth_block(auth_results, config)
 
     return (
-        f"**Welcome to ductor.dev{name}!**\n\n"
-        "Deploy from your pocket. Automate from your couch.\n"
-        "Claude Code, Codex & Gemini -- straight from Telegram.\n\n"
+        f"{t('welcome.header', name=name)}\n\n"
+        f"{t('welcome.tagline')}\n\n"
         f"{SEP}\n\n"
         f"{auth_block}\n\n"
         f"{SEP}\n\n"
-        "/model \u2014 switch models\n"
-        "/info \u2014 docs & links\n"
-        "/help \u2014 all commands"
+        f"{t('welcome.hint_model')}\n"
+        f"{t('welcome.hint_info')}\n"
+        f"{t('welcome.hint_help')}"
     )
 
 
 def build_welcome_keyboard() -> InlineKeyboardMarkup:
     """Build the 3 quick-start buttons."""
+    labels = _button_labels_dict()
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=key)]
-            for key, label in _BUTTON_LABELS.items()
+            [InlineKeyboardButton(text=label, callback_data=key)] for key, label in labels.items()
         ],
     )
 
@@ -79,12 +109,12 @@ def is_welcome_callback(data: str) -> bool:
 
 def resolve_welcome_callback(data: str) -> str | None:
     """Map a welcome callback key to its full prompt text."""
-    return WELCOME_CALLBACKS.get(data)
+    return _welcome_callbacks().get(data)
 
 
 def get_welcome_button_label(data: str) -> str | None:
     """Return the display label for a welcome callback key."""
-    return _BUTTON_LABELS.get(data)
+    return _button_labels_dict().get(data)
 
 
 def _build_auth_block(auth_results: dict[str, AuthResult], config: AgentConfig) -> str:
@@ -105,11 +135,8 @@ def _build_auth_block(auth_results: dict[str, AuthResult], config: AgentConfig) 
         providers.append("Gemini")
 
     if not providers:
-        return (
-            "No CLI authenticated yet. "
-            "Run `claude auth`, `codex auth`, or authenticate in `gemini` to get started."
-        )
+        return t("welcome.no_auth")
 
-    auth_line = " + ".join(providers) + " authenticated."
+    providers_str = " + ".join(providers)
     model_name = config.model.capitalize() if config.provider == "claude" else config.model
-    return f"{auth_line}\nModel: **{model_name}**"
+    return t("welcome.auth_line", providers=providers_str, model=model_name)

@@ -397,7 +397,14 @@ class GeminiCLI(BaseCLI):
         """Register a subprocess in ProcessRegistry if tracking is enabled."""
         reg = self._config.process_registry
         tracked = (
-            reg.register(self._config.chat_id, process, self._config.process_label) if reg else None
+            reg.register(
+                self._config.chat_id,
+                process,
+                self._config.process_label,
+                topic_id=self._config.topic_id,
+            )
+            if reg
+            else None
         )
         return reg, tracked
 

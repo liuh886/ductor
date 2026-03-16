@@ -14,6 +14,7 @@ from ductor_bot.cli.timeout_controller import TimeoutConfig as TCConfig
 from ductor_bot.cli.timeout_controller import TimeoutController
 from ductor_bot.cli.types import AgentRequest, AgentResponse
 from ductor_bot.config import NULLISH_TEXT_VALUES, resolve_timeout
+from ductor_bot.i18n import t
 from ductor_bot.infra.inflight import InflightTurn
 from ductor_bot.log_context import set_log_context
 from ductor_bot.orchestrator.hooks import HookContext
@@ -186,10 +187,12 @@ async def _handle_timeout(
     return OrchestratorResult(text=timeout_error_text(model_name, timeout_s))
 
 
-_SIGKILL_USER_MSG = "Execution was interrupted. Please send the same request again."
-_SESSION_RECOVERED_MSG = (
-    "_Previous session could not be restored. A new session was started automatically._"
-)
+def _sigkill_user_msg() -> str:
+    return t("session.sigkill")
+
+
+def _session_recovered_msg() -> str:
+    return t("session.recovered")
 
 
 def _is_sigkill(response: AgentResponse) -> bool:
@@ -246,7 +249,7 @@ async def _recover_session(
 
     cb = ctx.cbs
     if ctx.reason == "invalid_session" and cb.on_text_delta is not None:
-        await cb.on_text_delta(f"{_SESSION_RECOVERED_MSG}\n\n")
+        await cb.on_text_delta(f"{_session_recovered_msg()}\n\n")
     elif cb.on_system_status is not None:
         await cb.on_system_status("recovering")
 
@@ -310,15 +313,7 @@ async def _gemini_missing_config_key_warning(
     if key and key.lower() not in NULLISH_TEXT_VALUES:
         return None
 
-    return OrchestratorResult(
-        text=(
-            "Gemini is set to API-key auth mode, but `gemini_api_key` in "
-            '`~/.ductor/config/config.json` is `"null"` or empty.\n'
-            "Why this is required: when ductor calls Gemini CLI as an external process, "
-            "Gemini CLI does not expose an internally entered API key to that caller.\n"
-            "Set a real API key in `gemini_api_key` and restart `ductor`."
-        ),
-    )
+    return OrchestratorResult(text=t("gemini.missing_key"))
 
 
 async def normal(
@@ -360,7 +355,7 @@ async def normal(
         if response.is_error:
             if _is_sigkill(response):
                 logger.warning("recovery.sigkill chat=%s action=user-retry", key.chat_id)
-                return OrchestratorResult(text=_SIGKILL_USER_MSG, stream_fallback=True)
+                return OrchestratorResult(text=_sigkill_user_msg(), stream_fallback=True)
             model_name, provider_name = _request_target(orch, request)
             return await _reset_on_error(
                 orch,
@@ -371,9 +366,12 @@ async def normal(
             )
         await _update_session(orch, session, response)
         logger.info("Normal flow completed")
-        result = _finish_normal(response, session, orch._config.session_age_warning_hours)
+        req_model, _prov = _request_target(orch, request)
+        result = _finish_normal(
+            response, session, orch._config.session_age_warning_hours, model_name=req_model
+        )
         if session_recovered:
-            result.text = f"{_SESSION_RECOVERED_MSG}\n\n{result.text}"
+            result.text = f"{_session_recovered_msg()}\n\n{result.text}"
         return result
     finally:
         orch._inflight_tracker.complete(key.chat_id)
@@ -424,7 +422,7 @@ async def normal_streaming(
         if response.is_error:
             if _is_sigkill(response):
                 logger.warning("recovery.sigkill chat=%s action=user-retry", key.chat_id)
-                return OrchestratorResult(text=_SIGKILL_USER_MSG, stream_fallback=True)
+                return OrchestratorResult(text=_sigkill_user_msg(), stream_fallback=True)
             model_name, provider_name = _request_target(orch, request)
             return await _reset_on_error(
                 orch,
@@ -435,7 +433,10 @@ async def normal_streaming(
             )
         await _update_session(orch, session, response)
         logger.info("Streaming flow completed")
-        return _finish_normal(response, session, orch._config.session_age_warning_hours)
+        req_model, _prov = _request_target(orch, request)
+        return _finish_normal(
+            response, session, orch._config.session_age_warning_hours, model_name=req_model
+        )
     finally:
         orch._inflight_tracker.complete(key.chat_id)
 
@@ -455,21 +456,23 @@ def _session_age_note(session: SessionData, warning_hours: int) -> str:
     if session.message_count % 10 != 0:
         return ""
     age_label = f"{int(age_hours)}h" if age_hours < 48 else f"{int(age_hours / 24)}d"
-    return f"\n\n---\n[Session is {age_label} old. Use /new for a fresh start.]"
+    return "\n\n---\n" + t("session.age_warning", age=age_label)
 
 
 def _finish_normal(
     response: AgentResponse,
     session: SessionData | None = None,
     warning_hours: int = 0,
+    *,
+    model_name: str = "",
 ) -> OrchestratorResult:
     """Post-processing for normal() and normal_streaming()."""
     if response.is_error:
         if response.timed_out:
-            return OrchestratorResult(text="Agent timed out. Please try again.")
+            return OrchestratorResult(text=t("timeout.generic"))
         if response.result.strip():
-            return OrchestratorResult(text=f"Error: {response.result[:500]}")
-        return OrchestratorResult(text="Error: check logs for details.")
+            return OrchestratorResult(text=t("error.generic", detail=response.result[:500]))
+        return OrchestratorResult(text=t("error.check_logs"))
 
     text = response.result
     if session:
@@ -478,6 +481,11 @@ def _finish_normal(
     return OrchestratorResult(
         text=text,
         stream_fallback=response.stream_fallback,
+        model_name=model_name,
+        total_tokens=response.total_tokens,
+        input_tokens=response.input_tokens,
+        cost_usd=response.cost_usd,
+        duration_ms=response.duration_ms,
     )
 
 
@@ -542,15 +550,11 @@ async def named_session_flow(
     """Handle a foreground follow-up to a named session (non-streaming)."""
     ns = orch._named_sessions.get(key.chat_id, session_name)
     if ns is None:
-        return OrchestratorResult(text=f"Session '{session_name}' not found.")
+        return OrchestratorResult(text=t("session.not_found", name=session_name))
     if ns.status == "ended":
-        return OrchestratorResult(
-            text=f"Session '{session_name}' has ended. Start a new one with /session."
-        )
+        return OrchestratorResult(text=t("session.ended", name=session_name))
     if ns.status == "running":
-        return OrchestratorResult(
-            text=f"Session '{session_name}' is still processing. Wait or use /stop to cancel."
-        )
+        return OrchestratorResult(text=t("session.still_running", name=session_name))
 
     tag = f"**[{session_name} | {ns.provider}]**\n"
     orch._named_sessions.mark_running(key.chat_id, session_name, text)
@@ -574,7 +578,7 @@ async def named_session_flow(
         return OrchestratorResult(text="")
     if response.is_error:
         ns.status = "idle"
-        return OrchestratorResult(text=f"{tag}Error: {response.result[:500]}")
+        return OrchestratorResult(text=f"{tag}{t('error.generic', detail=response.result[:500])}")
 
     orch._named_sessions.update_after_response(key.chat_id, session_name, response.session_id or "")
     return OrchestratorResult(text=f"{tag}{response.result}")
@@ -591,15 +595,11 @@ async def named_session_streaming(
     """Handle a foreground streaming follow-up to a named session."""
     ns = orch._named_sessions.get(key.chat_id, session_name)
     if ns is None:
-        return OrchestratorResult(text=f"Session '{session_name}' not found.")
+        return OrchestratorResult(text=t("session.not_found", name=session_name))
     if ns.status == "ended":
-        return OrchestratorResult(
-            text=f"Session '{session_name}' has ended. Start a new one with /session."
-        )
+        return OrchestratorResult(text=t("session.ended", name=session_name))
     if ns.status == "running":
-        return OrchestratorResult(
-            text=f"Session '{session_name}' is still processing. Wait or use /stop to cancel."
-        )
+        return OrchestratorResult(text=t("session.still_running", name=session_name))
 
     cb = cbs or StreamingCallbacks()
     tag = f"**[{session_name} | {ns.provider}]**\n"
@@ -640,7 +640,7 @@ async def named_session_streaming(
         return OrchestratorResult(text="")
     if response.is_error:
         ns.status = "idle"
-        return OrchestratorResult(text=f"{tag}Error: {response.result[:500]}")
+        return OrchestratorResult(text=f"{tag}{t('error.generic', detail=response.result[:500])}")
 
     orch._named_sessions.update_after_response(key.chat_id, session_name, response.session_id or "")
     return OrchestratorResult(text=f"{tag}{response.result}")
@@ -651,14 +651,25 @@ async def named_session_streaming(
 # ---------------------------------------------------------------------------
 
 
-async def heartbeat_flow(orch: Orchestrator, key: SessionKey) -> str | None:
+async def heartbeat_flow(
+    orch: Orchestrator,
+    key: SessionKey,
+    *,
+    prompt: str | None = None,
+    ack_token: str | None = None,
+) -> str | None:
     """Run a heartbeat turn in the existing session.
 
     Returns the alert text if the model has something to say, or None if the
     response was a HEARTBEAT_OK acknowledgment. Does NOT update session state
     (last_active, message_count) for ack responses.
+
+    *prompt* and *ack_token* override the global heartbeat config when set
+    (used by per-target overrides in HeartbeatObserver).
     """
     hb_cfg = orch._config.heartbeat
+    effective_prompt = prompt or hb_cfg.prompt
+    effective_ack = ack_token or hb_cfg.ack_token
     req_model, req_provider = orch.resolve_runtime_target(orch._config.model)
 
     # Read-only check: never create/overwrite a session from the heartbeat path.
@@ -691,7 +702,7 @@ async def heartbeat_flow(orch: Orchestrator, key: SessionKey) -> str | None:
         return None
 
     request = AgentRequest(
-        prompt=hb_cfg.prompt,
+        prompt=effective_prompt,
         model_override=req_model,
         provider_override=req_provider,
         chat_id=key.chat_id,
@@ -706,7 +717,7 @@ async def heartbeat_flow(orch: Orchestrator, key: SessionKey) -> str | None:
         logger.warning("Heartbeat CLI error result=%s", response.result[:200])
         return None
 
-    alert_text = _strip_ack_token(response.result, hb_cfg.ack_token)
+    alert_text = _strip_ack_token(response.result, effective_ack)
     if not alert_text:
         logger.info("Heartbeat OK (suppressed)")
         return None

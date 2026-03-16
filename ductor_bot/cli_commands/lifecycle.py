@@ -14,6 +14,7 @@ from typing import NoReturn
 from rich.console import Console
 from rich.panel import Panel
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.fs import robust_rmtree
 from ductor_bot.infra.platform import is_windows
 from ductor_bot.infra.restart import EXIT_RESTART
@@ -47,7 +48,7 @@ def _stop_docker_container(container_name: str) -> None:
     """Stop and remove a Docker container."""
     if not shutil.which("docker"):
         return
-    _console.print(f"[dim]Stopping Docker container '{container_name}'...[/dim]")
+    _console.print(t_rich("lifecycle.stopping_docker", name=container_name))
     subprocess.run(
         ["docker", "stop", "-t", "5", container_name],
         capture_output=True,
@@ -58,7 +59,7 @@ def _stop_docker_container(container_name: str) -> None:
         capture_output=True,
         check=False,
     )
-    _console.print("[green]Docker container stopped.[/green]")
+    _console.print(t_rich("lifecycle.docker_stopped"))
 
 
 def stop_bot() -> None:
@@ -86,10 +87,10 @@ def stop_bot() -> None:
         except (ValueError, OSError):
             pid = None
         if pid is not None and _is_process_alive(pid):
-            _console.print(f"[dim]Stopping bot (pid={pid})...[/dim]")
+            _console.print(t_rich("lifecycle.stopping_bot", pid=pid))
             _kill_and_wait(pid)
             pid_file.unlink(missing_ok=True)
-            _console.print("[green]Bot stopped.[/green]")
+            _console.print(t_rich("lifecycle.bot_stopped"))
             stopped = True
         else:
             pid_file.unlink(missing_ok=True)
@@ -99,11 +100,11 @@ def stop_bot() -> None:
 
     extra = kill_all_ductor_processes()
     if extra:
-        _console.print(f"[dim]Killed {extra} remaining ductor process(es).[/dim]")
+        _console.print(t_rich("lifecycle.killed_extra", count=extra))
         stopped = True
 
     if not stopped:
-        _console.print("[dim]No running bot instance found.[/dim]")
+        _console.print(t_rich("lifecycle.no_instance"))
 
     # 4. Brief wait for file locks to release on Windows
     if is_windows() and stopped:
@@ -132,6 +133,9 @@ def start_bot(verbose: bool = False) -> None:
     paths = resolve_paths()
     setup_logging(verbose=verbose, log_dir=paths.logs_dir)
     config = load_config()
+    from ductor_bot.i18n import init as init_i18n
+
+    init_i18n(config.language)
     if not verbose:
         config_level = getattr(logging, config.log_level.upper(), logging.INFO)
         if config_level != logging.INFO:
@@ -161,23 +165,19 @@ def uninstall() -> None:
     _console.print()
     _console.print(
         Panel(
-            "[bold red]This will permanently remove ductor from your system.[/bold red]\n\n"
-            "  1. Stop the running bot (if active)\n"
-            "  2. Remove Docker container and image (if used)\n"
-            "  3. Delete all data in ~/.ductor/\n"
-            "  4. Uninstall the ductor package",
-            title="[bold red]Uninstall ductor[/bold red]",
+            t_rich("lifecycle.uninstall.body"),
+            title=t_rich("lifecycle.uninstall.title"),
             border_style="red",
             padding=(1, 2),
         ),
     )
 
     confirmed: bool | None = questionary.confirm(
-        "Are you sure you want to uninstall everything?",
+        t_rich("lifecycle.uninstall.confirm"),
         default=False,
     ).ask()
     if not confirmed:
-        _console.print("\n[dim]Uninstall cancelled.[/dim]\n")
+        _console.print(f"\n{t_rich('lifecycle.uninstall.cancelled')}\n")
         return
 
     # 1. Stop bot + Docker container + all ductor processes
@@ -191,13 +191,13 @@ def uninstall() -> None:
             docker = data.get("docker", {})
             if isinstance(docker, dict) and docker.get("enabled") and shutil.which("docker"):
                 image = str(docker.get("image_name", "ductor-sandbox"))
-                _console.print(f"[dim]Removing Docker image '{image}'...[/dim]")
+                _console.print(t_rich("lifecycle.uninstall.removing_image", image=image))
                 subprocess.run(
                     ["docker", "rmi", image],
                     capture_output=True,
                     check=False,
                 )
-                _console.print("[green]Docker image removed.[/green]")
+                _console.print(t_rich("lifecycle.uninstall.image_removed"))
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -206,15 +206,12 @@ def uninstall() -> None:
     if ductor_home.exists():
         robust_rmtree(ductor_home)
         if ductor_home.exists():
-            _console.print(
-                f"[yellow]Warning: Could not fully delete {ductor_home} "
-                "(some files may be locked). Remove manually.[/yellow]"
-            )
+            _console.print(t_rich("lifecycle.uninstall.delete_warning", home=ductor_home))
         else:
-            _console.print(f"[green]Deleted {ductor_home}[/green]")
+            _console.print(t_rich("lifecycle.uninstall.deleted", home=ductor_home))
 
     # 4. Uninstall package
-    _console.print("[dim]Uninstalling ductor package...[/dim]")
+    _console.print(t_rich("lifecycle.uninstall.uninstalling"))
     if shutil.which("pipx"):
         subprocess.run(
             ["pipx", "uninstall", "ductor"],
@@ -230,9 +227,8 @@ def uninstall() -> None:
 
     _console.print(
         Panel(
-            "[bold green]ductor has been completely removed.[/bold green]\n\n"
-            "Thank you for using ductor!",
-            title="[bold green]Uninstalled[/bold green]",
+            t_rich("lifecycle.uninstall.done_body"),
+            title=t_rich("lifecycle.uninstall.done_title"),
             border_style="green",
             padding=(1, 2),
         ),
@@ -250,10 +246,8 @@ def upgrade() -> None:
     if mode == "dev":
         _console.print(
             Panel(
-                "[bold yellow]Running from source (editable install).[/bold yellow]\n\n"
-                "Self-upgrade is not available.\n"
-                "Update with [bold]git pull[/bold] in your project directory.",
-                title="[bold]Upgrade[/bold]",
+                t_rich("lifecycle.upgrade.dev_body"),
+                title=t_rich("lifecycle.upgrade.dev_title"),
                 border_style="yellow",
                 padding=(1, 2),
             ),
@@ -263,11 +257,8 @@ def upgrade() -> None:
     _console.print()
     _console.print(
         Panel(
-            "[bold cyan]Upgrading ductor...[/bold cyan]\n\n"
-            "  1. Stop running bot gracefully\n"
-            "  2. Upgrade to latest version\n"
-            "  3. Restart",
-            title="[bold]Upgrade[/bold]",
+            t_rich("lifecycle.upgrade.body"),
+            title=t_rich("lifecycle.upgrade.title"),
             border_style="cyan",
             padding=(1, 2),
         ),
@@ -279,7 +270,7 @@ def upgrade() -> None:
     stop_bot()
 
     # 2. Upgrade + verification pipeline
-    _console.print("[dim]Upgrading package...[/dim]")
+    _console.print(t_rich("lifecycle.upgrade.upgrading"))
     changed, actual, output = asyncio.run(
         perform_upgrade_pipeline(current_version=current),
     )
@@ -287,14 +278,11 @@ def upgrade() -> None:
         _console.print(f"[dim]{output}[/dim]")
 
     if not changed:
-        _console.print(
-            f"[bold yellow]Version unchanged after upgrade ({actual}).[/bold yellow]\n"
-            "Automatic retry was attempted, but no new installed version could be verified yet."
-        )
+        _console.print(t_rich("lifecycle.upgrade.unchanged", version=actual))
         return
 
-    _console.print(f"[green]Upgrade complete: {current} -> {actual}[/green]")
+    _console.print(t_rich("lifecycle.upgrade.complete", old=current, new=actual))
 
     # 3. Re-exec with new version
-    _console.print("[dim]Restarting...[/dim]")
+    _console.print(t_rich("lifecycle.upgrade.restarting"))
     _re_exec_bot()

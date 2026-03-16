@@ -57,7 +57,7 @@ After `auth_ok`, all frames are encrypted.
 
 ## Session identity in API
 
-API uses `SessionKey(chat_id, topic_id)`.
+API uses `SessionKey("api", chat_id, topic_id)`.
 
 - `topic_id` is populated from `channel_id` in auth payload
 - without `channel_id`, session is chat-scoped only
@@ -83,6 +83,10 @@ Abort:
 
 - client sends `{"type":"abort"}` or text message `/stop`
 - server returns `abort_ok` with kill count
+
+Current scope nuance:
+
+- API abort is currently chat-scoped, not channel-scoped, because the abort path kills active work by `chat_id`
 
 ## HTTP endpoints
 

@@ -43,6 +43,7 @@ from aiohttp import BodyPartReader, WSMsgType, web
 
 from ductor_bot.api.crypto import E2ESession
 from ductor_bot.bus.lock_pool import LockPool
+from ductor_bot.files.image_processor import process_image
 from ductor_bot.files.prompt import MediaInfo, build_media_prompt
 from ductor_bot.files.storage import prepare_destination, sanitize_filename
 from ductor_bot.files.tags import (
@@ -55,6 +56,7 @@ from ductor_bot.files.tags import (
 from ductor_bot.log_context import set_log_context
 from ductor_bot.security.paths import is_path_safe
 from ductor_bot.session.key import SessionKey
+from ductor_bot.text.response_format import normalize_tool_name
 
 if TYPE_CHECKING:
     from ductor_bot.config import ApiConfig
@@ -136,6 +138,7 @@ class _StreamCallbacks:
     async def on_tool(self, name: str) -> None:
         if self.disconnected:
             return
+        name = normalize_tool_name(name)
         if not await self.channel.send({"type": "tool_activity", "data": name}):
             self.disconnected = True
 
@@ -340,6 +343,10 @@ class ApiServer:
 
         # Detect actual MIME from saved file content (magic bytes + extension fallback)
         mime = await asyncio.to_thread(guess_mime, dest)
+
+        dest = await asyncio.to_thread(process_image, dest)
+        if dest.suffix == ".webp":
+            mime = "image/webp"
 
         # Read optional caption from a second multipart field
         caption: str | None = None

@@ -118,7 +118,10 @@ Provider-switch safeguard:
 
 ### Local HTTP bridge for tool scripts
 
-`InternalAgentAPI` runs on `127.0.0.1:8799` (host) or `0.0.0.0:8799` (Docker mode).
+`InternalAgentAPI` runs on `config.interagent_port` (default `8799`):
+
+- host mode: `127.0.0.1:<port>`
+- Docker mode: `0.0.0.0:<port>`
 
 Inter-agent endpoints:
 
@@ -171,3 +174,8 @@ CLI:
 - `ductor agents remove <name>`
 
 `ductor agents list` fetches live health from internal API when main bot is running.
+
+Important CLI nuance:
+
+- `ductor agents add <name>` currently prompts for Telegram token/user/group data only.
+- Matrix sub-agents are supported by the runtime and merge logic, but are created via manual `agents.json` editing or the bundled `create_agent.py --transport matrix` tool script.

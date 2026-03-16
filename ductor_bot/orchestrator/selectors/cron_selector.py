@@ -6,6 +6,7 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t
 from ductor_bot.orchestrator.selectors.models import Button, ButtonGrid, SelectorResponse
 from ductor_bot.text.response_format import SEP, fmt
 
@@ -54,9 +55,10 @@ async def handle_cron_callback(
         changed = orch._cron_manager.set_all_enabled(enabled=enabled)
         if changed:
             await _reschedule_now(orch)
-        verb = "enabled" if enabled else "disabled"
-        already = "enabled" if enabled else "disabled"
-        note = f"All cron jobs {verb}." if changed else f"All cron jobs were already {already}."
+        if enabled:
+            note = t("cron.all_enabled") if changed else t("cron.already_enabled")
+        else:
+            note = t("cron.all_disabled") if changed else t("cron.already_disabled")
         return await _build_page(orch, page=page, note=note)
 
     if action == "t" and len(parts) >= 4:
@@ -65,7 +67,7 @@ async def handle_cron_callback(
         return await _toggle_job(orch, page=page, slot=slot, fingerprint=fingerprint)
 
     logger.warning("Unknown cron selector callback: %s", data)
-    return await _build_page(orch, page=0, note="Unknown action. Refreshed cron list.")
+    return await _build_page(orch, page=0, note=t("cron.unknown_action"))
 
 
 async def _toggle_job(
@@ -81,19 +83,19 @@ async def _toggle_job(
 
     page_jobs, page, _total_pages = _page_slice(jobs, page)
     if slot < 0 or slot >= len(page_jobs):
-        return await _build_page(orch, page=page, note="Cron list changed. Please try again.")
+        return await _build_page(orch, page=page, note=t("cron.list_changed"))
 
     job = page_jobs[slot]
     if _fingerprint(job) != fingerprint:
-        return await _build_page(orch, page=page, note="Cron list changed. Please try again.")
+        return await _build_page(orch, page=page, note=t("cron.list_changed"))
 
     new_enabled = not job.enabled
     changed = orch._cron_manager.set_enabled(job.id, enabled=new_enabled)
     if not changed:
-        return await _build_page(orch, page=page, note="Cron list changed. Please try again.")
+        return await _build_page(orch, page=page, note=t("cron.list_changed"))
     await _reschedule_now(orch)
     state = "enabled" if new_enabled else "disabled"
-    note = f"'{job.title}' {state}."
+    note = t("cron.toggled", title=job.title, state=state)
     return await _build_page(orch, page=page, note=note)
 
 
@@ -107,11 +109,11 @@ async def _build_page(
     if not jobs:
         return SelectorResponse(
             text=fmt(
-                "**Scheduled Tasks**",
+                t("cron.header"),
                 SEP,
-                "No cron jobs configured.",
+                t("cron.empty"),
                 SEP,
-                '*Ask your agent: "Run a backup check every day at 9am"*',
+                t("cron.empty_hint"),
             ),
         )
 
@@ -122,12 +124,31 @@ async def _build_page(
     rows: list[list[Button]] = []
     for idx, job in enumerate(page_jobs):
         number = start + idx + 1
-        status_tag = "active" if job.enabled else "paused"
+        status_tag = t("cron.status_active") if job.enabled else t("cron.status_paused")
         last_run = ""
         if job.last_run_status:
             last_run = f" | last: {job.last_run_status}"
-        lines.append(f"{number}. **{job.title}** ({status_tag}){last_run}\n   `{job.schedule}`")
-        button_text = f"{number}. {'Disable' if job.enabled else 'Enable'}"
+        routing = ""
+        if job.chat_id:
+            routing = f"\n   → Chat {job.chat_id}"
+            if job.topic_id:
+                routing += f" / Topic {job.topic_id}"
+        lines.append(
+            t(
+                "cron.job_line",
+                number=number,
+                title=job.title,
+                status=status_tag,
+                last_run=last_run,
+                schedule=job.schedule,
+            )
+            + routing
+        )
+        button_text = (
+            t("cron.btn_disable", number=number)
+            if job.enabled
+            else t("cron.btn_enable", number=number)
+        )
         rows.append(
             [
                 Button(
@@ -140,29 +161,29 @@ async def _build_page(
     nav_row: list[Button] = []
     if current_page > 0:
         nav_row.append(
-            Button(text="<< Prev", callback_data=f"crn:p:{current_page}"),
+            Button(text=t("cron.btn_prev"), callback_data=f"crn:p:{current_page}"),
         )
-    nav_row.append(Button(text="Refresh", callback_data=f"crn:r:{current_page}"))
+    nav_row.append(Button(text=t("cron.btn_refresh"), callback_data=f"crn:r:{current_page}"))
     if current_page < total_pages - 1:
-        nav_row.append(Button(text="Next >>", callback_data=f"crn:n:{current_page}"))
+        nav_row.append(Button(text=t("cron.btn_next"), callback_data=f"crn:n:{current_page}"))
     rows.append(nav_row)
     rows.append(
         [
-            Button(text="All ON", callback_data=f"crn:ao:{current_page}"),
-            Button(text="All OFF", callback_data=f"crn:af:{current_page}"),
+            Button(text=t("cron.btn_all_on"), callback_data=f"crn:ao:{current_page}"),
+            Button(text=t("cron.btn_all_off"), callback_data=f"crn:af:{current_page}"),
         ]
     )
 
     active_count = sum(1 for j in jobs if j.enabled)
-    info_parts = [f"{active_count}/{len(jobs)} active"]
+    info_parts = [t("cron.info_active", active=active_count, total=len(jobs))]
     if total_pages > 1:
-        info_parts.append(f"page {current_page + 1}/{total_pages}")
+        info_parts.append(t("cron.info_page", current=current_page + 1, total=total_pages))
     info_line = " · ".join(info_parts)
     if note:
         info_line = f"{note}\n{info_line}"
 
     text = fmt(
-        "**Scheduled Tasks**",
+        t("cron.header"),
         SEP,
         "\n".join(lines),
         SEP,

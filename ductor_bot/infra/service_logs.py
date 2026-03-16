@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ductor_bot.i18n import t_rich
+
 if TYPE_CHECKING:
     from rich.console import Console
 
@@ -28,21 +30,21 @@ def print_recent_logs(
             reverse=True,
         )
         if not log_files:
-            console.print("[dim]No log files found.[/dim]")
+            console.print(t_rich("service.logs.no_logs"))
             return
         latest_log = log_files[0]
 
-    console.print(f"[dim]Showing last {line_count} lines from {latest_log.name}[/dim]\n")
+    console.print(t_rich("service.logs.showing", count=line_count, name=latest_log.name) + "\n")
 
     try:
         lines = latest_log.read_text(encoding="utf-8", errors="replace").splitlines()
         for line in lines[-line_count:]:
             console.print(line)
     except OSError as exc:
-        console.print(f"[red]Could not read log file: {exc}[/red]")
+        console.print(t_rich("service.logs.read_error", error=exc))
         return
 
-    console.print(f"\n[dim]Full log: {latest_log}[/dim]")
+    console.print(f"\n{t_rich('service.logs.full_path', path=latest_log)}")
 
 
 def print_file_service_logs(
@@ -53,7 +55,7 @@ def print_file_service_logs(
 ) -> None:
     """Print recent service logs from log files when service is installed."""
     if not installed:
-        console.print("[dim]Service not installed.[/dim]")
+        console.print(t_rich("service.logs.not_installed"))
         return
     print_recent_logs(console, logs_dir)
 
@@ -66,16 +68,16 @@ def print_journal_service_logs(
 ) -> None:
     """Follow journalctl service logs when service is installed."""
     if not installed:
-        console.print("[dim]Service not installed.[/dim]")
+        console.print(t_rich("service.logs.not_installed"))
         return
 
-    console.print("[dim]Showing logs (Ctrl+C to stop)...[/dim]\n")
+    console.print(t_rich("service.logs.streaming") + "\n")
     try:
         subprocess.run(
             ["journalctl", "--user", "-u", service_name, "-f", "--no-hostname"],
             check=False,
         )
     except FileNotFoundError:
-        console.print("[bold red]journalctl not found.[/bold red]")
+        console.print(t_rich("service.logs.no_journalctl"))
     except KeyboardInterrupt:
         pass

@@ -96,6 +96,11 @@ When `webhooks.enabled=true`:
 - bot wake handler acquires per-chat lock and routes through normal orchestrator message flow
 - result status is `success` only if at least one non-empty response is produced
 
+Current transport limitation:
+
+- `wake` is currently wired by Telegram startup
+- Matrix startup does not currently provide a wake handler, so webhook `wake` on Matrix-only setups returns `error:no_wake_handler`
+
 ## Mode: `cron_task`
 
 One-shot isolated run in task folder:

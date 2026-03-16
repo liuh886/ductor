@@ -4,22 +4,23 @@ Session lifecycle and persistence with provider isolation and topic/channel-awar
 
 ## Files
 
-- `session/key.py`: `SessionKey(chat_id, topic_id)`
+- `session/key.py`: `SessionKey(transport, chat_id, topic_id)`
 - `session/manager.py`: `ProviderSessionData`, `SessionData`, `SessionManager`
 - `session/named.py`: `NamedSession`, `NamedSessionRegistry`
 
 ## Session identity (`SessionKey`)
 
-`SessionKey` is transport-agnostic:
+`SessionKey` is transport-aware:
 
-- Telegram default chats -> `SessionKey(chat_id, None)`
-- Telegram forum topics -> `SessionKey(chat_id, message_thread_id)`
-- API channel scope -> `SessionKey(chat_id, channel_id)`
+- Telegram default chats -> `SessionKey("tg", chat_id, None)`
+- Telegram forum topics -> `SessionKey("tg", chat_id, message_thread_id)`
+- Matrix rooms -> `SessionKey("mx", mapped_room_int, None)`
+- API channel scope -> `SessionKey("api", chat_id, channel_id)`
 
 Persistence key (`storage_key`) format:
 
-- legacy flat: `"<chat_id>"`
-- topic-aware: `"<chat_id>:<topic_id>"`
+- legacy accepted on parse: `"<chat_id>"` or `"<chat_id>:<topic_id>"`
+- current: `"<transport>:<chat_id>"` or `"<transport>:<chat_id>:<topic_id>"`
 
 Parsing is backward-compatible (`SessionKey.parse`).
 

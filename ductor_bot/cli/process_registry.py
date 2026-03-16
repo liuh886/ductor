@@ -26,6 +26,7 @@ class TrackedProcess:
     process: asyncio.subprocess.Process
     chat_id: int
     label: str
+    topic_id: int | None = None
     registered_at: float = field(default_factory=time.time)
 
 
@@ -39,13 +40,19 @@ class ProcessRegistry:
         self._interrupted: set[int] = set()
 
     def register(
-        self, chat_id: int, process: asyncio.subprocess.Process, label: str
+        self,
+        chat_id: int,
+        process: asyncio.subprocess.Process,
+        label: str,
+        *,
+        topic_id: int | None = None,
     ) -> TrackedProcess:
         """Register a subprocess. Returns the tracking handle."""
         tracked = TrackedProcess(
             process=process,
             chat_id=chat_id,
             label=label,
+            topic_id=topic_id,
         )
         self._processes.setdefault(chat_id, []).append(tracked)
         logger.debug(
@@ -105,9 +112,15 @@ class ProcessRegistry:
         """Clear the interrupt flag for *chat_id*."""
         self._interrupted.discard(chat_id)
 
-    def has_active(self, chat_id: int) -> bool:
-        """Return True if *chat_id* has at least one running subprocess."""
+    def has_active(self, chat_id: int, topic_id: int | None = None) -> bool:
+        """Return True if *chat_id* has at least one running subprocess.
+
+        When *topic_id* is given, only processes for that specific topic are
+        checked.  When ``None``, all processes for *chat_id* are considered.
+        """
         entries = self._processes.get(chat_id, [])
+        if topic_id is not None:
+            return any(e.process.returncode is None and e.topic_id == topic_id for e in entries)
         return any(e.process.returncode is None for e in entries)
 
     async def kill_by_label(self, chat_id: int, label: str) -> int:

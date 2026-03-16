@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ductor_bot.files.browser import BROWSER_EXCLUDED_NAMES, list_directory
+from ductor_bot.i18n import t
 from ductor_bot.security.paths import is_path_safe
 from ductor_bot.text.response_format import SEP, fmt
 
@@ -58,10 +59,10 @@ def _format_overview(paths: DuctorPaths) -> str:
                     if not e.name.startswith(".") and e.name not in BROWSER_EXCLUDED_NAMES
                 ]
             except PermissionError:
-                lines.append(f"> `{name}/` -- (permission denied)")
+                lines.append(f"> `{name}/` -- {t('file_browser.matrix_permission_denied')}")
                 continue
             count = len(entries)
-            lines.append(f"> `{name}/` -- {count} file(s)")
+            lines.append(f"> `{name}/` -- {t('file_browser.matrix_file_count', count=count)}")
             recent = sorted(
                 [f for f in entries if f.is_file()],
                 key=lambda f: f.stat().st_mtime,
@@ -69,15 +70,15 @@ def _format_overview(paths: DuctorPaths) -> str:
             )[:_MAX_RECENT_FILES]
             lines.extend(f"  - `{f.name}`" for f in recent)
         else:
-            lines.append(f"> `{name}/` -- (empty)")
+            lines.append(f"> `{name}/` -- {t('file_browser.empty')}")
 
-    body = "\n".join(lines) if lines else "(no workspace directories found)"
+    body = "\n".join(lines) if lines else t("file_browser.matrix_no_dirs")
 
     return fmt(
-        "**Workspace Files**",
+        t("file_browser.matrix_header"),
         SEP,
         body,
-        "_Use `!showfiles <dir>` to list a specific directory._",
+        t("file_browser.matrix_hint"),
     )
 
 
@@ -88,9 +89,9 @@ def _format_subdir(paths: DuctorPaths, subdir: str) -> str:
 
     if not is_path_safe(target, [base]) or not target.is_dir():
         return fmt(
-            "**Workspace Files**",
+            t("file_browser.matrix_header"),
             SEP,
-            f"Directory `{subdir}` not found.",
+            t("file_browser.matrix_dir_not_found", subdir=subdir),
         )
 
     dirs, files = list_directory(target)
@@ -103,10 +104,10 @@ def _format_subdir(paths: DuctorPaths, subdir: str) -> str:
     body_lines.extend(f"  {f}" for f in files)
 
     if not body_lines:
-        body_lines.append("  (empty)")
+        body_lines.append(f"  {t('file_browser.empty')}")
 
     return fmt(
-        "**Workspace Files**",
+        t("file_browser.matrix_header"),
         SEP,
         f"`{display_path}`\n\n" + "\n".join(body_lines),
     )

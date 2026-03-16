@@ -35,6 +35,10 @@ class MatrixTransport:
 
     # -- Protocol methods ---------------------------------------------------
 
+    @property
+    def transport_name(self) -> str:
+        return "mx"
+
     async def deliver(self, envelope: Envelope) -> None:
         """Deliver a unicast envelope to the target room."""
         handler = _HANDLERS.get(envelope.origin)
@@ -107,7 +111,7 @@ class MatrixTransport:
     async def _deliver_heartbeat(self, env: Envelope) -> None:
         room_id = self._resolve_room(env)
         if room_id and env.result_text:
-            await matrix_send_rich(self._bot.client, room_id, env.result_text)
+            await matrix_send_rich(self._bot.client, room_id, env.result_text, self._opts(env))
 
     async def _deliver_interagent(self, env: Envelope) -> None:
         room_id = self._resolve_room(env)
@@ -171,6 +175,30 @@ class MatrixTransport:
         if room_id and env.result_text:
             await matrix_send_rich(self._bot.client, room_id, env.result_text)
 
+    async def _deliver_cron(self, env: Envelope) -> None:
+        """Deliver cron result to a specific room (unicast).
+
+        Falls back to broadcast when the target room cannot be resolved.
+        """
+        room_id = self._resolve_room(env)
+        if not room_id:
+            logger.warning(
+                "Cron unicast: cannot resolve chat_id=%d, falling back to broadcast",
+                env.chat_id,
+            )
+            await self._broadcast_cron(env)
+            return
+        title = env.metadata.get("title", "?")
+        clean_result = sanitize_cron_result_text(env.result_text)
+        if env.result_text and not clean_result and env.status == "success":
+            return
+        text = (
+            f"**TASK: {title}**\n\n{clean_result}"
+            if clean_result
+            else f"**TASK: {title}**\n\n_{env.status}_"
+        )
+        await matrix_send_rich(self._bot.client, room_id, text)
+
     # -- Origin handlers (broadcast) ----------------------------------------
 
     async def _broadcast_cron(self, env: Envelope) -> None:
@@ -214,6 +242,7 @@ _Handler = Callable[[MatrixTransport, Envelope], Awaitable[None]]
 
 _HANDLERS: dict[Origin, _Handler] = {
     Origin.BACKGROUND: MatrixTransport._deliver_background,
+    Origin.CRON: MatrixTransport._deliver_cron,
     Origin.HEARTBEAT: MatrixTransport._deliver_heartbeat,
     Origin.INTERAGENT: MatrixTransport._deliver_interagent,
     Origin.TASK_RESULT: MatrixTransport._deliver_task_result,

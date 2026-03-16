@@ -8,6 +8,7 @@ Shared transport-agnostic file helpers used by Telegram, Matrix, and direct API 
 - `files/tags.py`: file-tag parsing, MIME detection, media classification
 - `files/storage.py`: filename sanitization + destination generation
 - `files/prompt.py`: incoming-file prompt builder (`MediaInfo`, `build_media_prompt`)
+- `files/image_processor.py`: incoming image resize and format conversion
 
 ## Purpose
 
@@ -52,6 +53,24 @@ Maps `file_access` to allowed roots:
 ### `build_media_prompt(info, workspace, transport=...)`
 
 Builds standardized `[INCOMING FILE]` prompt blocks for agent input.
+
+### Image processing (`image_processor.py`)
+
+`process_image(path, *, max_dimension, output_format, quality)` resizes and converts incoming images:
+
+- images exceeding `max_dimension` (default 2000px) are proportionally resized using Lanczos resampling
+- output is converted to the target format (default WebP) with configurable quality (default 85)
+- animated formats (GIF, APNG) are skipped and returned as-is
+- images already at or below the size limit and in the target format are returned unchanged
+- on any processing error, the original file is used as fallback (non-fatal)
+
+Configuration is driven by `config.image` (`ImageConfig`): `max_dimension`, `output_format`, `quality`.
+
+Applied across all transports:
+
+- Telegram: `messenger/telegram/media.py`
+- Matrix: `messenger/matrix/media.py`
+- API: `api/server.py` (upload endpoint)
 
 ## Integration points
 

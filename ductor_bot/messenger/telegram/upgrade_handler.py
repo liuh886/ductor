@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from aiogram.exceptions import TelegramBadRequest
 
+from ductor_bot.i18n import t
 from ductor_bot.infra.restart import EXIT_RESTART
 from ductor_bot.infra.updater import perform_upgrade_pipeline, write_upgrade_sentinel
 from ductor_bot.infra.version import VersionInfo, get_current_version
@@ -29,21 +30,21 @@ async def on_update_available(bot: TelegramBot, info: VersionInfo) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=f"Changelog v{info.latest}",
+                    text=t("upgrade_handler.btn_changelog", version=info.latest),
                     callback_data=f"upg:cl:{info.latest}",
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text="Upgrade now",
+                    text=t("upgrade_handler.btn_upgrade_now"),
                     callback_data=f"upg:yes:{info.latest}",
                 ),
-                InlineKeyboardButton(text="Later", callback_data="upg:no"),
+                InlineKeyboardButton(text=t("upgrade_handler.btn_later"), callback_data="upg:no"),
             ],
         ],
     )
     text = fmt(
-        "**Update Available**",
+        t("upgrade.available_header"),
         SEP,
         f"Installed: `{info.current}`\nNew:       `{info.latest}`",
     )
@@ -71,7 +72,7 @@ async def handle_upgrade_callback(
     if data == "upg:no":
         with contextlib.suppress(TelegramBadRequest):
             await bot.bot_instance.edit_message_text(
-                text="Upgrade skipped.",
+                text=t("upgrade_handler.skipped"),
                 chat_id=chat_id,
                 message_id=message_id,
             )
@@ -84,7 +85,7 @@ async def handle_upgrade_callback(
     if bot._upgrade_lock.locked():
         await bot.bot_instance.send_message(
             chat_id,
-            "Upgrade already in progress. Please wait.",
+            t("upgrade_handler.already_in_progress"),
             parse_mode=None,
             message_thread_id=thread_id,
         )
@@ -93,7 +94,7 @@ async def handle_upgrade_callback(
     async with bot._upgrade_lock:
         await bot.bot_instance.send_message(
             chat_id,
-            f"Upgrading to {target_version}...",
+            t("upgrade_handler.in_progress", version=target_version),
             parse_mode=None,
             message_thread_id=thread_id,
         )
@@ -114,9 +115,10 @@ async def handle_upgrade_callback(
             details = f"\n\n{tail}" if tail else ""
             await bot.bot_instance.send_message(
                 chat_id,
-                (
-                    f"Upgrade could not verify a new installed version "
-                    f"(still {installed_version}) after automatic retry.{details}"
+                t(
+                    "upgrade_handler.verification_failed",
+                    version=installed_version,
+                    details=details,
                 ),
                 parse_mode=None,
                 message_thread_id=thread_id,
@@ -134,7 +136,7 @@ async def handle_upgrade_callback(
 
         await bot.bot_instance.send_message(
             chat_id,
-            "Bot is restarting...",
+            t("upgrade_handler.restarting"),
             parse_mode=None,
             message_thread_id=thread_id,
         )
@@ -168,10 +170,12 @@ async def handle_changelog_callback(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Upgrade now",
+                        text=t("upgrade_handler.btn_upgrade_now"),
                         callback_data=f"upg:yes:{version}",
                     ),
-                    InlineKeyboardButton(text="Later", callback_data="upg:no"),
+                    InlineKeyboardButton(
+                        text=t("upgrade_handler.btn_later"), callback_data="upg:no"
+                    ),
                 ],
             ],
         )
@@ -188,7 +192,7 @@ async def handle_changelog_callback(
     if not body:
         await bot.bot_instance.send_message(
             chat_id,
-            f"No changelog found for v{version}.",
+            t("upgrade_handler.no_changelog", version=version),
             parse_mode=None,
             message_thread_id=thread_id,
         )
@@ -198,7 +202,7 @@ async def handle_changelog_callback(
     await send_rich(
         bot.bot_instance,
         chat_id,
-        f"**Changelog v{version}**\n\n{body}",
+        f"{t('upgrade_handler.changelog_header', version=version)}\n\n{body}",
         SendRichOpts(
             allowed_roots=roots,
             reply_markup=upgrade_keyboard,

@@ -15,16 +15,32 @@ from ductor_bot.messenger.telegram.sender import (
 )
 from ductor_bot.messenger.telegram.streaming import create_stream_editor
 from ductor_bot.messenger.telegram.typing import TypingContext
+from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.session.key import SessionKey
 
 if TYPE_CHECKING:
     from aiogram import Bot
     from aiogram.types import Message
 
-    from ductor_bot.config import StreamingConfig
+    from ductor_bot.config import SceneConfig, StreamingConfig
     from ductor_bot.orchestrator.core import Orchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _build_footer(result: OrchestratorResult, scene: SceneConfig | None) -> str:
+    """Build technical footer string if enabled and metadata is available."""
+    if scene is None or not scene.technical_footer or not result.model_name:
+        return ""
+    from ductor_bot.text.response_format import format_technical_footer
+
+    return format_technical_footer(
+        result.model_name,
+        result.total_tokens,
+        result.input_tokens,
+        result.cost_usd,
+        result.duration_ms,
+    )
 
 
 @dataclass(slots=True)
@@ -38,6 +54,7 @@ class NonStreamingDispatch:
     allowed_roots: list[Path] | None
     reply_to: Message | None = None
     thread_id: int | None = None
+    scene_config: SceneConfig | None = None
 
 
 @dataclass(slots=True)
@@ -52,6 +69,7 @@ class StreamingDispatch:
     streaming_cfg: StreamingConfig
     allowed_roots: list[Path] | None
     thread_id: int | None = None
+    scene_config: SceneConfig | None = None
 
 
 async def run_non_streaming_message(
@@ -61,6 +79,8 @@ async def run_non_streaming_message(
     async with TypingContext(dispatch.bot, dispatch.key.chat_id, thread_id=dispatch.thread_id):
         result = await dispatch.orchestrator.handle_message(dispatch.key, dispatch.text)
 
+    footer = _build_footer(result, dispatch.scene_config)
+    result.text += footer
     reply_id = dispatch.reply_to.message_id if dispatch.reply_to else None
     await send_rich(
         dispatch.bot,
@@ -130,6 +150,10 @@ async def run_streaming_message(
 
     await coalescer.flush(force=True)
     coalescer.stop()
+    footer = _build_footer(result, dispatch.scene_config)
+    if footer:
+        await editor.append_text(footer)
+        result.text += footer
     await editor.finalize(result.text)
 
     logger.info(

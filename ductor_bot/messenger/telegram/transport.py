@@ -36,6 +36,10 @@ class TelegramTransport:
 
     # -- Protocol methods ---------------------------------------------------
 
+    @property
+    def transport_name(self) -> str:
+        return "tg"
+
     async def deliver(self, envelope: Envelope) -> None:
         """Deliver a unicast envelope to the target chat_id."""
         handler = _HANDLERS.get(envelope.origin)
@@ -120,14 +124,30 @@ class TelegramTransport:
         )
 
     async def _deliver_heartbeat(self, env: Envelope) -> None:
-        logger.debug("Heartbeat delivery chars=%d", len(env.result_text))
-        await send_rich(
-            self._bot.bot_instance,
-            env.chat_id,
-            env.result_text,
-            SendRichOpts(allowed_roots=self._roots()),
-        )
-        logger.info("Heartbeat delivered")
+        """Deliver heartbeat to chat/topic. Falls back to main user on failure."""
+        from aiogram.exceptions import TelegramAPIError
+
+        opts = SendRichOpts(allowed_roots=self._roots(), thread_id=env.topic_id)
+        try:
+            await send_rich(self._bot.bot_instance, env.chat_id, env.result_text, opts)
+            logger.info("Heartbeat delivered")
+        except TelegramAPIError:
+            target = f"Chat {env.chat_id}"
+            if env.topic_id:
+                target += f" / Topic {env.topic_id}"
+            logger.warning("Heartbeat delivery failed for %s, falling back to main user", target)
+            fallback_text = (
+                f"**Heartbeat delivery failed**\n\n"
+                f"Could not deliver to {target}.\n\n"
+                f"---\n{env.result_text}"
+            )
+            fallback_id = self._bot._config.allowed_user_ids[0]
+            await send_rich(
+                self._bot.bot_instance,
+                fallback_id,
+                fallback_text,
+                SendRichOpts(allowed_roots=self._roots()),
+            )
 
     async def _deliver_interagent(self, env: Envelope) -> None:
         """Deliver inter-agent result (error notification or injected response)."""
@@ -212,6 +232,54 @@ class TelegramTransport:
                 SendRichOpts(allowed_roots=self._roots()),
             )
 
+    async def _deliver_cron(self, env: Envelope) -> None:
+        """Deliver cron result to a specific chat/topic (unicast).
+
+        Falls back to the main agent when delivery fails.
+        """
+        from aiogram.exceptions import TelegramAPIError
+
+        title = env.metadata.get("title", "?")
+        clean_result = sanitize_cron_result_text(env.result_text)
+        if env.result_text and not clean_result and env.status == "success":
+            logger.debug(
+                "Cron result only had transport confirmations; skipping unicast task=%s",
+                title,
+            )
+            return
+        text = (
+            f"**TASK: {title}**\n\n{clean_result}"
+            if clean_result
+            else f"**TASK: {title}**\n\n_{env.status}_"
+        )
+        opts = SendRichOpts(
+            allowed_roots=self._roots(),
+            thread_id=env.topic_id,
+        )
+        try:
+            await send_rich(self._bot.bot_instance, env.chat_id, text, opts)
+        except TelegramAPIError:
+            logger.warning(
+                "Cron '%s' delivery failed for chat %d, falling back to main agent",
+                title,
+                env.chat_id,
+            )
+            target = f"Chat {env.chat_id}"
+            if env.topic_id:
+                target += f" / Topic {env.topic_id}"
+            fallback_text = (
+                f"**Cron delivery failed**\n\n"
+                f"Task **{title}** could not be delivered to {target}.\n\n"
+                f"---\n{clean_result or env.status}"
+            )
+            fallback_id = self._bot._config.allowed_user_ids[0]
+            await send_rich(
+                self._bot.bot_instance,
+                fallback_id,
+                fallback_text,
+                SendRichOpts(allowed_roots=self._roots()),
+            )
+
     # -- Origin handlers (broadcast) ----------------------------------------
 
     async def _broadcast_cron(self, env: Envelope) -> None:
@@ -246,6 +314,7 @@ _Handler = Callable[[TelegramTransport, Envelope], Awaitable[None]]
 
 _HANDLERS: dict[Origin, _Handler] = {
     Origin.BACKGROUND: TelegramTransport._deliver_background,
+    Origin.CRON: TelegramTransport._deliver_cron,
     Origin.HEARTBEAT: TelegramTransport._deliver_heartbeat,
     Origin.INTERAGENT: TelegramTransport._deliver_interagent,
     Origin.TASK_RESULT: TelegramTransport._deliver_task_result,

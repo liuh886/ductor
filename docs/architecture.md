@@ -50,7 +50,10 @@ Both implement `BotProtocol`. Adding a new transport requires only a new factory
 
 1. parse CLI args and dispatch command (implementation in `cli_commands/*`)
 2. default run path:
-   - `_is_configured()` checks transport credentials (Telegram token or Matrix homeserver) and auth lists
+   - `_is_configured()` only checks the minimal onboarding gate for active transports
+   - Telegram gate: non-placeholder token + non-empty `allowed_user_ids`
+   - Matrix gate: non-empty `homeserver` + non-empty `user_id`
+   - deeper transport validation (Matrix password/access token + allowlists) happens later in `_validate_*_config()`
    - if not configured: onboarding (includes transport selection)
    - load/deep-merge config (`load_config()`)
    - initialize workspace (`init_workspace(paths)`)
@@ -81,10 +84,10 @@ Telegram startup:
 6. register config hot-reload callback for auth/group updates
 7. startup classification (`first_start`/`service_restart`/`system_reboot`) + startup notification policy
 8. recovery planning (`inflight_turns.json` + recovered named sessions)
-9. start update observer (upgradeable installs only), sync Telegram commands, start restart watcher
+9. start update observer (upgradeable installs only, main agent only), sync Telegram commands, start restart watcher
 10. run group audit immediately + start periodic 24h audit loop
 
-Matrix startup follows a similar pattern (orchestrator creation, bus wiring, observer startup) but uses matrix-nio's `AsyncClient` sync loop instead of aiogram polling.
+Matrix startup follows a similar pattern (orchestrator creation, bus wiring, observer startup) but uses matrix-nio's `AsyncClient` sync loop instead of aiogram polling. `UpdateObserver` starts only for the main agent on both transports (sub-agents skip it).
 
 ### Orchestrator factory (`orchestrator/lifecycle.py`)
 
@@ -103,12 +106,12 @@ Matrix startup follows a similar pattern (orchestrator creation, bus wiring, obs
 
 Bot-level handlers (`messenger/telegram/app.py`):
 
-- `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/stop_all`, `/restart`, `/new`, `/session`, `/sessions`, `/tasks`, `/agent_commands`
+- `/start`, `/help`, `/info`, `/showfiles`, `/stop`, `/stop_all`, `/interrupt`, `/restart`, `/new`, `/session`, `/sessions`, `/tasks`, `/agent_commands`
 - main-agent-only handlers: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`
 
 Matrix command ownership (`messenger/matrix/bot.py`):
 
-- direct transport commands: `!stop`, `!stop_all`, `!restart`, `!new`, `!help`, `!info`, `!session`, `!showfiles`, `!agent_commands`
+- direct transport commands: `!stop`, `!stop_all`, `!interrupt`, `!restart`, `!new`, `!help`, `!info`, `!session`, `!showfiles`, `!agent_commands`
 - orchestrator-routed commands: `!status`, `!model`, `!memory`, `!cron`, `!diagnose`, `!upgrade`, `!sessions`, `!tasks`
 - main-agent-only multi-agent commands: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart` (`/` prefix also supported)
 
@@ -128,10 +131,12 @@ Quick-command bypass (`SequentialMiddleware`):
 
 ## Session and Topic Model
 
-Sessions are keyed by `SessionKey(chat_id, topic_id)`.
+Sessions are keyed by `SessionKey(transport, chat_id, topic_id)`.
 
-- forum topics are isolated from each other and from the base chat
-- `sessions.json` remains backward-compatible with legacy keys
+- Telegram forum topics are isolated from each other and from the base chat
+- Matrix rooms use `transport="mx"` with deterministic int room mapping
+- API sessions use `transport="api"` and optional `channel_id -> topic_id`
+- `sessions.json` remains backward-compatible with legacy unprefixed keys
 - topic names are cached from forum topic events and shown in `/status` and `/sessions`
 - `/new @topicname` resets a specific topic session without switching to that topic
 
@@ -199,7 +204,9 @@ Gemini safeguard:
 - `Envelope` captures origin, lock mode, injection requirements, delivery mode
 - observers are wired in one call: `ObserverManager.wire_to_bus(...)`
 - Telegram transport formatting is centralized in `messenger/telegram/transport.py`
-- shared `LockPool` prevents lock drift across middleware, API, and background delivery
+- shared Telegram/message-bus `LockPool` prevents lock drift across middleware and background delivery
+- `ApiServer` currently uses its own `LockPool`, so API locking is isolated from Telegram/message-bus locking
+- Transport-aware delivery: each `Envelope` carries a `transport` field; UNICAST envelopes are routed only to the matching transport, with cascading fallback to other transports when the target is unavailable
 
 ## Callback Query Routing
 

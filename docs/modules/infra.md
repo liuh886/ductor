@@ -5,6 +5,7 @@ Runtime infrastructure: process lifecycle, restart/update flow, Docker sandbox, 
 ## Files
 
 - process/runtime: `pidlock.py`, `restart.py`, `inflight.py`, `recovery.py`, `startup_state.py`, `boot_id.py`
+- watchers: `file_watcher.py`
 - secrets: `env_secrets.py`
 - Docker: `docker.py`, `docker_extras.py`
 - service: `service.py`, `service_base.py`, `service_logs.py`, `service_linux.py`, `service_macos.py`, `service_windows.py`
@@ -30,7 +31,7 @@ Behavior:
 
 `acquire_lock(pid_file, kill_existing=True)` ensures one active runtime instance.
 
-`run_telegram()` acquires lock at startup and releases it on shutdown.
+`run_bot()` acquires lock at startup and releases it on shutdown.
 
 ## Restart protocol
 
@@ -87,6 +88,8 @@ Platform dispatch via `infra/service.py`:
 
 - Linux: journal stream
 - macOS/Windows: file tail from `~/.ductor/logs/agent.log` (fallback newest `*.log`)
+
+Deep dive: [service_management](service_management.md)
 
 ## Atomic persistence helpers
 

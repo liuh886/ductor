@@ -1,8 +1,0 @@
-{
-  "provider": "claude",
-  "model": "opus",
-  "cli_parameters": {
-    "claude": ["--verbose"],
-    "codex": ["--chrome"]
-  }
-}

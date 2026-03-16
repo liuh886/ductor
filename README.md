@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Claude Code, Codex CLI, and Gemini CLI as your coding assistant — via Telegram or Matrix.</strong><br>
-  Uses only official CLIs. Nothing spoofed, nothing proxied.
+  <strong>Claude Code, Codex CLI, and Gemini CLI as your coding assistant — on Telegram.</strong><br>
+  Uses only official CLIs. Nothing spoofed, nothing proxied. Matrix and more via plugin system.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
 
 ---
 
-If you want to control Claude Code, Google's Gemini CLI, or OpenAI's Codex CLI via Telegram or Matrix, build automations, or manage multiple agents easily — ductor is the right tool for you.
+If you want to control Claude Code, Google's Gemini CLI, or OpenAI's Codex CLI via Telegram, build automations, or manage multiple agents easily — ductor is the right tool for you. Additional messengers (Matrix, and more to come) are supported via a modular plugin system.
 
 ductor runs on your machine and sends simple console commands as if you were typing them yourself, so you can use your active subscriptions (Claude Max, etc.) directly. No API proxying, no SDK patching, no spoofed headers. Just the official CLIs, executed as subprocesses, with all state kept in plain JSON and Markdown under `~/.ductor/`.
 
@@ -41,7 +41,12 @@ ductor
 
 The onboarding wizard handles CLI checks, transport setup (Telegram or Matrix), timezone, optional Docker, and optional background service install.
 
-**Requirements:** Python 3.11+, at least one CLI installed (`claude`, `codex`, or `gemini`), and either a Telegram Bot Token from [@BotFather](https://t.me/BotFather) or a Matrix account on any homeserver.
+**Requirements:** Python 3.11+, at least one CLI installed (`claude`, `codex`, or `gemini`), and either:
+
+- a Telegram Bot Token from [@BotFather](https://t.me/BotFather), or
+- a Matrix account on a homeserver (homeserver URL, user ID, password/access token)
+
+For Matrix support: `ductor install matrix` — see [Matrix setup guide](docs/matrix-setup.md).
 
 Detailed setup: [`docs/installation.md`](docs/installation.md)
 
@@ -160,7 +165,7 @@ Main chat:  "Ask codex-agent to write tests for the API"
 | **Context** | One per provider | One per topic per provider | Own context per session | Own context, result flows back | Fully isolated |
 | **Workspace** | `~/.ductor/` | Shared with main | Shared with parent chat | Shared with parent agent | Own under `~/.ductor/agents/` |
 | **Config** | Main config | Shared with main | Shared with parent chat | Shared with parent agent | Own config (heartbeat, timeouts, model, ...) |
-| **Setup** | Automatic | Create group + enable topics | `/session <prompt>` | Automatic or "delegate this" | `ductor agents add` + BotFather |
+| **Setup** | Automatic | Create group + enable topics | `/session <prompt>` | Automatic or "delegate this" | Telegram: `ductor agents add`; Matrix: `agents.json` / tool scripts |
 
 ### How it all fits together
 
@@ -187,25 +192,29 @@ Main chat:  "Ask codex-agent to write tests for the API"
 ## Features
 
 - **Multi-transport** — run Telegram and Matrix simultaneously, or pick one
+- **Multi-language** — UI in English, Deutsch, Nederlands, Français, Русский, Español, Português
 - **Real-time streaming** — live message edits (Telegram) or segment-based output (Matrix)
-- **Provider switching** — `/model` to change provider/model, `@model` directives for inline targeting
+- **Provider switching** — `/model` to change provider/model (never blocks, even during active processes)
 - **Persistent memory** — plain Markdown files that survive across sessions
-- **Cron jobs** — in-process scheduler with timezone support, per-job overrides, quiet hours
+- **Cron jobs** — in-process scheduler with timezone support, per-job overrides, result routing to originating chat
 - **Webhooks** — `wake` (inject into active chat) and `cron_task` (isolated task run) modes
-- **Heartbeat** — proactive checks in active sessions with cooldown
-- **Config hot-reload** — most settings update without restart
+- **Heartbeat** — proactive checks with per-target settings, group/topic support, chat validation
+- **Image processing** — auto-resize and WebP conversion for incoming images (configurable)
+- **Config hot-reload** — most settings update without restart (including language, scene, image)
 - **Docker sandbox** — optional sidecar container with configurable host mounts
 - **Service manager** — Linux (systemd), macOS (launchd), Windows (Task Scheduler)
 - **Cross-tool skill sync** — shared skills across `~/.claude/`, `~/.codex/`, `~/.gemini/`
 
-## Supported messengers
+## Messenger support
+
+Telegram is the primary transport — full feature set, battle-tested, zero extra dependencies.
 
 | Messenger | Status | Streaming | Buttons | Install |
 |---|---|---|---|---|
-| **Telegram** | stable | Live message edits | Inline keyboards | `pip install ductor` |
-| **Matrix** | stable | Segment-based (new messages) | Emoji reactions | `pip install ductor[matrix]` |
+| **Telegram** | primary | Live message edits | Inline keyboards | `pip install ductor` |
+| **Matrix** | supported | Segment-based (new messages) | Emoji reactions | `ductor install matrix` |
 
-Both transports can run **in parallel** on the same agent. Configure one or both:
+Both transports can run **in parallel** on the same agent:
 
 ```json
 {"transport": "telegram"}
@@ -213,25 +222,15 @@ Both transports can run **in parallel** on the same agent. Configure one or both
 {"transports": ["telegram", "matrix"]}
 ```
 
-### Modular transport system
+### Plugin system for additional messengers
 
-Each messenger is a self-contained module under `messenger/<name>/` that implements
-a shared `BotProtocol`. The core (orchestrator, sessions, CLI, cron, etc.) is
-completely transport-agnostic — it never knows which messenger delivered the message.
-
-```text
-messenger/
-  protocol.py              # BotProtocol interface
-  capabilities.py          # What each transport supports
-  registry.py              # Transport factory
-  multi.py                 # MultiBotAdapter (parallel transports)
-  telegram/                # Telegram implementation
-  matrix/                  # Matrix implementation
-```
+Each messenger is a self-contained module under `messenger/<name>/` implementing a
+shared `BotProtocol`. The core (orchestrator, sessions, CLI, cron, etc.) is completely
+transport-agnostic — it never knows which messenger delivered the message.
 
 Adding a new messenger (Discord, Slack, Signal, ...) means implementing `BotProtocol`
-in a new sub-package and registering it in the factory — the rest of ductor works
-without changes. Step-by-step guide: [`docs/modules/messenger.md`](docs/modules/messenger.md)
+in a new sub-package and registering it — the rest of ductor works without changes.
+Guide: [`docs/modules/messenger.md`](docs/modules/messenger.md)
 
 ## Auth
 
@@ -254,6 +253,14 @@ All three are **hot-reloadable** — edit `config.json` and changes take effect 
 
 **Group management:** When the bot is added to a group not in `allowed_group_ids`, it warns and auto-leaves. Use `/where` to see tracked groups and their IDs.
 
+> **Tip — adding a group for the first time:**
+> 1. Create a Telegram group, enable topics if you want isolated chats
+> 2. Add the bot and make it **admin** (required for full message access)
+> 3. Send a message mentioning `@your_bot` — the bot won't respond yet
+> 4. In your private chat with the bot, run `/where` — you'll see the group listed under "Rejected" with its ID
+> 5. Tell the bot: *"Add this as an allowed group in the config"* — it updates `config.json` for you
+> 6. Run `/restart` — the bot now responds in the group
+
 ### Matrix
 
 Matrix auth uses room and user allowlists in the `matrix` config block:
@@ -268,15 +275,37 @@ Matrix auth uses room and user allowlists in the `matrix` config block:
 
 The bot logs in with password on first start, then persists `access_token` and `device_id` for subsequent runs. E2EE is supported via `matrix-nio[e2e]`.
 
+## Language
+
+ductor's UI (commands, status messages, onboarding) is available in multiple languages:
+
+| Code | Language |
+|---|---|
+| `en` | English (default) |
+| `de` | Deutsch |
+| `nl` | Nederlands |
+| `fr` | Français |
+| `ru` | Русский |
+| `es` | Español |
+| `pt` | Português |
+
+Set the language in `config.json`:
+
+```json
+{"language": "de"}
+```
+
+This is **hot-reloadable** — change the language without restarting the bot.
+
 ## Commands
 
 | Command | Description |
 |---|---|
 | `/model` | Interactive model/provider selector |
 | `/new` | Reset active provider session |
-| `/stop` | Abort active run |
-| `/interrupt` | Soft interrupt current tool (ESC equivalent) |
-| `/stop_all` | Abort runs across all agents |
+| `/stop` | Stop current message and discard queued messages |
+| `/interrupt` | Interrupt current message, queued messages continue |
+| `/stop_all` | Kill everything — all messages, sessions, tasks, all agents |
 | `/status` | Session/provider/auth status |
 | `/memory` | Show persistent memory |
 | `/session <prompt>` | Start a named background session |
@@ -292,28 +321,45 @@ The bot logs in with password on first start, then persists `access_token` and `
 | `/leave <id>` | Manually leave a group |
 | `/info` | Version + links |
 
-## CLI commands
+## Common CLI commands
 
 ```bash
 ductor                  # Start bot (auto-onboarding if needed)
+ductor onboarding       # Re-run setup wizard
+ductor reset            # Full reset + onboarding
 ductor stop             # Stop bot
 ductor restart          # Restart bot
 ductor upgrade          # Upgrade and restart
 ductor status           # Runtime status
+ductor help             # CLI overview
+ductor uninstall        # Remove bot + workspace
 
 ductor service install  # Install as background service
+ductor service status   # Show service status
+ductor service start    # Start service
+ductor service stop     # Stop service
 ductor service logs     # View service logs
+ductor service uninstall
 
 ductor docker enable    # Enable Docker sandbox
 ductor docker rebuild   # Rebuild sandbox container
 ductor docker mount /p  # Add host mount
+ductor docker extras    # List optional sandbox packages
 
 ductor agents list      # List configured sub-agents
 ductor agents add NAME  # Add a sub-agent
 ductor agents remove NAME
 
 ductor api enable       # Enable WebSocket API (beta)
+ductor api disable      # Disable WebSocket API
+
+ductor install matrix   # Install Matrix transport extra
+ductor install api      # Install API/PyNaCl extra
 ```
+
+`ductor agents add` currently scaffolds Telegram sub-agents interactively. Matrix
+sub-agents are supported at runtime, but you configure them via `agents.json` or
+the bundled agent tool scripts.
 
 ## Workspace layout
 
@@ -334,11 +380,12 @@ ductor api enable       # Enable WebSocket API (beta)
     cron_tasks/ skills/ tools/       # Scripts and tools
     tasks/                           # Per-task folders
     telegram_files/ matrix_files/    # Media files (per transport)
+    api_files/                       # Uploaded/downloadable API files
     output_to_user/                  # Generated deliverables
   agents/<name>/                     # Sub-agent workspaces (isolated)
 ```
 
-Full config reference: [`docs/config.md`](docs/config.md)
+Full config reference: [`docs/config.md`](docs/config.md) — full example with all options: [`config.example.json`](config.example.json)
 
 ## Documentation
 
@@ -348,7 +395,9 @@ Full config reference: [`docs/config.md`](docs/config.md)
 | [Developer Quickstart](docs/developer_quickstart.md) | Quickest path for contributors |
 | [Architecture](docs/architecture.md) | Startup, routing, streaming, callbacks |
 | [Configuration](docs/config.md) | Config schema and merge behavior |
+| [Matrix Setup](docs/matrix-setup.md) | Adding Matrix as transport |
 | [Automation](docs/automation.md) | Cron, webhooks, heartbeat setup |
+| [Service Management](docs/modules/service_management.md) | systemd, launchd, Task Scheduler backends |
 | [Module docs](docs/modules/) | Per-module deep dives |
 
 ## Why ductor?

@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from ductor_bot.config import _BIND_ALL_INTERFACES
+from ductor_bot.i18n import t_rich
 from ductor_bot.workspace.paths import resolve_paths
 
 _console = Console()
@@ -42,23 +43,23 @@ def print_api_help() -> None:
 
     # Show current status
     paths = resolve_paths()
-    status = "[dim]not configured[/dim]"
+    status = t_rich("api.status_not_configured")
     if paths.config_path.exists():
         try:
             data = json.loads(paths.config_path.read_text(encoding="utf-8"))
             api_cfg = data.get("api", {})
             if isinstance(api_cfg, dict) and api_cfg.get("enabled"):
                 port = api_cfg.get("port", 8741)
-                status = f"[green]enabled[/green] (port {port})"
+                status = t_rich("api.status_enabled", port=port)
             elif isinstance(api_cfg, dict):
-                status = "[dim]disabled[/dim]"
+                status = t_rich("api.status_disabled")
         except (json.JSONDecodeError, OSError):
             pass
 
     _console.print(
         Panel(
             table,
-            title="[bold]API Commands[/bold] [dim](beta)[/dim]",
+            title=t_rich("api.title"),
             border_style="blue",
             padding=(1, 0),
         ),
@@ -92,10 +93,8 @@ def api_enable() -> None:
         hint = api_install_hint()
         _console.print(
             Panel(
-                "[bold yellow]PyNaCl is required for the API server (E2E encryption).[/bold yellow]"
-                f"\n\nInstall it with:\n\n  [bold]{hint}[/bold]"
-                "\n\nThen run [bold]ductor api enable[/bold] again.",
-                title="[bold]Missing dependency[/bold]",
+                t_rich("api.missing_dep.body", hint=hint),
+                title=t_rich("api.missing_dep.title"),
                 border_style="yellow",
                 padding=(1, 2),
             ),
@@ -126,13 +125,8 @@ def api_enable() -> None:
 
     _console.print(
         Panel(
-            "[bold green]API server enabled.[/bold green]\n\n"
-            f"  Host:   [cyan]{api['host']}[/cyan]\n"
-            f"  Port:   [cyan]{api['port']}[/cyan]\n"
-            f"  Token:  [cyan]{api['token']}[/cyan]\n\n"
-            "[dim]Restart the bot to start the API server.[/dim]\n"
-            "[dim]Designed for use with Tailscale or other private networks.[/dim]",
-            title="[bold]API Server[/bold] [dim](beta)[/dim]",
+            t_rich("api.enabled.body", host=api["host"], port=api["port"], token=api["token"]),
+            title=t_rich("api.enabled.title"),
             border_style="green",
             padding=(1, 2),
         ),
@@ -156,8 +150,8 @@ def api_disable() -> None:
     api["enabled"] = False
     data["api"] = api
     atomic_json_save(config_path, data)
-    _console.print("API server: [dim]disabled[/dim]")
-    _console.print("[dim]Restart the bot to apply.[/dim]")
+    _console.print(t_rich("api.disabled.status"))
+    _console.print(t_rich("docker.restart_hint"))
 
 
 def cmd_api(args: list[str]) -> None:

@@ -97,6 +97,8 @@ class CLIConfig:
     gemini_api_key: str | None = None
     # Extra CLI parameters (provider-specific):
     cli_parameters: list[str] = field(default_factory=list)
+    # Transport identification (for routing results back):
+    transport: str = "tg"
     # Multi-agent identification:
     agent_name: str = "main"
     interagent_port: int = 8799
@@ -164,6 +166,8 @@ def docker_wrap(
         env_flags: list[str] = [
             "-e",
             f"DUCTOR_CHAT_ID={config.chat_id}",
+            "-e",
+            f"DUCTOR_TRANSPORT={config.transport}",
             "-e",
             f"DUCTOR_AGENT_NAME={config.agent_name}",
             "-e",

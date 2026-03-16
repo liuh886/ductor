@@ -143,12 +143,13 @@ If API is wrong:
 
 - `/stop` and `/stop_all` are pre-routing abort paths in middleware/bot.
 - `/new` resets only active provider bucket for the active `SessionKey`.
-- session identity is topic-aware: `SessionKey(chat_id, topic_id)`.
+- session identity is transport-aware: `SessionKey(transport, chat_id, topic_id)`.
 - `/model` inside a topic updates only that topic session (not global config).
 - task tools now support permanent single-task removal via `delete_task.py` (`/tasks/delete`).
 - task routing is topic-aware via `thread_id` and `DUCTOR_TOPIC_ID`.
 - API auth accepts optional `channel_id` for per-channel session isolation.
 - startup recovery uses `inflight_turns.json` + recovered named sessions.
 - auth allowlists (`allowed_user_ids`, `allowed_group_ids`) are hot-reloadable.
+- `ductor agents add` is a Telegram-focused scaffold; Matrix sub-agents are supported through `agents.json` or the bundled agent tool scripts.
 
 Continue with `docs/system_overview.md` and `docs/architecture.md` for complete runtime detail.

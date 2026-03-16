@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from aiogram.exceptions import TelegramAPIError
 
+from ductor_bot.files.image_processor import process_image
 from ductor_bot.files.prompt import MediaInfo
 from ductor_bot.files.prompt import build_media_prompt as _build_media_prompt_generic
 from ductor_bot.files.storage import prepare_destination as _prepare_destination
@@ -157,6 +158,10 @@ async def download_media(bot: Bot, message: Message, base_dir: Path) -> MediaInf
     dest = await asyncio.to_thread(_prepare_destination, base_dir, file_name)
     await bot.download(file_obj, destination=dest)
     logger.info("Downloaded %s -> %s (%s)", kind, dest, mime)
+
+    dest = await asyncio.to_thread(process_image, dest)
+    if dest.suffix == ".webp":
+        mime = "image/webp"
 
     return MediaInfo(
         path=dest,

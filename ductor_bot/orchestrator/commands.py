@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli.auth import check_all_auth
+from ductor_bot.i18n import t
 from ductor_bot.infra.version import check_pypi, get_current_version
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.orchestrator.selectors.cron_selector import cron_selector_start
@@ -61,20 +62,20 @@ async def cmd_memory(orch: Orchestrator, _key: SessionKey, _text: str) -> Orches
     if not content.strip():
         return OrchestratorResult(
             text=fmt(
-                "**Main Memory**",
+                t("memory.header"),
                 SEP,
-                "Empty. The agent will build memory as you interact.",
+                t("memory.empty"),
                 SEP,
-                '*Tip: Ask your agent to "remember" something to get started.*',
+                t("memory.empty_tip"),
             ),
         )
     return OrchestratorResult(
         text=fmt(
-            "**Main Memory**",
+            t("memory.header"),
             SEP,
             content,
             SEP,
-            "*Tip: The agent reads and updates this automatically.*",
+            t("memory.filled_tip"),
         ),
     )
 
@@ -92,7 +93,7 @@ async def cmd_tasks(orch: Orchestrator, key: SessionKey, _text: str) -> Orchestr
     hub = orch.task_hub
     if hub is None:
         return OrchestratorResult(
-            text=fmt("**Background Tasks**", SEP, "Task system is not enabled."),
+            text=fmt(t("tasks.header"), SEP, t("tasks.disabled")),
         )
     resp = task_selector_start(hub, key.chat_id)
     return OrchestratorResult(text=resp.text, buttons=resp.buttons)
@@ -114,10 +115,9 @@ async def cmd_upgrade(_orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
     if detect_install_mode() == "dev":
         return OrchestratorResult(
             text=fmt(
-                "**Running From Source**",
+                t("upgrade.dev_header"),
                 SEP,
-                "Self-upgrade is not available for development installs.\n"
-                "Update with `git pull` in your project directory.",
+                t("upgrade.dev_body"),
             ),
         )
 
@@ -125,7 +125,7 @@ async def cmd_upgrade(_orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
 
     if info is None:
         return OrchestratorResult(
-            text="Could not reach PyPI to check for updates. Try again later.",
+            text=t("upgrade.pypi_unreachable"),
         )
 
     if not info.update_available:
@@ -133,7 +133,7 @@ async def cmd_upgrade(_orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
             rows=[
                 [
                     Button(
-                        text=f"Changelog v{info.current}",
+                        text=t("upgrade.btn_changelog", version=info.current),
                         callback_data=f"upg:cl:{info.current}",
                     )
                 ],
@@ -141,11 +141,9 @@ async def cmd_upgrade(_orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
         )
         return OrchestratorResult(
             text=fmt(
-                "**Already Up to Date**",
+                t("upgrade.up_to_date_header"),
                 SEP,
-                f"Installed: `{info.current}`\n"
-                f"Latest:    `{info.latest}`\n\n"
-                "You're running the latest version.",
+                t("upgrade.up_to_date_body", current=info.current, latest=info.latest),
             ),
             buttons=keyboard,
         )
@@ -154,25 +152,25 @@ async def cmd_upgrade(_orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
         rows=[
             [
                 Button(
-                    text=f"Changelog v{info.latest}",
+                    text=t("upgrade.btn_changelog", version=info.latest),
                     callback_data=f"upg:cl:{info.latest}",
                 )
             ],
             [
                 Button(
-                    text="Yes, upgrade now",
+                    text=t("upgrade.btn_yes"),
                     callback_data=f"upg:yes:{info.latest}",
                 ),
-                Button(text="Not now", callback_data="upg:no"),
+                Button(text=t("upgrade.btn_not_now"), callback_data="upg:no"),
             ],
         ]
     )
 
     return OrchestratorResult(
         text=fmt(
-            "**Update Available**",
+            t("upgrade.available_header"),
             SEP,
-            f"Installed: `{info.current}`\nNew:       `{info.latest}`\n\nUpgrade now?",
+            t("upgrade.available_body", current=info.current, latest=info.latest),
         ),
         buttons=keyboard,
     )
@@ -181,16 +179,16 @@ async def cmd_upgrade(_orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
 def _build_codex_cache_block(orch: Orchestrator) -> str:
     """Build the Codex model cache section for /diagnose."""
     if not orch._observers.codex_cache_obs:
-        return "\n🔄 Codex Model Cache: Observer not initialized"
+        return "\n🔄 " + t("diagnose.codex_cache_not_init")
     cache = orch._observers.codex_cache_obs.get_cache()
     if not cache or not cache.models:
-        return "\n🔄 Codex Model Cache: Not loaded"
+        return "\n🔄 " + t("diagnose.codex_cache_not_loaded")
     default_model = next((m.id for m in cache.models if m.is_default), "N/A")
-    return (
-        f"\n🔄 Codex Model Cache:\n"
-        f"  Last updated: {cache.last_updated}\n"
-        f"  Models cached: {len(cache.models)}\n"
-        f"  Default model: {default_model}"
+    return "\n🔄 " + t(
+        "diagnose.codex_cache_info",
+        updated=cache.last_updated,
+        count=len(cache.models),
+        default=default_model,
     )
 
 
@@ -200,7 +198,7 @@ def _build_diagnose_health_block(orch: Orchestrator) -> str:
     if supervisor is None:
         return ""
     status_icon = {"running": "●", "starting": "◐", "crashed": "✖", "stopped": "○"}
-    agent_lines = ["\n**Multi-Agent Health:**"]
+    agent_lines = ["\n" + t("diagnose.health_header")]
     for name in sorted(supervisor.health.keys()):
         h = supervisor.health[name]
         icon = status_icon.get(h.status, "?")
@@ -236,9 +234,9 @@ async def cmd_diagnose(orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
     version = get_current_version()
     effective_model, effective_provider = orch.resolve_runtime_target(orch._config.model)
     info_block = (
-        f"Version: `{version}`\n"
-        f"Configured: {orch._config.provider} / {orch._config.model}\n"
-        f"Effective runtime: {effective_provider} / {effective_model}"
+        f"{t('diagnose.version_line', version=version)}\n"
+        f"{t('diagnose.configured_line', provider=orch._config.provider, model=orch._config.model)}\n"
+        f"{t('diagnose.effective_line', provider=effective_provider, model=effective_model)}"
     )
 
     cache_block = _build_codex_cache_block(orch)
@@ -246,13 +244,11 @@ async def cmd_diagnose(orch: Orchestrator, _key: SessionKey, _text: str) -> Orch
 
     log_tail = await _read_log_tail(_resolve_log_path(orch))
     log_block = (
-        f"Recent logs (last 50 lines):\n```\n{log_tail}\n```" if log_tail else "No log file found."
+        f"{t('diagnose.log_header')}\n```\n{log_tail}\n```" if log_tail else t("diagnose.no_log")
     )
 
     return OrchestratorResult(
-        text=fmt(
-            "**System Diagnostics**", SEP, info_block, cache_block, agent_block, SEP, log_block
-        ),
+        text=fmt(t("diagnose.header"), SEP, info_block, cache_block, agent_block, SEP, log_block),
     )
 
 
@@ -271,7 +267,7 @@ def _build_agent_health_block(orch: Orchestrator) -> str:
         "crashed": "✖",
         "stopped": "○",
     }
-    agent_lines = ["Agents:"]
+    agent_lines = [t("status.agents_header")]
     for name in sorted(supervisor.health.keys()):
         if name == "main":
             continue
@@ -295,32 +291,34 @@ async def _build_status(orch: Orchestrator, key: SessionKey) -> str:
 
     def _model_line(model_name: str) -> str:
         if model_name == configured_model:
-            return f"Model: {model_name}"
-        return f"Model: {model_name} (configured: {configured_model})"
+            return t("status.model_line", model=model_name)
+        return t("status.model_line_configured", model=model_name, configured=configured_model)
 
     session = await orch._sessions.get_active(key)
     if session:
-        topic_line = f"Topic: {session.topic_name}\n" if session.topic_name else ""
+        topic_line = (
+            f"{t('status.topic_line', topic=session.topic_name)}\n" if session.topic_name else ""
+        )
         session_block = (
             f"{topic_line}"
-            f"Session: `{session.session_id[:8]}...`\n"
-            f"Messages: {session.message_count}\n"
-            f"Tokens: {session.total_tokens:,}\n"
-            f"Cost: ${session.total_cost_usd:.4f}\n"
+            f"{t('status.session_line', sid=session.session_id[:8] + '...')}\n"
+            f"{t('status.messages_line', count=session.message_count)}\n"
+            f"{t('status.tokens_line', tokens=f'{session.total_tokens:,}')}\n"
+            f"{t('status.cost_line', cost=f'{session.total_cost_usd:.4f}')}\n"
             f"{_model_line(session.model)}"
         )
     else:
-        session_block = f"No active session.\n{_model_line(runtime_model)}"
+        session_block = f"{t('status.no_session')}\n{_model_line(runtime_model)}"
 
     bg_tasks = orch.active_background_tasks(key.chat_id)
     bg_block = ""
     if bg_tasks:
         import time
 
-        bg_lines = [f"Background tasks: {len(bg_tasks)} running"]
-        for t in bg_tasks:
-            age = time.monotonic() - t.submitted_at
-            bg_lines.append(f"  `{t.task_id}` {t.prompt[:40]}... ({age:.0f}s)")
+        bg_lines = [t("status.bg_header", count=len(bg_tasks))]
+        for bg_t in bg_tasks:
+            age = time.monotonic() - bg_t.submitted_at
+            bg_lines.append(f"  `{bg_t.task_id}` {bg_t.prompt[:40]}... ({age:.0f}s)")
         bg_block = "\n".join(bg_lines)
 
     auth = await asyncio.to_thread(check_all_auth)
@@ -328,11 +326,11 @@ async def _build_status(orch: Orchestrator, key: SessionKey) -> str:
     for provider, result in auth.items():
         age_label = f" ({result.age_human})" if result.age_human else ""
         auth_lines.append(f"  [{provider}] {result.status.value}{age_label}")
-    auth_block = "Auth:\n" + "\n".join(auth_lines)
+    auth_block = t("status.auth_header") + "\n" + "\n".join(auth_lines)
 
     agent_block = _build_agent_health_block(orch)
 
-    blocks = ["**Status**", SEP, session_block]
+    blocks = [t("status.header"), SEP, session_block]
     if bg_block:
         blocks += [SEP, bg_block]
     blocks += [SEP, auth_block]

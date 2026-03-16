@@ -22,6 +22,7 @@ from ductor_bot.commands import BOT_COMMANDS as _COMMAND_DEFS
 from ductor_bot.commands import MULTIAGENT_SUB_COMMANDS as _MA_SUB_DEFS
 from ductor_bot.config import AgentConfig
 from ductor_bot.files.allowed_roots import resolve_allowed_roots
+from ductor_bot.i18n import t
 from ductor_bot.infra.restart import EXIT_RESTART, consume_restart_marker
 from ductor_bot.infra.updater import UpdateObserver
 from ductor_bot.infra.version import VersionInfo, get_current_version
@@ -102,9 +103,23 @@ _CAPTION_LIMIT = 1024
 TypingContext = _TypingContext
 send_files_from_text = _send_files_from_text
 
-_BOT_COMMANDS = [BotCommand(command=cmd, description=desc) for cmd, desc in _COMMAND_DEFS]
+_BOT_COMMANDS: list[BotCommand] = [
+    BotCommand(command=cmd, description=desc) for cmd, desc in _COMMAND_DEFS
+]
 
 _CMD_DESC: dict[str, str] = {**dict(_COMMAND_DEFS), **dict(_MA_SUB_DEFS)}
+
+
+def _rebuild_commands() -> None:
+    """Rebuild module-level command lists from current translations."""
+    global _BOT_COMMANDS  # noqa: PLW0603
+    from ductor_bot.commands import get_bot_commands, get_multiagent_sub_commands
+
+    cmd_defs = get_bot_commands()
+    ma_defs = get_multiagent_sub_commands()
+    _BOT_COMMANDS = [BotCommand(command=cmd, description=desc) for cmd, desc in cmd_defs]
+    _CMD_DESC.clear()
+    _CMD_DESC.update({**dict(cmd_defs), **dict(ma_defs)})
 
 
 def _help_line(command: str) -> str:
@@ -113,19 +128,20 @@ def _help_line(command: str) -> str:
     return f"/{command} -- {description}" if description else f"/{command}"
 
 
-_HELP_TEXT = fmt(
-    "**Command Reference**",
-    SEP,
-    f"Daily\n{_help_line('new')}\n{_help_line('stop')}\n{_help_line('interrupt')}\n{_help_line('stop_all')}\n"
-    f"{_help_line('model')}\n{_help_line('status')}\n{_help_line('memory')}",
-    f"Automation\n{_help_line('session')}\n{_help_line('tasks')}\n{_help_line('cron')}",
-    f"Multi-Agent\n{_help_line('agent_commands')}",
-    f"Browse & Info\n{_help_line('where')}\n{_help_line('leave')}\n"
-    f"{_help_line('showfiles')}\n{_help_line('info')}\n{_help_line('help')}",
-    f"Maintenance\n{_help_line('diagnose')}\n{_help_line('upgrade')}\n{_help_line('restart')}",
-    SEP,
-    "Send any message to start working with your agent.",
-)
+def _build_help_text() -> str:
+    return fmt(
+        t("help.header"),
+        SEP,
+        f"{t('help.cat_daily')}\n{_help_line('new')}\n{_help_line('stop')}\n{_help_line('interrupt')}\n{_help_line('stop_all')}\n"
+        f"{_help_line('model')}\n{_help_line('status')}\n{_help_line('memory')}",
+        f"{t('help.cat_automation')}\n{_help_line('session')}\n{_help_line('tasks')}\n{_help_line('cron')}",
+        f"{t('help.cat_multiagent')}\n{_help_line('agent_commands')}",
+        f"{t('help.cat_browse')}\n{_help_line('where')}\n{_help_line('leave')}\n"
+        f"{_help_line('showfiles')}\n{_help_line('info')}\n{_help_line('help')}",
+        f"{t('help.cat_maintenance')}\n{_help_line('diagnose')}\n{_help_line('upgrade')}\n{_help_line('restart')}",
+        SEP,
+        t("help.footer"),
+    )
 
 
 async def _cancel_task(task: asyncio.Task[None] | None) -> None:
@@ -341,7 +357,7 @@ class TelegramBot:
         )
 
     def _on_auth_hot_reload(self, config: AgentConfig, hot: dict[str, object]) -> None:
-        """Update auth sets in-place when config is hot-reloaded."""
+        """Update auth sets and language in-place when config is hot-reloaded."""
         if "allowed_user_ids" in hot:
             self._allowed_users.clear()
             self._allowed_users.update(config.allowed_user_ids)
@@ -351,6 +367,10 @@ class TelegramBot:
             self._allowed_groups.update(config.allowed_group_ids)
             logger.info("Auth hot-reloaded: allowed_group_ids (%d)", len(self._allowed_groups))
             self._group_audit_task = asyncio.create_task(self._fire_audit())
+        if "language" in hot:
+            _rebuild_commands()
+            self._lang_sync_task = asyncio.create_task(self._sync_commands())
+            logger.info("Language hot-reloaded: commands re-synced")
 
     # -- Chat tracker (my_chat_member + /where + /leave) ------------------------
 
@@ -374,7 +394,7 @@ class TelegramBot:
             with contextlib.suppress(TelegramAPIError):
                 await self._bot.send_message(
                     chat.id,
-                    "This bot is not authorized for this group.",
+                    t("telegram.group_rejected"),
                 )
             with contextlib.suppress(TelegramAPIError):
                 await self._bot.leave_chat(chat.id)
@@ -460,10 +480,10 @@ class TelegramBot:
     def _format_where(self) -> str:
         """Build the /where response text."""
         if not self._chat_tracker:
-            return fmt("**Where**", SEP, "Chat tracker not available.")
+            return fmt(t("telegram.where_header"), SEP, t("telegram.where_no_tracker"))
         records = self._chat_tracker.get_all()
         if not records:
-            return fmt("**Where**", SEP, "No chat activity recorded yet.")
+            return fmt(t("telegram.where_header"), SEP, t("telegram.where_empty"))
 
         sections: list[str] = []
         active = [r for r in records if r.status == "active" and r.allowed]
@@ -483,7 +503,7 @@ class TelegramBot:
             lines = [f"{self._where_line(r)} [{r.status}]" for r in left]
             sections.append("**Left**\n" + "\n".join(lines))
 
-        return fmt("**Where**", SEP, *sections)
+        return fmt(t("telegram.where_header"), SEP, *sections)
 
     async def _handle_where(self, chat_id: int, message: Message) -> None:
         """Handle /where: show all tracked chats/groups."""
@@ -505,7 +525,7 @@ class TelegramBot:
             await send_rich(
                 self._bot,
                 chat_id,
-                fmt("**Usage**", SEP, "`/leave <group_id>`"),
+                fmt(t("telegram.leave_usage_header"), SEP, t("telegram.leave_usage")),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -516,7 +536,7 @@ class TelegramBot:
             await send_rich(
                 self._bot,
                 chat_id,
-                "Invalid group ID.",
+                t("telegram.leave_invalid_id"),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -527,7 +547,7 @@ class TelegramBot:
             await send_rich(
                 self._bot,
                 chat_id,
-                f"Failed to leave: {exc}",
+                t("telegram.leave_failed", error=exc),
                 SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
             )
             return
@@ -538,7 +558,7 @@ class TelegramBot:
         await send_rich(
             self._bot,
             chat_id,
-            f"Left group <code>{group_id}</code>.",
+            t("telegram.left_group", group_id=group_id),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=thread_id),
         )
 
@@ -634,7 +654,7 @@ class TelegramBot:
         await send_rich(
             self._bot,
             message.chat.id,
-            _HELP_TEXT,
+            _build_help_text(),
             SendRichOpts(reply_to_message_id=message.message_id, thread_id=get_thread_id(message)),
         )
 
@@ -648,22 +668,18 @@ class TelegramBot:
         thread_id = get_thread_id(message)
 
         lines = [
-            "The multi-agent system lets you run additional bots as "
-            "sub-agents — each with its own Telegram token, workspace, "
-            "and user list. All agents share a single process and can "
-            "communicate via the inter-agent bus.",
+            t("agents.telegram_explanation"),
             "",
-            "**Commands**",
+            t("agents.commands_header"),
             "`/agents` — list all agents and their status",
             "`/agent_start <name>` — start a sub-agent",
             "`/agent_stop <name>` — stop a sub-agent",
             "`/agent_restart <name>` — restart a sub-agent",
             "",
-            "**Setup**",
-            "Ask your agent to create a new sub-agent or edit "
-            "`agents.json` in your ductor home directory.",
+            t("agents.setup_header"),
+            t("agents.setup_instruction"),
         ]
-        text = fmt("**Multi-Agent System**", SEP, "\n".join(lines))
+        text = fmt(t("agents.system_header"), SEP, "\n".join(lines))
         await send_rich(
             self._bot,
             chat_id,
@@ -681,11 +697,10 @@ class TelegramBot:
 
         version = get_current_version()
         text = fmt(
-            "**ductor.dev**",
-            f"Version: `{version}`",
+            t("info.header"),
+            t("info.version", version=version),
             SEP,
-            "AI coding agents (Claude, Codex, Gemini) on Telegram.\n"
-            "Named sessions, persistent memory, cron jobs, webhooks, live streaming.",
+            t("info.telegram_description"),
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -794,19 +809,7 @@ class TelegramBot:
             return True
 
         if text_lower.startswith("/model"):
-            key = get_session_key(message)
-            if self._sequential.is_busy(chat_id) or self._orch.is_chat_busy(chat_id):
-                await send_rich(
-                    self._bot,
-                    chat_id,
-                    "**Agent is working.** Use /stop to terminate first, then switch models.",
-                    SendRichOpts(
-                        reply_to_message_id=message.message_id, thread_id=get_thread_id(message)
-                    ),
-                )
-                return True
-            async with self._sequential.get_lock(key.lock_key):
-                await handle_command(self._orchestrator, self._bot, message)
+            await handle_command(self._orchestrator, self._bot, message)
             return True
 
         await handle_command(self._orchestrator, self._bot, message)
@@ -877,44 +880,42 @@ class TelegramBot:
         """Build the /session hub: explain the system + show commands."""
         providers = self._orch.available_providers
         lines: list[str] = [
-            "Background sessions run tasks in parallel without blocking "
-            "the main chat. Each session gets a unique name and runs "
-            "independently — you can have multiple sessions active at once.",
+            t("session_help.telegram_explanation"),
             "",
-            "**Usage**",
+            t("session_help.usage_header"),
         ]
 
         if len(providers) == 1:
             p = next(iter(providers))
             if p == "claude":
-                lines.append("`/session <prompt>` — runs on Claude")
-                lines.append("`/session @opus <prompt>` — specific model")
+                lines.append(t("session_help.claude_single"))
+                lines.append(t("session_help.claude_model"))
             elif p == "codex":
-                lines.append("`/session <prompt>` — runs on Codex")
+                lines.append(t("session_help.codex_single"))
             else:
-                lines.append("`/session <prompt>` — runs on Gemini")
-                lines.append("`/session @flash <prompt>` — specific model")
+                lines.append(t("session_help.gemini_single"))
+                lines.append(t("session_help.gemini_model"))
         else:
-            lines.append("`/session <prompt>` — default provider")
+            lines.append(t("session_help.default_provider"))
             if "claude" in providers:
-                lines.append("`/session @opus <prompt>` — Claude (opus)")
+                lines.append(t("session_help.claude_multi"))
             if "codex" in providers:
-                lines.append("`/session @codex <prompt>` — Codex")
+                lines.append(t("session_help.codex_multi"))
             if "gemini" in providers:
-                lines.append("`/session @flash <prompt>` — Gemini (flash)")
-            lines.append("`/session @provider model <prompt>` — explicit")
+                lines.append(t("session_help.gemini_multi"))
+            lines.append(t("session_help.explicit"))
 
         lines += [
             "",
-            "**Follow up**",
-            "`@session-name <message>` — send a follow-up to a running session",
+            t("session_help.followup_header"),
+            t("session_help.followup_line"),
             "",
-            "**Commands**",
-            "`/sessions` — view and manage all background sessions",
-            "`/stop` — cancel the running session",
+            t("session_help.commands_header"),
+            t("session_help.telegram_sessions_cmd"),
+            t("session_help.telegram_stop_cmd"),
         ]
 
-        return fmt("**Background Sessions**", SEP, "\n".join(lines))
+        return fmt(t("session_help.header"), SEP, "\n".join(lines))
 
     async def _on_session(self, message: Message) -> None:
         """Handle /session: submit a named background session."""
@@ -1040,9 +1041,9 @@ class TelegramBot:
         paths = self._orch.paths
         sentinel = paths.ductor_home / "restart-sentinel.json"
         await asyncio.to_thread(
-            write_restart_sentinel, chat_id, "Restart completed.", sentinel_path=sentinel
+            write_restart_sentinel, chat_id, t("startup.restart_default"), sentinel_path=sentinel
         )
-        text = fmt("**Restarting**", SEP, "Bot is shutting down and will be back shortly.")
+        text = fmt(t("startup.restart_header"), SEP, t("startup.restart_body"))
         await send_rich(
             self._bot,
             message.chat.id,
@@ -1275,17 +1276,39 @@ class TelegramBot:
         thread_id = get_thread_id(message)
         logger.debug("Message text=%s", text[:80])
 
+        if self._config.scene.seen_reaction:
+            await self._set_seen_reaction(message)
+
         if self._config.streaming.enabled:
             await self._handle_streaming(message, key, text, thread_id=thread_id)
         else:
             await self._handle_non_streaming(message, key, text, thread_id=thread_id)
+
+    async def _set_seen_reaction(self, message: Message) -> None:
+        """Set a seen reaction on the user message. Graceful degradation on failure."""
+        try:
+            from aiogram.types import ReactionTypeEmoji
+
+            await self._bot.set_message_reaction(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                reaction=[ReactionTypeEmoji(emoji="\U0001f440")],
+            )
+        except Exception:
+            logger.debug("Failed to set seen reaction", exc_info=True)
 
     async def _resolve_text(self, message: Message) -> str | None:
         """Extract processable text from *message* (plain text or media prompt)."""
         is_group = message.chat.type in ("group", "supergroup")
 
         if has_media(message):
-            if is_group and not is_media_addressed(message, self._bot_id, self._bot_username):
+            if is_group and (
+                self._is_for_others(message)
+                or (
+                    self._config.group_mention_only
+                    and not is_media_addressed(message, self._bot_id, self._bot_username)
+                )
+            ):
                 return None
             paths = self._orch.paths
             return await resolve_media_text(
@@ -1314,6 +1337,7 @@ class TelegramBot:
                 streaming_cfg=self._config.streaming,
                 allowed_roots=self.file_roots(self._orch.paths),
                 thread_id=thread_id,
+                scene_config=self._config.scene,
             ),
         )
 
@@ -1335,6 +1359,7 @@ class TelegramBot:
                 allowed_roots=self.file_roots(self._orch.paths),
                 reply_to=reply_to,
                 thread_id=thread_id,
+                scene_config=self._config.scene,
             ),
         )
 

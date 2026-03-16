@@ -9,7 +9,7 @@ Edit only when the user asks for behavior changes.
 2. Preserve unrelated values and structure.
 3. Never expose secrets (`telegram_token`, webhook tokens) in chat output.
 4. Keep valid JSON.
-5. Tell the user to run `/restart` after config changes.
+5. Most settings are hot-reloadable (take effect within seconds). Only `telegram_token`, `docker`, `api`, `webhooks`, `log_level`, and `gemini_api_key` require `/restart`.
 
 ## Important Key Groups
 
@@ -80,8 +80,54 @@ Parameters are inserted before the `--` separator in commands.
 }
 ```
 
+### Language
+
+- `language`: UI language for bot messages — `en`, `de`, `nl`, `fr`, `ru`, `es`, `pt`
+- Hot-reloadable: change without restart.
+
+### Image Processing
+
+- `image.max_dimension`: max width/height in pixels (default `2000`). Images larger than this are resized.
+- `image.output_format`: target format — `webp` (default), `png`, or `jpeg`
+- `image.quality`: compression quality 1-100 (default `85`)
+- Incoming images from all transports are auto-converted after download.
+- Hot-reloadable.
+
+### Scene Indicators
+
+- `scene.seen_reaction`: `true`/`false` (default `false`) — show a 👀 reaction on received messages
+- `scene.technical_footer`: `true`/`false` (default `false`) — append model name, token count, cost, and duration to the final response
+- Hot-reloadable.
+
+### Heartbeat
+
+- `heartbeat.enabled`: `true`/`false` — master switch
+- `heartbeat.interval_minutes`: global tick interval for private chats (default `30`)
+- `heartbeat.quiet_start`, `heartbeat.quiet_end`: quiet hours (0-23, in `user_timezone`)
+- `heartbeat.prompt`: the prompt sent to the agent during heartbeat
+- `heartbeat.ack_token`: token the agent replies with when nothing to report (default `HEARTBEAT_OK`)
+- `heartbeat.group_targets`: list of per-group/topic heartbeat targets, each with:
+  - `enabled`, `chat_id`, `topic_id`, `prompt`, `ack_token`, `interval_minutes`, `quiet_start`, `quiet_end`
+  - Each target with its own `interval_minutes` runs independently from the global tick.
+  - Set `enabled: false` to pause a target without removing it.
+- Heartbeat is hot-reloadable.
+
+### Timeouts
+
+- `timeouts.normal`: max seconds for a normal CLI call (default `600`)
+- `timeouts.background`: max seconds for background tasks (default `1800`)
+- `timeouts.subagent`: max seconds for sub-agent tasks (default `3600`)
+- `timeouts.extend_on_activity`: auto-extend timeout when tool activity detected
+
+### Tasks
+
+- `tasks.enabled`: `true`/`false` — enable background task system
+- `tasks.max_parallel`: max concurrent background tasks (default `5`)
+- `tasks.timeout_seconds`: default timeout per task
+
 ### Access Control
 
 - `allowed_user_ids`
 - `allowed_group_ids`
+- `group_mention_only`: when `true`, bot only responds in groups when @mentioned or replied to
 - `telegram_token`

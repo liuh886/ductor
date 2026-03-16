@@ -58,4 +58,5 @@ Common statuses:
 
 - in-memory running task map is not persisted
 - named-session metadata persistence lives in `session/named.py` (`named_sessions.json`)
-- startup recovery may resume eligible named sessions that were persisted as `running`
+- startup recovery may resume eligible named sessions that were persisted as `running` when Telegram is the primary transport
+- Matrix-primary startup currently does not run the same recovery pipeline

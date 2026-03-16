@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ductor_bot.background.models import BackgroundResult, BackgroundSubmit, BackgroundTask
+from ductor_bot.i18n import t
 from ductor_bot.infra.task_runner import run_oneshot_task
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ class BackgroundObserver:
             if t.chat_id == sub.chat_id and t.asyncio_task and not t.asyncio_task.done()
         )
         if active >= MAX_TASKS_PER_CHAT:
-            msg = f"Too many background tasks ({MAX_TASKS_PER_CHAT} max)"
+            msg = t("tasks.too_many", max=MAX_TASKS_PER_CHAT)
             raise ValueError(msg)
 
         task_id = secrets.token_hex(4)
@@ -176,7 +177,7 @@ class BackgroundObserver:
                         message_id=bg_task.message_id,
                         thread_id=bg_task.thread_id,
                         prompt_preview=bg_task.prompt[:60],
-                        result_text="Internal error (check logs)",
+                        result_text=t("tasks.internal_error"),
                         status="error:internal",
                         elapsed_seconds=elapsed,
                         provider=bg_task.provider,
@@ -259,7 +260,7 @@ class BackgroundObserver:
                         message_id=bg_task.message_id,
                         thread_id=bg_task.thread_id,
                         prompt_preview=bg_task.prompt[:60],
-                        result_text="Internal error (check logs)",
+                        result_text=t("tasks.internal_error"),
                         status="error:internal",
                         elapsed_seconds=elapsed,
                         provider=bg_task.provider,

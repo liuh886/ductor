@@ -10,7 +10,7 @@ One Python process hosts:
 - optional sub-agent stacks from `~/.ductor/agents.json`
 - shared `AgentSupervisor`
 - shared `InterAgentBus`
-- shared internal HTTP bridge (`InternalAgentAPI`, port `8799`)
+- shared internal HTTP bridge (`InternalAgentAPI`, default port `8799`, configurable via `interagent_port`)
 - shared `TaskHub` when `tasks.enabled=true`
 
 Each agent stack contains:
@@ -48,18 +48,19 @@ Notes:
 
 ## 3) Session identity model
 
-Session identity is transport-agnostic via `SessionKey(chat_id, topic_id)`.
+Session identity is transport-aware via `SessionKey(transport, chat_id, topic_id)`.
 
-- Telegram normal chats: `topic_id=None`
-- Telegram forum topics: `topic_id=message_thread_id`
-- API channel isolation: `topic_id=channel_id` (from auth payload)
+- Telegram normal chats: `transport="tg"`, `topic_id=None`
+- Telegram forum topics: `transport="tg"`, `topic_id=message_thread_id`
+- Matrix rooms: `transport="mx"`, `chat_id=<deterministic room-int>`
+- API channel isolation: `transport="api"`, `topic_id=channel_id` (from auth payload)
 
 Persistence key format in `sessions.json`:
 
-- legacy flat: `"<chat_id>"`
-- topic-aware: `"<chat_id>:<topic_id>"`
+- legacy flat: `"<chat_id>"` / `"<chat_id>:<topic_id>"` (still accepted on parse)
+- current: `"<transport>:<chat_id>"` or `"<transport>:<chat_id>:<topic_id>"`
 
-This keeps topic/channel conversations fully isolated while staying backward-compatible.
+This keeps cross-transport and topic/channel conversations isolated while staying backward-compatible.
 
 ## 4) Background and delivery model
 
@@ -72,7 +73,7 @@ All observer/task/inter-agent results now flow through `bus/`:
 - optional lock + optional injection into active session
 - deliver through registered transport (Telegram or Matrix)
 
-A single shared `LockPool` is used by Telegram middleware, API server, and message bus.
+Telegram ingress and `MessageBus` share one `LockPool`. `ApiServer` currently uses its own `LockPool`, so API locking is separate from the Telegram/message-bus lock domain.
 
 ## 5) Optional direct API path
 
@@ -142,14 +143,19 @@ Sub-agent home: `~/.ductor/agents/<name>/` with its own config/workspace/session
 
 Chat commands (Telegram and Matrix):
 
-- `/new`, `/stop`, `/stop_all`, `/model`, `/status`, `/memory`, `/session`, `/sessions`, `/tasks`, `/cron`, `/diagnose`, `/upgrade`
+- `/new`, `/stop`, `/stop_all`, `/interrupt`, `/model`, `/status`, `/memory`, `/session`, `/sessions`, `/tasks`, `/cron`, `/diagnose`, `/upgrade`
 - Telegram-only utility commands: `/where`, `/leave` (work but are not in command popup)
 - Matrix uses `!` prefix by default (e.g. `!help`, `!status`); `/` also works but may conflict with Element's built-in commands
 
 Main-agent only (chat commands):
 
-- Telegram: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`, `/agent_commands`
-- Matrix: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart`, `!agent_commands` (`/` prefix also supported)
+- Telegram: `/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`
+- Matrix: `!agents`, `!agent_start`, `!agent_stop`, `!agent_restart` (`/` prefix also supported)
+
+Available on all agents:
+
+- Telegram: `/agent_commands`
+- Matrix: `!agent_commands` (`/` prefix also supported)
 
 CLI:
 
@@ -158,5 +164,21 @@ CLI:
 - `ductor service ...`
 - `ductor docker ...` (includes `extras`, `extras-add`, `extras-remove` for optional AI/ML packages)
 - `ductor api ...`
-- `ductor agents ...`
+- `ductor agents ...` (`add` currently scaffolds Telegram sub-agents; Matrix sub-agents are added via `agents.json` or tool scripts)
 - `ductor install <extra>` (`matrix`, `api`)
+
+## 10) Service runtime model
+
+Background service management is platform-dispatched by `infra/service.py`:
+
+- Linux -> systemd user service
+- macOS -> launchd Launch Agent
+- Windows -> Task Scheduler task
+
+Operational notes:
+
+- onboarding offers service install on every platform where a backend is available
+- `stop_bot()` stops the installed service first so it does not immediately respawn the process
+- `ductor service logs` follows `journalctl` on Linux and tails file logs on macOS/Windows
+
+Deep dive: [service_management](modules/service_management.md)

@@ -12,11 +12,14 @@ For transport-specific details see [bot.md](bot.md) (Telegram) and
 
 | File | Purpose |
 |---|---|
-| `messenger/__init__.py` | Public re-exports: `BotProtocol`, `MessengerCapabilities`, `MultiBotAdapter`, `NotificationService`, `CompositeNotificationService`, `create_bot` |
+| `messenger/__init__.py` | Public re-exports for protocols, command classification, send options, multi-transport helpers, and bot factory |
+| `messenger/commands.py` | Shared direct/orchestrator/multi-agent command sets + `classify_command()` |
+| `messenger/callback_router.py` | Shared callback-data dispatch helpers for selector/button routing |
 | `messenger/protocol.py` | `BotProtocol` — runtime-checkable interface every transport implements |
 | `messenger/capabilities.py` | `MessengerCapabilities` dataclass + per-transport presets |
 | `messenger/registry.py` | `create_bot()` factory + `_TRANSPORT_FACTORIES` dispatch table |
 | `messenger/notifications.py` | `NotificationService` protocol + `CompositeNotificationService` fan-out |
+| `messenger/send_opts.py` | Base send-option model shared by transport senders |
 | `messenger/multi.py` | `MultiBotAdapter` — multi-transport facade behind `BotProtocol` |
 
 ## BotProtocol
@@ -59,18 +62,21 @@ dataclass that declares what a transport supports:
 | `supports_typing_indicator` | `bool` | `True` |
 | `supports_file_send` | `bool` | `True` |
 | `supports_streaming_edit` | `bool` | `False` |
+| `supports_seen_indicator` | `bool` | `False` |
 | `max_message_length` | `int` | `4096` |
 
 Two presets are shipped:
 
 | Preset | Key differences |
 |---|---|
-| `TELEGRAM_CAPABILITIES` | inline buttons, message editing, threads, streaming edit, 4096 char limit |
-| `MATRIX_CAPABILITIES` | reactions (no inline buttons), no message editing, no threads, 40000 char limit |
+| `TELEGRAM_CAPABILITIES` | inline buttons, message editing, threads, streaming edit, seen indicator, 4096 char limit |
+| `MATRIX_CAPABILITIES` | reactions (no inline buttons), no message editing, no threads, seen indicator, 40000 char limit |
 
 Orchestrator and delivery code queries capabilities at runtime to
 decide between streaming-edit vs. segment-based streaming, inline
 buttons vs. reaction buttons, etc.
+
+`supports_seen_indicator` signals whether the transport can acknowledge incoming messages with a "seen" indicator. Telegram uses an emoji reaction; Matrix uses a read receipt. The feature is gated by `config.scene.seen_reaction` -- even when the capability is `True`, seen indicators are only sent when enabled in config.
 
 ## Transport Registry
 

@@ -86,6 +86,22 @@ _DEFAULT_HEARTBEAT_PROMPT = (
 _DEFAULT_HEARTBEAT_ACK = "HEARTBEAT_OK"
 
 
+class HeartbeatTarget(BaseModel):
+    """A specific chat/topic to send heartbeat checks to.
+
+    All optional fields override the global HeartbeatConfig when set.
+    """
+
+    enabled: bool = True
+    chat_id: int | None = None
+    topic_id: int | None = None
+    prompt: str | None = None
+    ack_token: str | None = None
+    interval_minutes: int | None = None
+    quiet_start: int | None = None
+    quiet_end: int | None = None
+
+
 class HeartbeatConfig(BaseModel):
     """Settings for the periodic heartbeat system."""
 
@@ -96,6 +112,16 @@ class HeartbeatConfig(BaseModel):
     quiet_end: int = 8
     prompt: str = _DEFAULT_HEARTBEAT_PROMPT
     ack_token: str = _DEFAULT_HEARTBEAT_ACK
+    group_targets: list[HeartbeatTarget] = Field(
+        default_factory=lambda: [
+            HeartbeatTarget(
+                enabled=False,
+                chat_id=None,
+                topic_id=None,
+                prompt="Replace chat_id with your group ID to enable this target.",
+            ),
+        ]
+    )
 
 
 class CleanupConfig(BaseModel):
@@ -114,6 +140,14 @@ class CleanupConfig(BaseModel):
         elif "telegram_files_days" in data:
             data.pop("telegram_files_days")
         super().__init__(**data)
+
+
+class ImageConfig(BaseModel):
+    """Settings for incoming image processing."""
+
+    max_dimension: int = 2000
+    output_format: str = "webp"
+    quality: int = 85
 
 
 class CLIParametersConfig(BaseModel):
@@ -166,6 +200,13 @@ class WebhookConfig(BaseModel):
     token: str = ""
     max_body_bytes: int = 262144
     rate_limit_per_minute: int = 30
+
+
+class SceneConfig(BaseModel):
+    """Settings for scene indicators and technical footer."""
+
+    seen_reaction: bool = False
+    technical_footer: bool = False
 
 
 class ApiConfig(BaseModel):
@@ -258,9 +299,12 @@ class AgentConfig(BaseModel):
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     cli_parameters: CLIParametersConfig = Field(default_factory=CLIParametersConfig)
+    image: ImageConfig = Field(default_factory=ImageConfig)
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     tasks: TasksConfig = Field(default_factory=TasksConfig)
+    scene: SceneConfig = Field(default_factory=SceneConfig)
     user_timezone: str = ""
+    language: str = "en"
     update_check: bool = True
     group_mention_only: bool = False
     interagent_port: int = 8799

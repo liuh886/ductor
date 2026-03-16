@@ -55,11 +55,25 @@ Common path:
 4. directive parsing
 5. normal or streaming flow
 
+`is_chat_busy(chat_id, topic_id=None)` checks whether a CLI process is running. When `topic_id` is provided, only processes for that specific topic are considered busy; otherwise any process for the chat qualifies.
+
+## `OrchestratorResult` metadata
+
+`OrchestratorResult` carries optional metadata fields populated after CLI execution:
+
+- `model_name`: resolved model identifier used for the turn
+- `total_tokens`: total token count (input + output)
+- `input_tokens`: input token count
+- `cost_usd`: estimated cost in USD
+- `duration_ms`: wall-clock execution time in milliseconds
+
 ## Command registry
 
 Registered command handlers:
 
 - `/new`, `/status`, `/model`, `/memory`, `/cron`, `/diagnose`, `/upgrade`, `/sessions`, `/tasks`
+
+`/model` never blocks: it always executes immediately (bypasses the sequential queue) and shows current model info if a CLI process is active in the chat.
 
 Runtime main-agent registration:
 

@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ductor_bot.i18n import t_rich
 from ductor_bot.infra.install import detect_install_mode
 
 # Available extras and their key package + description
@@ -39,7 +40,7 @@ def _install_extra(name: str) -> None:
     module, description = _EXTRAS[name]
 
     if _is_installed(module):
-        console.print(f"[green]\u2713[/green] {description} is already installed.")
+        console.print(t_rich("install.already", description=description))
         return
 
     mode = detect_install_mode()
@@ -51,15 +52,15 @@ def _install_extra(name: str) -> None:
     else:
         cmd = [sys.executable, "-m", "pip", "install", f"ductor[{name}]"]
 
-    console.print(f"Installing {description}...")
-    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    console.print(t_rich("install.installing", description=description))
+    console.print(t_rich("install.command", cmd=" ".join(cmd)))
 
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode == 0:
-        console.print(f"[green]\u2713[/green] {description} installed successfully.")
+        console.print(t_rich("install.done", description=description))
     else:
-        console.print("[red]\u2717[/red] Installation failed.")
+        console.print(t_rich("install.failed"))
         if result.stderr:
             console.print(f"[dim]{result.stderr.strip()}[/dim]")
 
@@ -67,12 +68,16 @@ def _install_extra(name: str) -> None:
 def print_install_help() -> None:
     """Show available extras."""
     table = Table(show_header=True, header_style="bold")
-    table.add_column("Extra")
-    table.add_column("Description")
-    table.add_column("Status")
+    table.add_column(t_rich("install.col_extra"))
+    table.add_column(t_rich("install.col_description"))
+    table.add_column(t_rich("install.col_status"))
 
     for name, (module, desc) in _EXTRAS.items():
-        status = "[green]installed[/green]" if _is_installed(module) else "[dim]not installed[/dim]"
+        status = (
+            t_rich("install.status_installed")
+            if _is_installed(module)
+            else t_rich("install.status_not_installed")
+        )
         table.add_row(name, desc, status)
 
     Console().print(Panel(table, title="ductor install <extra>"))
