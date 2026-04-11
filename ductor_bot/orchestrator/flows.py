@@ -780,7 +780,7 @@ async def named_session_flow(
         text,
         current_label=f"CURRENT NAMED SESSION MESSAGE ({session_name})",
     )
-    prompt = await _apply_soul(orch, prompt)
+    soul = await _fetch_soul(orch)
     process_id = await _record_process_start(
         orch,
         process_label=f"ns:{session_name}",
@@ -805,6 +805,7 @@ async def named_session_flow(
     exit_code = 1
     request = AgentRequest(
         prompt=prompt,
+        append_system_prompt=soul,
         model_override=ns.model,
         provider_override=ns.provider,
         chat_id=key.chat_id,
@@ -893,7 +894,7 @@ async def named_session_streaming(
         text,
         current_label=f"CURRENT NAMED SESSION MESSAGE ({session_name})",
     )
-    prompt = await _apply_soul(orch, prompt)
+    soul = await _fetch_soul(orch)
     process_id = await _record_process_start(
         orch,
         process_label=f"ns:{session_name}:streaming",
@@ -918,6 +919,7 @@ async def named_session_streaming(
     exit_code = 1
     request = AgentRequest(
         prompt=prompt,
+        append_system_prompt=soul,
         model_override=ns.model,
         provider_override=ns.provider,
         chat_id=key.chat_id,

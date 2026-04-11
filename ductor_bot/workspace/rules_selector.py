@@ -151,6 +151,9 @@ class RulesSelector:
         )
 
         template_dirs = self.discover_template_directories()
+        if not template_dirs:
+            logger.debug("No RULES templates found under home_defaults; skipping deployment")
+            return
         deployed_count = 0
 
         for template_dir in template_dirs:
@@ -175,23 +178,26 @@ class RulesSelector:
                 # Deploy CLAUDE.md if Claude is authenticated
                 if self._claude_authenticated:
                     claude_dst = dst_dir / "CLAUDE.md"
-                    shutil.copy2(template, claude_dst)
-                    deployed_count += 1
-                    logger.debug("Deployed: %s -> CLAUDE.md", template.name)
+                    if not claude_dst.exists():
+                        shutil.copy2(template, claude_dst)
+                        deployed_count += 1
+                        logger.debug("Deployed: %s -> CLAUDE.md", template.name)
 
                 # Deploy AGENTS.md if Codex is authenticated
                 if self._codex_authenticated:
                     agents_dst = dst_dir / "AGENTS.md"
-                    shutil.copy2(template, agents_dst)
-                    deployed_count += 1
-                    logger.debug("Deployed: %s -> AGENTS.md", template.name)
+                    if not agents_dst.exists():
+                        shutil.copy2(template, agents_dst)
+                        deployed_count += 1
+                        logger.debug("Deployed: %s -> AGENTS.md", template.name)
 
                 # Deploy GEMINI.md if Gemini is authenticated
                 if self._gemini_authenticated:
                     gemini_dst = dst_dir / "GEMINI.md"
-                    shutil.copy2(template, gemini_dst)
-                    deployed_count += 1
-                    logger.debug("Deployed: %s -> GEMINI.md", template.name)
+                    if not gemini_dst.exists():
+                        shutil.copy2(template, gemini_dst)
+                        deployed_count += 1
+                        logger.debug("Deployed: %s -> GEMINI.md", template.name)
 
             except OSError:
                 logger.exception("Failed to deploy %s", template)

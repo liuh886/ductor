@@ -27,9 +27,10 @@ _IS_WINDOWS = sys.platform == "win32"
 
 def _win_feed_stdin(process: asyncio.subprocess.Process, data: str) -> None:
     """Write prompt to stdin and close on Windows; no-op on POSIX."""
-    if _IS_WINDOWS and process.stdin is not None:
-        process.stdin.write(data.encode())
-        process.stdin.close()
+    writer = getattr(process, "stdin", None)
+    if _IS_WINDOWS and writer is not None and data:
+        writer.write(data.encode())
+        writer.close()
 
 
 async def _feed_stdin_and_close(

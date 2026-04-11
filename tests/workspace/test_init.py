@@ -4,9 +4,29 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
+
+from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.workspace.init import init_workspace, inject_runtime_environment
 from ductor_bot.workspace.paths import DuctorPaths
+
+
+@pytest.fixture(autouse=True)
+def mock_provider_auth():
+    """Globally mock all providers as authenticated for init tests."""
+    res = AuthResult(provider="mock", status=AuthStatus.AUTHENTICATED)
+    with patch(
+        "ductor_bot.cli.auth.check_all_auth",
+        return_value={"claude": res, "codex": res, "gemini": res},
+    ):
+        yield
+
+
+def _mock_auth() -> dict[str, AuthResult]:
+    res = AuthResult(provider="mock", status=AuthStatus.AUTHENTICATED)
+    return {"claude": res, "codex": res, "gemini": res}
 
 
 def _setup_home_defaults(fw_root: Path) -> None:
@@ -19,6 +39,7 @@ def _setup_home_defaults(fw_root: Path) -> None:
     # Top-level CLAUDE.md (ductor home)
     ws.mkdir(parents=True)
     (ws / "CLAUDE.md").write_text("# Ductor Home CLAUDE.md")
+    (ws / "RULES.md").write_text("# Ductor Home CLAUDE.md")
 
     config_dir = ws / "config"
     config_dir.mkdir()
@@ -27,12 +48,14 @@ def _setup_home_defaults(fw_root: Path) -> None:
     inner = ws / "workspace"
     inner.mkdir()
     (inner / "CLAUDE.md").write_text("# Framework CLAUDE.md")
+    (inner / "RULES.md").write_text("# Framework CLAUDE.md")
 
     # Subdirectory CLAUDE.md files
     for subdir in ("memory_system", "cron_tasks", "output_to_user", "telegram_files"):
         d = inner / subdir
         d.mkdir()
         (d / "CLAUDE.md").write_text(f"# {subdir} CLAUDE.md")
+        (d / "RULES.md").write_text(f"# {subdir} CLAUDE.md")
 
     # MAINMEMORY.md (seed-only)
     (inner / "memory_system" / "MAINMEMORY.md").write_text("# Main Memory\n")

@@ -104,8 +104,7 @@ class CodexCLI(BaseCLI):
             cmd.append("--json")
         cmd += self._sandbox_flags()
         cmd += ["--", session_id]
-        if not _IS_WINDOWS:
-            cmd.append(final_prompt)
+        cmd.append(final_prompt)
         return cmd
 
     def _build_command(
@@ -141,11 +140,8 @@ class CodexCLI(BaseCLI):
         if cfg.cli_parameters:
             cmd.extend(cfg.cli_parameters)
 
-        # On Windows, .CMD wrappers mangle arguments with special characters.
-        # The prompt is passed via stdin instead (see send / send_streaming).
-        if not _IS_WINDOWS:
-            cmd.append("--")
-            cmd.append(final_prompt)
+        cmd.append("--")
+        cmd.append(final_prompt)
         return cmd
 
     def _docker_wrap(self, cmd: list[str]) -> tuple[list[str], str | None]:
@@ -172,7 +168,13 @@ class CodexCLI(BaseCLI):
         _log_cmd(exec_cmd)
         return await run_oneshot_subprocess(
             config=self._config,
-            spec=SubprocessSpec(exec_cmd, use_cwd, prompt, timeout_seconds, timeout_controller),
+            spec=SubprocessSpec(
+                exec_cmd,
+                use_cwd,
+                "" if _IS_WINDOWS else prompt,
+                timeout_seconds,
+                timeout_controller,
+            ),
             parse_output=self._parse_output,
             provider_label="Codex",
         )
@@ -209,7 +211,13 @@ class CodexCLI(BaseCLI):
 
         async for event in run_streaming_subprocess(
             config=self._config,
-            spec=SubprocessSpec(exec_cmd, use_cwd, prompt, timeout_seconds, timeout_controller),
+            spec=SubprocessSpec(
+                exec_cmd,
+                use_cwd,
+                "" if _IS_WINDOWS else prompt,
+                timeout_seconds,
+                timeout_controller,
+            ),
             line_handler=line_handler,
             provider_label="Codex",
             post_handler=post_handler,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,6 +31,7 @@ class TestFindGeminiCli:
         with (
             patch("ductor_bot.cli.gemini_utils.which", return_value=None),
             patch("ductor_bot.cli.gemini_utils.Path.home", return_value=tmp_path),
+            patch.dict(os.environ, {"APPDATA": "", "NVM_SYMLINK": ""}, clear=False),
         ):
             assert find_gemini_cli() == str(gemini)
 
@@ -37,6 +39,7 @@ class TestFindGeminiCli:
         with (
             patch("ductor_bot.cli.gemini_utils.which", return_value=None),
             patch("ductor_bot.cli.gemini_utils.Path.home", return_value=tmp_path),
+            patch.dict(os.environ, {"APPDATA": "", "NVM_SYMLINK": ""}, clear=False),
             pytest.raises(FileNotFoundError, match="gemini CLI not found"),
         ):
             find_gemini_cli()
@@ -77,6 +80,7 @@ class TestFindGeminiCliJs:
         with (
             patch("ductor_bot.cli.gemini_utils.which", return_value=None),
             patch("ductor_bot.cli.gemini_utils.Path.home", return_value=tmp_path),
+            patch.dict(os.environ, {"APPDATA": "", "NVM_SYMLINK": ""}, clear=False),
         ):
             assert find_gemini_cli_js() is None
 
@@ -114,6 +118,7 @@ class TestFindGeminiCliJs:
         with (
             patch("ductor_bot.cli.gemini_utils.which", return_value=None),
             patch("ductor_bot.cli.gemini_utils.Path.home", return_value=tmp_path),
+            patch.dict(os.environ, {"APPDATA": "", "NVM_SYMLINK": ""}, clear=False),
         ):
             assert find_gemini_cli_js() == str(index_js)
 
@@ -171,6 +176,7 @@ class TestDiscoverGeminiModels:
         with (
             patch("ductor_bot.cli.gemini_utils.which", return_value=None),
             patch("ductor_bot.cli.gemini_utils.Path.home", return_value=tmp_path),
+            patch.dict(os.environ, {"APPDATA": "", "NVM_SYMLINK": ""}, clear=False),
         ):
             result = discover_gemini_models()
             assert result == frozenset()

@@ -65,10 +65,12 @@ def test_docker_wrap_injects_secrets(tmp_path: Path) -> None:
         docker_container="test-container",
     )
     clear_cache()
-    with patch.dict("os.environ", {}, clear=False):
+    # Explicitly clear the variable from host env mock to ensure it's picked up from .env
+    with patch.dict("os.environ", {}, clear=True):
         cmd, cwd = docker_wrap(["gemini"], config)
 
     assert cwd is None  # Docker mode
+    assert "-e" in cmd
     assert "PPLX_API_KEY=sk-test" in cmd
 
 

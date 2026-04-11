@@ -37,6 +37,7 @@ def test_docker_wrap_with_container(tmp_path: Path) -> None:
 
 
 def test_claude_build_command_basic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus", permission_mode="bypassPermissions")
     cli = ClaudeCodeCLI(cfg)
@@ -53,6 +54,7 @@ def test_claude_build_command_basic(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_claude_build_command_with_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus")
     cli = ClaudeCodeCLI(cfg)
@@ -62,6 +64,7 @@ def test_claude_build_command_with_resume(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_claude_build_command_with_continue(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus")
     cli = ClaudeCodeCLI(cfg)
@@ -70,6 +73,7 @@ def test_claude_build_command_with_continue(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_claude_build_command_with_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus", system_prompt="Be helpful")
     cli = ClaudeCodeCLI(cfg)
@@ -82,6 +86,7 @@ def test_claude_build_command_with_system_prompt(monkeypatch: pytest.MonkeyPatch
 def test_claude_build_command_with_append_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus", append_system_prompt="Extra rules")
     cli = ClaudeCodeCLI(cfg)
@@ -90,6 +95,7 @@ def test_claude_build_command_with_append_system_prompt(
 
 
 def test_claude_build_command_with_max_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus", max_turns=5)
     cli = ClaudeCodeCLI(cfg)
@@ -100,6 +106,7 @@ def test_claude_build_command_with_max_turns(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_claude_build_command_with_allowed_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus", allowed_tools=["Read", "Write"])
     cli = ClaudeCodeCLI(cfg)
@@ -111,6 +118,7 @@ def test_claude_build_command_with_allowed_tools(monkeypatch: pytest.MonkeyPatch
 
 
 def test_claude_streaming_command_uses_stream_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(provider="claude", model="opus")
     cli = ClaudeCodeCLI(cfg)
@@ -124,6 +132,7 @@ def test_claude_streaming_command_uses_stream_json(monkeypatch: pytest.MonkeyPat
 
 
 def test_codex_build_command_basic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", model="gpt-5.2-codex", permission_mode="bypassPermissions")
     cli = CodexCLI(cfg)
@@ -134,9 +143,11 @@ def test_codex_build_command_basic(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--model" in cmd
     assert "gpt-5.2-codex" in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+    assert cmd[-1] == "hello"
 
 
 def test_codex_compose_prompt_injects_system_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(
         provider="codex",
@@ -153,6 +164,7 @@ def test_codex_compose_prompt_injects_system_context(monkeypatch: pytest.MonkeyP
 
 
 def test_codex_sandbox_flags_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", permission_mode="bypassPermissions")
     cli = CodexCLI(cfg)
@@ -161,6 +173,7 @@ def test_codex_sandbox_flags_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_codex_sandbox_flags_full_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", permission_mode="other", sandbox_mode="full-access")
     cli = CodexCLI(cfg)
@@ -169,6 +182,7 @@ def test_codex_sandbox_flags_full_access(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_codex_sandbox_flags_workspace_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", permission_mode="other", sandbox_mode="workspace-write")
     cli = CodexCLI(cfg)
@@ -177,15 +191,18 @@ def test_codex_sandbox_flags_workspace_write(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_codex_build_command_with_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", model="gpt-5.2-codex")
     cli = CodexCLI(cfg)
     cmd = cli._build_command("hello", resume_session="thread-abc")
     assert "resume" in cmd
     assert "thread-abc" in cmd
+    assert cmd[-1] == "hello"
 
 
 def test_codex_build_command_with_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", model="gpt-5.2-codex", reasoning_effort="high")
     cli = CodexCLI(cfg)
@@ -194,6 +211,7 @@ def test_codex_build_command_with_reasoning_effort(monkeypatch: pytest.MonkeyPat
 
 
 def test_codex_build_command_with_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
     monkeypatch.setattr("ductor_bot.cli.codex_provider.which", lambda _: "/usr/bin/codex")
     cfg = CLIConfig(provider="codex", model="gpt-5.2-codex", images=["img.png"])
     cli = CodexCLI(cfg)

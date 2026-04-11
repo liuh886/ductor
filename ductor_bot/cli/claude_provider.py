@@ -82,11 +82,8 @@ class ClaudeCodeCLI(BaseCLI):
         if cfg.cli_parameters:
             cmd.extend(cfg.cli_parameters)
 
-        # On Windows, .CMD wrappers mangle arguments with special characters.
-        # The prompt is passed via stdin instead (see send / send_streaming).
-        if not _IS_WINDOWS:
-            cmd.append("--")
-            cmd.append(prompt)
+        cmd.append("--")
+        cmd.append(prompt)
         return cmd
 
     async def send(
@@ -103,7 +100,13 @@ class ClaudeCodeCLI(BaseCLI):
         _log_cmd(exec_cmd)
         return await run_oneshot_subprocess(
             config=self._config,
-            spec=SubprocessSpec(exec_cmd, use_cwd, prompt, timeout_seconds, timeout_controller),
+            spec=SubprocessSpec(
+                exec_cmd,
+                use_cwd,
+                "" if _IS_WINDOWS else prompt,
+                timeout_seconds,
+                timeout_controller,
+            ),
             parse_output=_parse_response,
             provider_label="CLI",
         )
@@ -140,7 +143,13 @@ class ClaudeCodeCLI(BaseCLI):
 
         async for event in run_streaming_subprocess(
             config=self._config,
-            spec=SubprocessSpec(exec_cmd, use_cwd, prompt, timeout_seconds, timeout_controller),
+            spec=SubprocessSpec(
+                exec_cmd,
+                use_cwd,
+                "" if _IS_WINDOWS else prompt,
+                timeout_seconds,
+                timeout_controller,
+            ),
             line_handler=_claude_line_handler,
             provider_label="CLI",
         ):

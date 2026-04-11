@@ -67,6 +67,7 @@ def _fake_process(
     proc.returncode = returncode
     proc.pid = 12345
     proc.kill = MagicMock()
+    proc.stdin = MagicMock()
     return proc
 
 
@@ -81,6 +82,7 @@ def _fake_streaming_process(
     proc.returncode = returncode
     proc.kill = MagicMock()
     proc.wait = AsyncMock(return_value=returncode)
+    proc.stdin = MagicMock()
 
     line_iter = iter([*lines, b""])
     proc.stdout = MagicMock()
@@ -130,6 +132,7 @@ class TestInit:
 
 class TestBuildCommand:
     def test_max_budget_usd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, max_budget_usd=2.5)
         cmd = cli._build_command("go")
         assert "--max-budget-usd" in cmd
@@ -137,6 +140,7 @@ class TestBuildCommand:
         assert cmd[idx + 1] == "2.5"
 
     def test_disallowed_tools(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, disallowed_tools=["Bash", "Write"])
         cmd = cli._build_command("go")
         assert "--disallowedTools" in cmd
@@ -146,6 +150,7 @@ class TestBuildCommand:
 
     def test_resume_takes_precedence_over_continue(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both resume_session and continue_session are set, --resume wins."""
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command("go", resume_session="sess-1", continue_session=True)
         assert "--resume" in cmd
@@ -153,6 +158,7 @@ class TestBuildCommand:
 
     def test_no_none_values_in_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Ensure optional None fields do not produce '--flag None' pairs."""
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
         cfg = CLIConfig(provider="claude", model=None, max_turns=None, max_budget_usd=None)
         cli = ClaudeCodeCLI(cfg)
@@ -161,12 +167,14 @@ class TestBuildCommand:
 
     @pytest.mark.parametrize("model", ["haiku", "sonnet", "opus"])
     def test_model_variants(self, monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, model=model)
         cmd = cli._build_command("hi")
         idx = cmd.index("--model")
         assert cmd[idx + 1] == model
 
     def test_prompt_is_always_last(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(
             monkeypatch,
             allowed_tools=["Read"],
@@ -179,23 +187,27 @@ class TestBuildCommand:
 
 class TestBuildCommandStreaming:
     def test_replaces_json_with_stream_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command_streaming("go")
         assert "stream-json" in cmd
         assert "json" not in cmd
 
     def test_verbose_flag_added(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command_streaming("go")
         assert "--verbose" in cmd
 
     def test_verbose_not_duplicated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command_streaming("go")
         assert cmd.count("--verbose") == 1
 
     def test_json_not_in_command_defensive_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Cover the except ValueError branch when 'json' is absent from command."""
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         with patch.object(
             cli,
@@ -207,6 +219,7 @@ class TestBuildCommandStreaming:
         assert "--verbose" in cmd
 
     def test_resume_carried_to_streaming(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.claude_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command_streaming("go", resume_session="sess-7")
         assert "--resume" in cmd

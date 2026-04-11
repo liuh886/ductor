@@ -53,6 +53,7 @@ def _make_process_mock(
     proc.pid = 12345
     proc.kill = MagicMock()
     proc.wait = AsyncMock()
+    proc.stdin = MagicMock()
     return proc
 
 
@@ -67,6 +68,7 @@ def _make_streaming_process(
     proc.pid = 12345
     proc.kill = MagicMock()
     proc.wait = AsyncMock()
+    proc.stdin = MagicMock()
 
     # stdout readline mock: returns each line as bytes, then b""
     encoded_lines = [line.encode() + b"\n" for line in lines] + [b""]
@@ -174,6 +176,7 @@ class TestSandboxFlags:
 
 class TestBuildCommand:
     def test_basic_exec_structure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, model="gpt-5.2-codex")
         cmd = cli._build_command("hello")
         assert cmd[0] == "/usr/bin/codex"
@@ -189,11 +192,13 @@ class TestBuildCommand:
         assert cmd[-1] == "hello"
 
     def test_json_output_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command("hello", json_output=False)
         assert "--json" not in cmd
 
     def test_no_model_omits_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, model=None)
         cmd = cli._build_command("hello")
         assert "--model" not in cmd
@@ -211,6 +216,7 @@ class TestBuildCommand:
     def test_reasoning_effort(
         self, monkeypatch: pytest.MonkeyPatch, effort: str, should_have_flag: bool
     ) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, reasoning_effort=effort)
         cmd = cli._build_command("hello")
         if should_have_flag:
@@ -221,6 +227,7 @@ class TestBuildCommand:
             assert "-c" not in cmd
 
     def test_instructions_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, instructions="/path/to/instructions.md")
         cmd = cli._build_command("hello")
         assert "--instructions" in cmd
@@ -228,11 +235,13 @@ class TestBuildCommand:
         assert cmd[idx + 1] == "/path/to/instructions.md"
 
     def test_no_instructions_omits_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, instructions=None)
         cmd = cli._build_command("hello")
         assert "--instructions" not in cmd
 
     def test_images_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, images=["img1.png", "img2.jpg"])
         cmd = cli._build_command("hello")
         image_indices = [i for i, c in enumerate(cmd) if c == "--image"]
@@ -241,6 +250,7 @@ class TestBuildCommand:
         assert cmd[image_indices[1] + 1] == "img2.jpg"
 
     def test_resume_session_changes_structure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, permission_mode="bypassPermissions")
         cmd = cli._build_command("hello", resume_session="thread-abc")
         assert cmd[0] == "/usr/bin/codex"
@@ -255,12 +265,14 @@ class TestBuildCommand:
         assert "--skip-git-repo-check" not in cmd
 
     def test_resume_session_json_output_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch)
         cmd = cli._build_command("hello", resume_session="th-1", json_output=False)
         assert "resume" in cmd
         assert "--json" not in cmd
 
     def test_prompt_composed_in_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, system_prompt="SYS", append_system_prompt="APPEND")
         cmd = cli._build_command("user msg")
         final_arg = cmd[-1]
@@ -269,6 +281,7 @@ class TestBuildCommand:
         assert "APPEND" in final_arg
 
     def test_resume_prompt_also_composed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, system_prompt="SYS")
         cmd = cli._build_command("user msg", resume_session="th-1")
         final_arg = cmd[-1]
@@ -1076,6 +1089,7 @@ class TestSendWithoutRegistry:
 class TestResumeCommandArgOrder:
     def test_resume_session_id_before_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The resume command must have: ... thread_id prompt (in that order)."""
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, system_prompt=None, append_system_prompt=None)
         cmd = cli._build_command("my prompt", resume_session="th-abc")
         # thread_id and prompt should be the last two args
@@ -1084,6 +1098,7 @@ class TestResumeCommandArgOrder:
 
     def test_resume_with_empty_images_no_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Resume path ignores images even if set (they're not in the resume branch)."""
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
         cli = _make_cli(monkeypatch, images=["img.png"])
         cmd = cli._build_command("go", resume_session="th-1")
         # Images are not added to resume commands

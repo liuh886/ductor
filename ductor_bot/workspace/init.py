@@ -86,7 +86,7 @@ def _is_zone2_py_file(entry: Path, src: Path, root_src: Path) -> bool:
         return False
     try:
         rel_dir = src.relative_to(root_src)
-        return str(rel_dir) in _ZONE2_PY_DIRS
+        return rel_dir.as_posix() in _ZONE2_PY_DIRS
     except ValueError:
         return False
 

@@ -68,10 +68,14 @@ class ProcessRegistry:
         entries = self._processes.get(tracked.chat_id)
         if entries is None:
             return
-        try:
-            entries.remove(tracked)
-        except ValueError:
+        # Use identity check to avoid removing foreign objects with same content
+        for i, entry in enumerate(entries):
+            if entry is tracked:
+                entries.pop(i)
+                break
+        else:
             return
+
         if not entries:
             del self._processes[tracked.chat_id]
         logger.debug(

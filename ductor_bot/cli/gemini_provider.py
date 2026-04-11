@@ -9,7 +9,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ductor_bot.cli.auth import gemini_api_key_mode_selected
@@ -111,9 +111,14 @@ class GeminiCLI(BaseCLI):
         env = os.environ.copy()
         # Ensure ``node`` resolution works when gemini was discovered via an
         # absolute path outside the inherited PATH (service/runtime environments).
-        cli_path = Path(self._cli)
-        if cli_path.is_absolute():
-            cli_parent = str(cli_path.parent)
+        cli_parent = ""
+        if self._cli.startswith("/"):
+            cli_parent = str(PurePosixPath(self._cli).parent)
+        else:
+            cli_path = Path(self._cli)
+            if cli_path.is_absolute():
+                cli_parent = str(cli_path.parent)
+        if cli_parent:
             path_entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
             if cli_parent not in path_entries:
                 path_entries.insert(0, cli_parent)

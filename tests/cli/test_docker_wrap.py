@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 
 from ductor_bot.cli.base import CLIConfig, docker_wrap
 
@@ -12,7 +12,7 @@ def test_docker_wrap_without_container() -> None:
     cfg = CLIConfig(docker_container="", chat_id=123, working_dir="/workspace")
     result_cmd, cwd = docker_wrap(cmd, cfg)
     assert result_cmd == cmd
-    assert cwd == "/workspace"
+    assert Path(cwd).as_posix().endswith("/workspace")
 
 
 def test_docker_wrap_with_container() -> None:
