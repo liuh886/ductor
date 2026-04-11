@@ -56,6 +56,11 @@ class DuctorPaths:
         return self.ductor_home / "sessions.json"
 
     @property
+    def state_db_path(self) -> Path:
+        """SQLite runtime-state database path."""
+        return self.ductor_home / "state.db"
+
+    @property
     def cron_jobs_path(self) -> Path:
         return self.ductor_home / "cron_jobs.json"
 
@@ -138,6 +143,14 @@ class DuctorPaths:
     @property
     def mainmemory_path(self) -> Path:
         return self.memory_system_dir / "MAINMEMORY.md"
+
+    @property
+    def soul_path(self) -> Path:
+        return self.workspace / "SOUL.md"
+
+    @property
+    def sharedmemory_path(self) -> Path:
+        return self.ductor_home / "SHAREDMEMORY.md"
 
     @property
     def join_notification_path(self) -> Path:

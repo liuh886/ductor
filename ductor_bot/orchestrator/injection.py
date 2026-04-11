@@ -8,6 +8,7 @@ Note: task *results* are injected via the MessageBus (see ``bus.adapters``).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -24,12 +25,108 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _state_repos(orch: Orchestrator) -> tuple[object | None, object | None]:
+    """Return optional runtime-state repositories for inter-agent persistence."""
+    return getattr(orch, "_process_repo", None), getattr(orch, "_message_repo", None)
+
+
+async def _apply_runtime_compression(
+    orch: Orchestrator,
+    session_storage_key: str,
+    prompt: str,
+    *,
+    current_label: str,
+) -> str:
+    """Prepend compressed runtime context when available."""
+    compressor = getattr(orch, "_context_compressor", None)
+    if compressor is None:
+        return prompt
+    prefix = await asyncio.to_thread(compressor.build_prompt_prefix, session_storage_key)
+    if not prefix:
+        return prompt
+    return f"{prefix}\n\n## {current_label}\n{prompt}"
+
+
+# ruff: noqa: PLR0913
+async def _record_process_start(
+    orch: Orchestrator,
+    *,
+    process_label: str,
+    chat_id: int,
+    topic_id: int | None,
+    provider: str,
+    model: str,
+    session_storage_key: str,
+) -> int | None:
+    """Persist an inter-agent process row when runtime state is enabled."""
+    process_repo, _message_repo = _state_repos(orch)
+    if process_repo is None:
+        return None
+    try:
+        return await asyncio.to_thread(
+            process_repo.create,
+            process_label,
+            chat_id,
+            topic_id=topic_id,
+            provider=provider,
+            model=model,
+            session_storage_key=session_storage_key,
+        )
+    except Exception:
+        logger.exception("Failed to record inter-agent process start label=%s", process_label)
+        return None
+
+
+async def _record_process_finish(orch: Orchestrator, process_id: int | None, exit_code: int) -> None:
+    """Persist inter-agent process completion when runtime state is enabled."""
+    process_repo, _message_repo = _state_repos(orch)
+    if process_repo is None or process_id is None:
+        return
+    try:
+        await asyncio.to_thread(process_repo.finish, process_id, exit_code=exit_code)
+    except Exception:
+        logger.exception("Failed to finish inter-agent process id=%s", process_id)
+
+
+# ruff: noqa: PLR0913
+async def _record_message(
+    orch: Orchestrator,
+    session_storage_key: str,
+    *,
+    role: str,
+    content_text: str,
+    source: str,
+    process_id: int | None = None,
+    content_json: dict[str, object] | None = None,
+) -> None:
+    """Append an inter-agent runtime-state message when runtime state is enabled."""
+    _process_repo, message_repo = _state_repos(orch)
+    if message_repo is None:
+        return
+    try:
+        await asyncio.to_thread(
+            message_repo.append,
+            session_storage_key,
+            role,
+            content_text,
+            source=source,
+            process_id=process_id,
+            content_json=content_json or {},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record inter-agent message key=%s source=%s",
+            session_storage_key,
+            source,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Shared injection helper
 # ---------------------------------------------------------------------------
 
 
-async def _inject_prompt(  # noqa: PLR0913
+async def _inject_prompt(
     orch: Orchestrator,
     prompt: str,
     chat_id: int,
@@ -37,6 +134,8 @@ async def _inject_prompt(  # noqa: PLR0913
     *,
     topic_id: int | None = None,
     transport: str = "tg",
+    source: str = "injected_prompt",
+    content_json: dict[str, object] | None = None,
 ) -> str:
     """Execute *prompt* in the current active session and update session state.
 
@@ -45,6 +144,14 @@ async def _inject_prompt(  # noqa: PLR0913
     key = SessionKey(transport=transport, chat_id=chat_id, topic_id=topic_id)
     active = await orch._sessions.get_active(key)
     resume_id = active.session_id if active else None
+    provider = active.provider if active else orch._config.provider
+    model = active.model if active else orch._config.model
+    prompt = await _apply_runtime_compression(
+        orch,
+        key.storage_key,
+        prompt,
+        current_label="CURRENT INJECTED MESSAGE",
+    )
 
     request = AgentRequest(
         prompt=prompt,
@@ -54,13 +161,57 @@ async def _inject_prompt(  # noqa: PLR0913
         resume_session=resume_id,
         timeout_seconds=orch._config.cli_timeout,
     )
+    process_id = await _record_process_start(
+        orch,
+        process_label=process_label,
+        chat_id=chat_id,
+        topic_id=topic_id,
+        provider=provider,
+        model=model,
+        session_storage_key=key.storage_key,
+    )
+    await _record_message(
+        orch,
+        key.storage_key,
+        role="user",
+        content_text=prompt,
+        source=source,
+        process_id=process_id,
+        content_json=content_json
+        or {
+            "process_label": process_label,
+            "resume_session": resume_id or "",
+        },
+    )
+    try:
+        response = await orch._cli_service.execute(request)
+        await _record_message(
+            orch,
+            key.storage_key,
+            role="assistant",
+            content_text=response.result if response else "",
+            source=f"{source}_result",
+            process_id=process_id,
+            content_json={
+                "process_label": process_label,
+                "session_id": response.session_id if response else "",
+                "is_error": bool(response.is_error) if response else False,
+            },
+        )
 
-    response = await orch._cli_service.execute(request)
+        if active and response:
+            await _update_session(orch, active, response)
 
-    if active and response:
-        await _update_session(orch, active, response)
-
-    return response.result if response else ""
+        await _record_process_finish(
+            orch,
+            process_id,
+            1 if response and response.is_error else 0,
+        )
+    except Exception:
+        await _record_process_finish(orch, process_id, 1)
+        raise
+    else:
+        return response.result if response else ""
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +225,12 @@ def _interagent_chat_id(orch: Orchestrator) -> int:
         logger.warning("No allowed_user_ids configured — inter-agent sessions use chat_id=0")
         return 0
     return orch._config.allowed_user_ids[0]
+
+
+def _interagent_storage_key(orch: Orchestrator, sender: str) -> str:
+    """Return a deterministic runtime-state storage key for inter-agent sessions."""
+    own_name = orch._cli_service._config.agent_name
+    return f"ia:{own_name}:{sender}"
 
 
 def _get_or_create_interagent_session(
@@ -171,6 +328,7 @@ async def handle_interagent_message(
         sender,
         new_session=new_session,
     )
+    storage_key = _interagent_storage_key(orch, sender)
 
     prompt = (
         f"[INTER-AGENT MESSAGE from '{sender}' to '{own_name}']\n"
@@ -178,6 +336,12 @@ async def handle_interagent_message(
         f"[END INTER-AGENT MESSAGE]\n\n"
         f"You are agent '{own_name}'. Respond to this inter-agent request "
         f"from '{sender}'. Be direct and concise."
+    )
+    prompt = await _apply_runtime_compression(
+        orch,
+        storage_key,
+        prompt,
+        current_label=f"CURRENT INTER-AGENT REQUEST ({sender})",
     )
 
     ns.status = "running"
@@ -188,11 +352,44 @@ async def handle_interagent_message(
         resume_session=ns.session_id or None,
         timeout_seconds=orch._config.cli_timeout,
     )
+    process_id = await _record_process_start(
+        orch,
+        process_label=request.process_label or f"interagent:{sender}",
+        chat_id=chat_id,
+        topic_id=None,
+        provider=ns.provider,
+        model=ns.model,
+        session_storage_key=storage_key,
+    )
+    await _record_message(
+        orch,
+        storage_key,
+        role="user",
+        content_text=message,
+        source="interagent_request",
+        process_id=process_id,
+        content_json={
+            "sender": sender,
+            "session_name": ns.name,
+            "new_session": new_session,
+            "provider_switch_notice": provider_switch_notice,
+        },
+    )
 
     try:
         response = await orch._cli_service.execute(request)
     except Exception:
         ns.status = "idle"
+        await _record_message(
+            orch,
+            storage_key,
+            role="assistant",
+            content_text=f"Error processing inter-agent message from '{sender}'",
+            source="interagent_result",
+            process_id=process_id,
+            content_json={"sender": sender, "session_name": ns.name, "is_error": True},
+        )
+        await _record_process_finish(orch, process_id, 1)
         logger.exception("Inter-agent message handling failed (from=%s)", sender)
         return (
             f"Error processing inter-agent message from '{sender}'",
@@ -206,6 +403,21 @@ async def handle_interagent_message(
             )
         else:
             ns.status = "idle"
+        await _record_message(
+            orch,
+            storage_key,
+            role="assistant",
+            content_text=response.result if response else "",
+            source="interagent_result",
+            process_id=process_id,
+            content_json={
+                "sender": sender,
+                "session_name": ns.name,
+                "session_id": response.session_id if response else "",
+                "is_error": bool(response.is_error) if response else False,
+            },
+        )
+        await _record_process_finish(orch, process_id, 1 if response and response.is_error else 0)
         return (response.result if response else ""), ns.name, provider_switch_notice
 
 
@@ -264,7 +476,23 @@ async def handle_async_interagent_result(
     )
 
     try:
-        return await _inject_prompt(orch, prompt, chat_id, f"interagent-async:{recipient}")
+        return await _inject_prompt(
+            orch,
+            prompt,
+            chat_id,
+            f"interagent-async:{recipient}",
+            topic_id=result.topic_id,
+            source="interagent_async_result",
+            content_json={
+                "task_id": task_id,
+                "recipient": recipient,
+                "session_name": result.session_name,
+                "original_message": result.original_message,
+                "provider_switch_notice": result.provider_switch_notice,
+                "chat_id": result.chat_id,
+                "topic_id": result.topic_id,
+            },
+        )
     except Exception:
         logger.exception(
             "Async inter-agent result handling failed (from=%s)",

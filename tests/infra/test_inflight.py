@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ductor_bot.infra.inflight import InflightTracker, InflightTurn
+from ductor_bot.runtime.state import RuntimeStateDB
 
 
 def _make_turn(
@@ -31,6 +32,12 @@ def _make_turn(
     )
 
 
+def _make_sqlite_tracker(tmp_path: Path) -> InflightTracker:
+    db = RuntimeStateDB(tmp_path / "state.db")
+    db.ensure_schema()
+    return InflightTracker(tmp_path / "inflight.json", state_db=db)
+
+
 class TestInflightTrackerLifecycle:
     def test_begin_creates_file(self, tmp_path: Path) -> None:
         tracker = InflightTracker(tmp_path / "inflight.json")
@@ -52,6 +59,19 @@ class TestInflightTrackerLifecycle:
         assert len(interrupted) == 1
         assert interrupted[0].chat_id == 100
         assert interrupted[0].prompt_preview == "test prompt"
+
+    def test_sqlite_roundtrip(self, tmp_path: Path) -> None:
+        tracker = _make_sqlite_tracker(tmp_path)
+        turn = _make_turn(chat_id=100, prompt_preview="sqlite prompt")
+        tracker.begin(turn)
+
+        interrupted = tracker.load_interrupted(max_age_seconds=9999)
+        assert len(interrupted) == 1
+        assert interrupted[0].chat_id == 100
+        assert interrupted[0].prompt_preview == "sqlite prompt"
+
+        tracker.complete(100)
+        assert tracker.load_interrupted(max_age_seconds=9999) == []
 
 
 class TestMultipleChatIds:
@@ -127,3 +147,10 @@ class TestEdgeCases:
         interrupted = tracker.load_interrupted(max_age_seconds=9999)
         assert len(interrupted) == 1
         assert interrupted[0].prompt_preview == "second"
+
+    def test_sqlite_clear_removes_rows(self, tmp_path: Path) -> None:
+        tracker = _make_sqlite_tracker(tmp_path)
+        tracker.begin(_make_turn(chat_id=100))
+        tracker.begin(_make_turn(chat_id=200))
+        tracker.clear()
+        assert tracker.load_interrupted(max_age_seconds=9999) == []

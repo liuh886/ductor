@@ -41,8 +41,7 @@ class TestTaskEntry:
         assert entry.status == "running"
         assert entry.question_count == 0
 
-    def test_to_dict_excludes_original_prompt(self) -> None:
-        """original_prompt is runtime-only, not persisted."""
+    def test_to_dict_includes_original_prompt(self) -> None:
         entry = TaskEntry(
             task_id="x",
             chat_id=1,
@@ -55,7 +54,9 @@ class TestTaskEntry:
             original_prompt="very long prompt...",
         )
         d = entry.to_dict()
-        assert "original_prompt" not in d
+        assert d["original_prompt"] == "very long prompt..."
+        restored = TaskEntry.from_dict(d)
+        assert restored.original_prompt == "very long prompt..."
 
     def test_thread_id_roundtrip(self) -> None:
         entry = TaskEntry(

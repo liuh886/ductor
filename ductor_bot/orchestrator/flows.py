@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 from collections.abc import Awaitable, Callable
@@ -19,9 +20,10 @@ from ductor_bot.infra.inflight import InflightTurn
 from ductor_bot.log_context import set_log_context
 from ductor_bot.orchestrator.hooks import HookContext
 from ductor_bot.orchestrator.registry import OrchestratorResult
+from ductor_bot.runtime.state import MessageRepository, ProcessRepository
 from ductor_bot.session import SessionData, SessionKey
 from ductor_bot.text.response_format import session_error_text, timeout_error_text
-from ductor_bot.workspace.loader import read_mainmemory
+from ductor_bot.workspace.loader import load_soul, read_mainmemory
 
 if TYPE_CHECKING:
     from ductor_bot.orchestrator.core import Orchestrator
@@ -52,6 +54,116 @@ def _make_timeout_controller(orch: Orchestrator, kind: str) -> TimeoutController
             max_extensions=cfg.max_extensions,
         ),
     )
+
+
+def _state_repos(orch: Orchestrator) -> tuple[ProcessRepository | None, MessageRepository | None]:
+    """Return the optional runtime-state repositories if they are wired in."""
+    return getattr(orch, "_process_repo", None), getattr(orch, "_message_repo", None)
+
+
+async def _fetch_soul(orch: Orchestrator) -> str | None:
+    """Read the SOUL context if available."""
+    soul = await asyncio.to_thread(load_soul, orch.paths)
+    if not soul or not soul.strip():
+        return None
+    return soul.strip()
+
+
+async def _apply_runtime_compression(
+    orch: Orchestrator,
+    session_storage_key: str,
+    prompt: str,
+    *,
+    current_label: str,
+) -> str:
+    """Prepend compressed runtime context when the compressor is enabled."""
+    compressor = getattr(orch, "_context_compressor", None)
+    if compressor is None:
+        return prompt
+    prefix = await asyncio.to_thread(compressor.build_prompt_prefix, session_storage_key)
+    if not prefix:
+        return prompt
+    return f"{prefix}\n\n## {current_label}\n{prompt}"
+
+
+async def _record_process_start(
+    orch: Orchestrator,
+    *,
+    process_label: str,
+    key: SessionKey,
+    provider: str,
+    model: str,
+) -> int | None:
+    """Persist a process-start row when runtime state is enabled."""
+    process_repo, _message_repo = _state_repos(orch)
+    if process_repo is None:
+        return None
+    try:
+        return await asyncio.to_thread(
+            process_repo.create,
+            process_label,
+            key.chat_id,
+            topic_id=key.topic_id,
+            provider=provider,
+            model=model,
+            session_storage_key=key.storage_key,
+        )
+    except Exception:
+        logger.exception("Failed to record process start label=%s chat=%s", process_label, key.chat_id)
+        return None
+
+
+async def _record_process_finish(orch: Orchestrator, process_id: int | None, exit_code: int) -> None:
+    """Persist process completion without affecting the main flow."""
+    process_repo, _message_repo = _state_repos(orch)
+    if process_repo is None or process_id is None:
+        return
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(process_repo.finish, process_id, exit_code=exit_code)
+
+
+# ruff: noqa: PLR0913
+async def _record_message(
+    orch: Orchestrator,
+    key: SessionKey,
+    *,
+    role: str,
+    content_text: str,
+    source: str,
+    process_id: int | None = None,
+    token_count: int = 0,
+    cost_usd: float = 0.0,
+    content_json: dict[str, object] | None = None,
+) -> None:
+    """Append a message row when runtime state is enabled."""
+    _process_repo, message_repo = _state_repos(orch)
+    if message_repo is None:
+        return
+    try:
+        await asyncio.to_thread(
+            message_repo.append,
+            key.storage_key,
+            role,
+            content_text,
+            source=source,
+            content_json=content_json or {},
+            token_count=token_count,
+            cost_usd=cost_usd,
+            process_id=process_id,
+        )
+    except Exception:
+        logger.exception("Failed to record message source=%s chat=%s", source, key.chat_id)
+
+
+def _response_exit_code(response: AgentResponse, *, aborted: bool = False) -> int:
+    """Map a response to a process exit code for runtime-state tracking."""
+    if aborted:
+        return 130
+    if response.timed_out:
+        return 124
+    if response.is_error:
+        return 1
+    return 0
 
 
 async def _prepare_normal(
@@ -92,7 +204,12 @@ async def _prepare_normal(
 
     append_prompt = None
     if is_new:
-        mainmemory = await asyncio.to_thread(read_mainmemory, orch.paths)
+        mainmemory = await asyncio.to_thread(
+            read_mainmemory,
+            orch.paths,
+            fragment_repo=getattr(orch, "_memory_fragment_repo", None),
+            agent_name=getattr(orch, "_agent_name", ""),
+        )
         if mainmemory.strip():
             append_prompt = mainmemory
 
@@ -108,6 +225,17 @@ async def _prepare_normal(
         model=req_model,
     )
     prompt = orch._hook_registry.apply(text, hook_ctx)
+    if not is_new:
+        prompt = await _apply_runtime_compression(
+            orch,
+            key.storage_key,
+            prompt,
+            current_label="CURRENT USER MESSAGE",
+        )
+
+    soul = await _fetch_soul(orch)
+    if soul:
+        append_prompt = f"{soul}\n\n{append_prompt}" if append_prompt else soul
 
     timeout_secs = resolve_timeout(orch._config, "normal")
     request = AgentRequest(
@@ -333,6 +461,28 @@ async def normal(
         return warning
 
     _begin_inflight(orch, request, session, is_recovery=is_recovery)
+    model_name, provider_name = _request_target(orch, request)
+    process_id = await _record_process_start(
+        orch,
+        process_label="normal",
+        key=key,
+        provider=provider_name,
+        model=model_name,
+    )
+    await _record_message(
+        orch,
+        key,
+        role="user",
+        content_text=text,
+        source="normal_prompt",
+        process_id=process_id,
+        content_json={
+            "flow": "normal",
+            "model": model_name,
+            "provider": provider_name,
+        },
+    )
+    exit_code = 1
     try:
         response = await orch._cli_service.execute(request)
         session_recovered = False
@@ -349,14 +499,34 @@ async def normal(
         if _reg.was_aborted(key.chat_id) or _reg.was_interrupted(key.chat_id):
             _reg.clear_interrupt(key.chat_id)
             logger.info("Normal flow aborted/interrupted by user")
+            exit_code = _response_exit_code(response, aborted=True)
             return OrchestratorResult(text="")
+        await _record_message(
+            orch,
+            key,
+            role="assistant",
+            content_text=response.result,
+            source="normal_result",
+            process_id=process_id,
+            token_count=response.total_tokens,
+            cost_usd=response.cost_usd,
+            content_json={
+                "flow": "normal",
+                "is_error": response.is_error,
+                "timed_out": response.timed_out,
+                "session_id": response.session_id or "",
+            },
+        )
         if response.timed_out:
+            exit_code = _response_exit_code(response)
             return await _handle_timeout(orch, key, session, response, request)
         if response.is_error:
             if _is_sigkill(response):
                 logger.warning("recovery.sigkill chat=%s action=user-retry", key.chat_id)
+                exit_code = _response_exit_code(response)
                 return OrchestratorResult(text=_sigkill_user_msg(), stream_fallback=True)
             model_name, provider_name = _request_target(orch, request)
+            exit_code = _response_exit_code(response)
             return await _reset_on_error(
                 orch,
                 key,
@@ -367,6 +537,7 @@ async def normal(
         await _update_session(orch, session, response)
         logger.info("Normal flow completed")
         req_model, _prov = _request_target(orch, request)
+        exit_code = _response_exit_code(response)
         result = _finish_normal(
             response, session, orch._config.session_age_warning_hours, model_name=req_model
         )
@@ -374,6 +545,7 @@ async def normal(
             result.text = f"{_session_recovered_msg()}\n\n{result.text}"
         return result
     finally:
+        await _record_process_finish(orch, process_id, exit_code)
         orch._inflight_tracker.complete(key.chat_id)
 
 
@@ -394,6 +566,28 @@ async def normal_streaming(
         return warning
 
     _begin_inflight(orch, request, session, is_recovery=False)
+    model_name, provider_name = _request_target(orch, request)
+    process_id = await _record_process_start(
+        orch,
+        process_label="normal_streaming",
+        key=key,
+        provider=provider_name,
+        model=model_name,
+    )
+    await _record_message(
+        orch,
+        key,
+        role="user",
+        content_text=text,
+        source="normal_stream_prompt",
+        process_id=process_id,
+        content_json={
+            "flow": "normal_streaming",
+            "model": model_name,
+            "provider": provider_name,
+        },
+    )
+    exit_code = 1
     try:
         cb = cbs or StreamingCallbacks()
         response = await orch._cli_service.execute_streaming(
@@ -416,14 +610,34 @@ async def normal_streaming(
         if _reg.was_aborted(key.chat_id) or _reg.was_interrupted(key.chat_id):
             _reg.clear_interrupt(key.chat_id)
             logger.info("Streaming flow aborted/interrupted by user")
+            exit_code = _response_exit_code(response, aborted=True)
             return OrchestratorResult(text="")
+        await _record_message(
+            orch,
+            key,
+            role="assistant",
+            content_text=response.result,
+            source="normal_stream_result",
+            process_id=process_id,
+            token_count=response.total_tokens,
+            cost_usd=response.cost_usd,
+            content_json={
+                "flow": "normal_streaming",
+                "is_error": response.is_error,
+                "timed_out": response.timed_out,
+                "session_id": response.session_id or "",
+            },
+        )
         if response.timed_out:
+            exit_code = _response_exit_code(response)
             return await _handle_timeout(orch, key, session, response, request)
         if response.is_error:
             if _is_sigkill(response):
                 logger.warning("recovery.sigkill chat=%s action=user-retry", key.chat_id)
+                exit_code = _response_exit_code(response)
                 return OrchestratorResult(text=_sigkill_user_msg(), stream_fallback=True)
             model_name, provider_name = _request_target(orch, request)
+            exit_code = _response_exit_code(response)
             return await _reset_on_error(
                 orch,
                 key,
@@ -434,10 +648,12 @@ async def normal_streaming(
         await _update_session(orch, session, response)
         logger.info("Streaming flow completed")
         req_model, _prov = _request_target(orch, request)
+        exit_code = _response_exit_code(response)
         return _finish_normal(
             response, session, orch._config.session_age_warning_hours, model_name=req_model
         )
     finally:
+        await _record_process_finish(orch, process_id, exit_code)
         orch._inflight_tracker.complete(key.chat_id)
 
 
@@ -558,8 +774,37 @@ async def named_session_flow(
 
     tag = f"**[{session_name} | {ns.provider}]**\n"
     orch._named_sessions.mark_running(key.chat_id, session_name, text)
+    prompt = await _apply_runtime_compression(
+        orch,
+        key.storage_key,
+        text,
+        current_label=f"CURRENT NAMED SESSION MESSAGE ({session_name})",
+    )
+    prompt = await _apply_soul(orch, prompt)
+    process_id = await _record_process_start(
+        orch,
+        process_label=f"ns:{session_name}",
+        key=key,
+        provider=ns.provider,
+        model=ns.model,
+    )
+    await _record_message(
+        orch,
+        key,
+        role="user",
+        content_text=text,
+        source="named_session_prompt",
+        process_id=process_id,
+        content_json={
+            "flow": "named_session",
+            "session_name": session_name,
+            "provider": ns.provider,
+            "model": ns.model,
+        },
+    )
+    exit_code = 1
     request = AgentRequest(
-        prompt=text,
+        prompt=prompt,
         model_override=ns.model,
         provider_override=ns.provider,
         chat_id=key.chat_id,
@@ -569,19 +814,57 @@ async def named_session_flow(
         timeout_seconds=resolve_timeout(orch._config, "normal"),
         timeout_controller=_make_timeout_controller(orch, "normal"),
     )
-    response = await orch._cli_service.execute(request)
+    try:
+        response = await orch._cli_service.execute(request)
 
-    _reg = orch._process_registry
-    if _reg.was_aborted(key.chat_id) or _reg.was_interrupted(key.chat_id):
-        _reg.clear_interrupt(key.chat_id)
-        ns.status = "idle"
-        return OrchestratorResult(text="")
-    if response.is_error:
-        ns.status = "idle"
-        return OrchestratorResult(text=f"{tag}{t('error.generic', detail=response.result[:500])}")
+        _reg = orch._process_registry
+        if _reg.was_aborted(key.chat_id) or _reg.was_interrupted(key.chat_id):
+            _reg.clear_interrupt(key.chat_id)
+            ns.status = "idle"
+            exit_code = 130
+            return OrchestratorResult(text="")
+        if response.is_error:
+            ns.status = "idle"
+            await _record_message(
+                orch,
+                key,
+                role="assistant",
+                content_text=response.result,
+                source="named_session_result",
+                process_id=process_id,
+                token_count=response.total_tokens,
+                cost_usd=response.cost_usd,
+                content_json={
+                    "flow": "named_session",
+                    "session_name": session_name,
+                    "is_error": True,
+                    "session_id": response.session_id or "",
+                },
+            )
+            exit_code = _response_exit_code(response)
+            return OrchestratorResult(text=f"{tag}{t('error.generic', detail=response.result[:500])}")
 
-    orch._named_sessions.update_after_response(key.chat_id, session_name, response.session_id or "")
-    return OrchestratorResult(text=f"{tag}{response.result}")
+        await _record_message(
+            orch,
+            key,
+            role="assistant",
+            content_text=response.result,
+            source="named_session_result",
+            process_id=process_id,
+            token_count=response.total_tokens,
+            cost_usd=response.cost_usd,
+            content_json={
+                "flow": "named_session",
+                "session_name": session_name,
+                "is_error": False,
+                "session_id": response.session_id or "",
+            },
+        )
+        orch._named_sessions.update_after_response(key.chat_id, session_name, response.session_id or "")
+        exit_code = _response_exit_code(response)
+        return OrchestratorResult(text=f"{tag}{response.result}")
+    finally:
+        await _record_process_finish(orch, process_id, exit_code)
 
 
 async def named_session_streaming(
@@ -604,8 +887,37 @@ async def named_session_streaming(
     cb = cbs or StreamingCallbacks()
     tag = f"**[{session_name} | {ns.provider}]**\n"
     orch._named_sessions.mark_running(key.chat_id, session_name, text)
+    prompt = await _apply_runtime_compression(
+        orch,
+        key.storage_key,
+        text,
+        current_label=f"CURRENT NAMED SESSION MESSAGE ({session_name})",
+    )
+    prompt = await _apply_soul(orch, prompt)
+    process_id = await _record_process_start(
+        orch,
+        process_label=f"ns:{session_name}:streaming",
+        key=key,
+        provider=ns.provider,
+        model=ns.model,
+    )
+    await _record_message(
+        orch,
+        key,
+        role="user",
+        content_text=text,
+        source="named_session_stream_prompt",
+        process_id=process_id,
+        content_json={
+            "flow": "named_session_streaming",
+            "session_name": session_name,
+            "provider": ns.provider,
+            "model": ns.model,
+        },
+    )
+    exit_code = 1
     request = AgentRequest(
-        prompt=text,
+        prompt=prompt,
         model_override=ns.model,
         provider_override=ns.provider,
         chat_id=key.chat_id,
@@ -625,25 +937,62 @@ async def named_session_streaming(
                 await cb.on_text_delta(tag)
                 tag_sent = True
             await cb.on_text_delta(chunk)
+    try:
+        response = await orch._cli_service.execute_streaming(
+            request,
+            on_text_delta=_tagged_text_delta,
+            on_tool_activity=cb.on_tool_activity,
+            on_system_status=cb.on_system_status,
+        )
 
-    response = await orch._cli_service.execute_streaming(
-        request,
-        on_text_delta=_tagged_text_delta,
-        on_tool_activity=cb.on_tool_activity,
-        on_system_status=cb.on_system_status,
-    )
+        _reg2 = orch._process_registry
+        if _reg2.was_aborted(key.chat_id) or _reg2.was_interrupted(key.chat_id):
+            _reg2.clear_interrupt(key.chat_id)
+            ns.status = "idle"
+            exit_code = 130
+            return OrchestratorResult(text="")
+        if response.is_error:
+            ns.status = "idle"
+            await _record_message(
+                orch,
+                key,
+                role="assistant",
+                content_text=response.result,
+                source="named_session_stream_result",
+                process_id=process_id,
+                token_count=response.total_tokens,
+                cost_usd=response.cost_usd,
+                content_json={
+                    "flow": "named_session_streaming",
+                    "session_name": session_name,
+                    "is_error": True,
+                    "session_id": response.session_id or "",
+                },
+            )
+            exit_code = _response_exit_code(response)
+            return OrchestratorResult(text=f"{tag}{t('error.generic', detail=response.result[:500])}")
 
-    _reg2 = orch._process_registry
-    if _reg2.was_aborted(key.chat_id) or _reg2.was_interrupted(key.chat_id):
-        _reg2.clear_interrupt(key.chat_id)
-        ns.status = "idle"
-        return OrchestratorResult(text="")
-    if response.is_error:
-        ns.status = "idle"
-        return OrchestratorResult(text=f"{tag}{t('error.generic', detail=response.result[:500])}")
-
-    orch._named_sessions.update_after_response(key.chat_id, session_name, response.session_id or "")
-    return OrchestratorResult(text=f"{tag}{response.result}")
+        await _record_message(
+            orch,
+            key,
+            role="assistant",
+            content_text=response.result,
+            source="named_session_stream_result",
+            process_id=process_id,
+            token_count=response.total_tokens,
+            cost_usd=response.cost_usd,
+            content_json={
+                "flow": "named_session_streaming",
+                "session_name": session_name,
+                "is_error": False,
+                "session_id": response.session_id or "",
+            },
+        )
+        orch._named_sessions.update_after_response(key.chat_id, session_name, response.session_id or "")
+        exit_code = _response_exit_code(response)
+        return OrchestratorResult(text=f"{tag}{response.result}")
+    finally:
+        await _record_process_finish(orch, process_id, exit_code)
 
 
 # ---------------------------------------------------------------------------
@@ -711,17 +1060,74 @@ async def heartbeat_flow(
         timeout_seconds=resolve_timeout(orch._config, "normal"),
         timeout_controller=_make_timeout_controller(orch, "normal"),
     )
+    process_id = await _record_process_start(
+        orch,
+        process_label="heartbeat",
+        key=key,
+        provider=req_provider,
+        model=req_model,
+    )
+    await _record_message(
+        orch,
+        key,
+        role="system",
+        content_text=effective_prompt,
+        source="heartbeat_prompt",
+        process_id=process_id,
+        content_json={
+            "flow": "heartbeat",
+            "ack_token": effective_ack,
+            "provider": req_provider,
+            "model": req_model,
+        },
+    )
+    exit_code = 0
+    try:
+        response = await orch._cli_service.execute(request)
+        if response.is_error:
+            logger.warning("Heartbeat CLI error result=%s", response.result[:200])
+            await _record_message(
+                orch,
+                key,
+                role="assistant",
+                content_text=response.result,
+                source="heartbeat_result",
+                process_id=process_id,
+                token_count=response.total_tokens,
+                cost_usd=response.cost_usd,
+                content_json={
+                    "flow": "heartbeat",
+                    "is_error": True,
+                    "session_id": response.session_id or "",
+                },
+            )
+            exit_code = _response_exit_code(response)
+            return None
 
-    response = await orch._cli_service.execute(request)
-    if response.is_error:
-        logger.warning("Heartbeat CLI error result=%s", response.result[:200])
-        return None
+        alert_text = _strip_ack_token(response.result, effective_ack)
+        if not alert_text:
+            logger.info("Heartbeat OK (suppressed)")
+            exit_code = _response_exit_code(response)
+            return None
 
-    alert_text = _strip_ack_token(response.result, effective_ack)
-    if not alert_text:
-        logger.info("Heartbeat OK (suppressed)")
-        return None
-
-    await _update_session(orch, session, response)
-    logger.info("Heartbeat alert chars=%d", len(alert_text))
-    return alert_text
+        await _record_message(
+            orch,
+            key,
+            role="assistant",
+            content_text=alert_text,
+            source="heartbeat_alert",
+            process_id=process_id,
+            token_count=response.total_tokens,
+            cost_usd=response.cost_usd,
+            content_json={
+                "flow": "heartbeat",
+                "is_error": False,
+                "session_id": response.session_id or "",
+            },
+        )
+        await _update_session(orch, session, response)
+        logger.info("Heartbeat alert chars=%d", len(alert_text))
+        exit_code = _response_exit_code(response)
+        return alert_text
+    finally:
+        await _record_process_finish(orch, process_id, exit_code)

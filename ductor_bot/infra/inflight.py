@@ -1,9 +1,4 @@
-"""Track in-flight CLI turns for crash recovery.
-
-Persists the currently running foreground turn per chat so it can be
-recovered after a crash or restart.  Uses the same atomic JSON utilities
-as the rest of the infra layer.
-"""
+"""Track in-flight CLI turns for crash recovery."""
 
 from __future__ import annotations
 
@@ -14,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ductor_bot.infra.json_store import atomic_json_save, load_json
+from ductor_bot.runtime.state import InflightTurnRepository, RuntimeStateDB
 
 logger = logging.getLogger(__name__)
 
@@ -47,19 +43,37 @@ def _turn_from_dict(data: dict[str, Any]) -> InflightTurn:
 
 
 class InflightTracker:
-    """Write/remove inflight state atomically for crash recovery."""
+    """Write/remove inflight state for crash recovery.
 
-    def __init__(self, path: Path) -> None:
+    Falls back to the legacy JSON file when no SQLite repository is provided.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        state_repo: InflightTurnRepository | None = None,
+        state_db: RuntimeStateDB | None = None,
+    ) -> None:
         self._path = path
+        self._state_repo = state_repo
+        if self._state_repo is None and state_db is not None:
+            self._state_repo = InflightTurnRepository(state_db)
 
     def begin(self, turn: InflightTurn) -> None:
         """Mark a turn as in-flight (atomic write)."""
+        if self._state_repo is not None:
+            self._state_repo.upsert(turn)
+            return
         data = self._load_raw()
         data[str(turn.chat_id)] = asdict(turn)
         atomic_json_save(self._path, {"turns": data})
 
     def complete(self, chat_id: int) -> None:
         """Remove a completed turn (atomic write)."""
+        if self._state_repo is not None:
+            self._state_repo.delete(chat_id)
+            return
         data = self._load_raw()
         key = str(chat_id)
         if key not in data:
@@ -77,7 +91,13 @@ class InflightTracker:
         - ``is_recovery=True`` entries are never recovered (no infinite loops)
         - Entries older than *max_age_seconds* are dropped
         """
-        data = self._load_raw()
+        if self._state_repo is not None:
+            data = {
+                str(row["chat_id"]): row
+                for row in self._state_repo.list_all()
+            }
+        else:
+            data = self._load_raw()
         now = datetime.now(UTC)
         result: list[InflightTurn] = []
         for entry in data.values():
@@ -100,6 +120,10 @@ class InflightTracker:
 
     def clear(self) -> None:
         """Remove the inflight file entirely."""
+        if self._state_repo is not None:
+            for row in self._state_repo.list_all():
+                self._state_repo.delete(int(row["chat_id"]))
+            return
         self._path.unlink(missing_ok=True)
 
     def _load_raw(self) -> dict[str, Any]:

@@ -23,6 +23,8 @@
     "reasoning_effort": "medium",
     "file_access": "all",
     "gemini_api_key": "null",
+    "state_backend": "json",
+    "state_db_path": "",
 
     "transport": "telegram",
     "transports": ["telegram"],

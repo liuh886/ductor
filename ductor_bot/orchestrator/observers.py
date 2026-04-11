@@ -17,6 +17,7 @@ from ductor_bot.background import BackgroundObserver, BackgroundResult
 
 if TYPE_CHECKING:
     from ductor_bot.bus.bus import MessageBus
+    from ductor_bot.webhook.observer import WebhookObserver
 from ductor_bot.cleanup import CleanupObserver
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_cache_observer import CodexCacheObserver
@@ -29,7 +30,6 @@ from ductor_bot.cron.observer import CronObserver
 from ductor_bot.heartbeat import HeartbeatObserver
 from ductor_bot.webhook.manager import WebhookManager
 from ductor_bot.webhook.models import WebhookResult
-from ductor_bot.webhook.observer import WebhookObserver
 from ductor_bot.workspace.init import watch_rule_files
 from ductor_bot.workspace.paths import DuctorPaths
 from ductor_bot.workspace.skill_sync import watch_skill_sync
@@ -97,6 +97,8 @@ class ObserverManager:
         codex_cache: CodexModelCache,
     ) -> None:
         """Create Background, Cron, and Webhook observers (after caches are ready)."""
+        from ductor_bot.webhook.observer import WebhookObserver
+
         config, paths = self._config, self._paths
         self.codex_cache = codex_cache
         self.background = BackgroundObserver(

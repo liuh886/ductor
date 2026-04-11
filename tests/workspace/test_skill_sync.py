@@ -197,6 +197,31 @@ def test_ensure_link_preserves_real_dir(tmp_path: Path) -> None:
     assert not real_dir.is_symlink()
 
 
+def test_ensure_link_replaces_unresolvable_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_target = tmp_path / "old"
+    new_target = tmp_path / "new"
+    old_target.mkdir()
+    new_target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(old_target)
+
+    original_resolve = type(link).resolve
+    fail_once = {"value": True}
+
+    def flaky_resolve(self: Path, strict: bool = False) -> Path:
+        if self == link and fail_once["value"]:
+            fail_once["value"] = False
+            raise RuntimeError("Symlink loop")
+        return original_resolve(self, strict=strict)
+
+    monkeypatch.setattr(type(link), "resolve", flaky_resolve)
+
+    assert _ensure_link(link, new_target) is True
+    assert link.resolve() == new_target.resolve()
+
+
 # ---------------------------------------------------------------------------
 # Group 4: _clean_broken_links
 # ---------------------------------------------------------------------------
@@ -222,6 +247,26 @@ def test_clean_preserves_valid(tmp_path: Path) -> None:
 
 def test_clean_nonexistent_dir(tmp_path: Path) -> None:
     assert _clean_broken_links(tmp_path / "nope") == 0
+
+
+def test_clean_ignores_missing_during_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = tmp_path / "skills"
+    d.mkdir()
+    broken = d / "broken"
+    broken.symlink_to(tmp_path / "gone")
+
+    original_unlink = type(broken).unlink
+
+    def flaky_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == broken:
+            raise FileNotFoundError
+        original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(type(broken), "unlink", flaky_unlink)
+
+    assert _clean_broken_links(d) == 0
 
 
 # ---------------------------------------------------------------------------

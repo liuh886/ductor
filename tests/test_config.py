@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -26,6 +28,9 @@ def test_agent_config_defaults() -> None:
     cfg = AgentConfig()
     assert cfg.provider == "claude"
     assert cfg.model == "opus"
+    assert cfg.state_backend == "json"
+    assert cfg.state_db_path == ""
+    assert cfg.resolved_state_db_path() == Path("~/.ductor").expanduser() / "state.db"
     assert cfg.idle_timeout_minutes == 1440
     assert cfg.daily_reset_hour == 4
     assert cfg.cli_timeout == 1800.0
@@ -33,6 +38,21 @@ def test_agent_config_defaults() -> None:
     assert cfg.gemini_api_key is None
     assert cfg.telegram_token == ""
     assert cfg.allowed_user_ids == []
+
+
+def test_agent_config_state_backend_normalization() -> None:
+    cfg = AgentConfig(state_backend=" SQLite ")
+    assert cfg.state_backend == "sqlite"
+
+
+def test_agent_config_state_backend_rejects_invalid_values() -> None:
+    with pytest.raises(ValidationError, match="state_backend"):
+        AgentConfig(state_backend="postgres")  # type: ignore[arg-type]
+
+
+def test_agent_config_state_db_path_resolution() -> None:
+    cfg = AgentConfig(ductor_home="~/.ductor", state_db_path="runtime/state.db")
+    assert cfg.resolved_state_db_path() == Path("~/.ductor").expanduser() / "runtime/state.db"
 
 
 def test_agent_config_normalizes_nullish_gemini_api_key() -> None:

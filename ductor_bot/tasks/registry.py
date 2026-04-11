@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ductor_bot.infra.json_store import atomic_json_save, load_json
+from ductor_bot.runtime.state import TaskRepository
 from ductor_bot.tasks.models import TaskEntry, TaskSubmit
 
 logger = logging.getLogger(__name__)
@@ -26,17 +27,57 @@ class TaskRegistry:
     On load, stale ``"running"`` entries are downgraded to ``"failed"``.
     """
 
-    def __init__(self, registry_path: Path, tasks_dir: Path) -> None:
+    def __init__(
+        self,
+        registry_path: Path,
+        tasks_dir: Path,
+        state_repo: TaskRepository | None = None,
+        *,
+        state_backend: str = "json",
+    ) -> None:
         self._path = registry_path
         self._tasks_dir = tasks_dir
         self._entries: dict[str, TaskEntry] = {}
+        self._state_repo = state_repo
+        self._state_backend = state_backend
         self._load()
         self._cleanup_orphans()
 
     def _load(self) -> None:
+        for entry in self._load_entries():
+            self._entries[entry.task_id] = entry
+
+    def _load_entries(self) -> list[TaskEntry]:
+        """Load task entries from the configured backend."""
+        repo_entries = self._load_entries_from_repo()
+        json_entries = self._load_entries_from_json()
+        entries = json_entries
+
+        if self._state_repo is None:
+            return entries
+
+        if self._state_backend == "sqlite":
+            if repo_entries:
+                entries = repo_entries
+            elif json_entries:
+                self._persist_entries(json_entries)
+            else:
+                entries = []
+        elif self._state_backend == "dual":
+            if json_entries:
+                if not repo_entries:
+                    self._persist_entries(json_entries)
+            else:
+                entries = repo_entries
+
+        return entries
+
+    def _load_entries_from_json(self) -> list[TaskEntry]:
+        """Load task entries from the legacy JSON registry."""
         data = load_json(self._path)
         if data is None:
-            return
+            return []
+        entries: list[TaskEntry] = []
         for raw in data.get("tasks", []):
             try:
                 entry = TaskEntry.from_dict(raw)
@@ -47,7 +88,19 @@ class TaskRegistry:
                 entry.status = "failed"
                 entry.error = "Bot restarted while task was running"
                 logger.info("Downgraded stale running task %s to failed", entry.task_id)
-            self._entries[entry.task_id] = entry
+            entries.append(entry)
+        return entries
+
+    def _load_entries_from_repo(self) -> list[TaskEntry]:
+        """Load task entries from the SQLite repository when available."""
+        if self._state_repo is None:
+            return []
+        entries = self._state_repo.list_all()
+        for entry in entries:
+            if entry.status == "running":
+                entry.status = "failed"
+                entry.error = "Bot restarted while task was running"
+        return entries
 
     def cleanup_orphans(self) -> int:
         """Remove orphaned entries and folders so nothing is left dangling.
@@ -88,10 +141,25 @@ class TaskRegistry:
         return removed
 
     def _persist(self) -> None:
+        self._persist_entries(list(self._entries.values()))
+
+    def _persist_entries(self, entries: list[TaskEntry]) -> None:
+        if self._state_backend in ("json", "dual"):
+            data: dict[str, Any] = {
+                "tasks": [e.to_dict() for e in entries],
+            }
+            atomic_json_save(self._path, data)
+        if self._state_repo is not None and self._state_backend in ("sqlite", "dual"):
+            self._state_repo.replace_all(entries)
+
+    def export_to_json(self, path: Path | None = None) -> None:
+        """Compatibility helper to export all tasks to JSON."""
+        target = path or self._path
+        entries = self._load_entries_from_repo() if self._state_repo else self._load_entries_from_json()
         data: dict[str, Any] = {
-            "tasks": [e.to_dict() for e in self._entries.values()],
+            "tasks": [e.to_dict() for e in entries],
         }
-        atomic_json_save(self._path, data)
+        atomic_json_save(target, data)
 
     def create(
         self,

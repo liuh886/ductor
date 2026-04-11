@@ -15,6 +15,12 @@ from ductor_bot.multiagent.health import AgentHealth
 from ductor_bot.multiagent.models import SubAgentConfig, merge_sub_agent_config
 from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.multiagent.stack import AgentStack
+from ductor_bot.runtime.state import (
+    MessageRepository,
+    ProcessRepository,
+    RuntimeStateDB,
+    TaskRepository,
+)
 from ductor_bot.workspace.paths import resolve_paths
 
 if TYPE_CHECKING:
@@ -126,14 +132,26 @@ class AgentSupervisor:
             from ductor_bot.tasks.hub import TaskHub
             from ductor_bot.tasks.registry import TaskRegistry
 
+            task_repo: TaskRepository | None = None
+            message_repo: MessageRepository | None = None
+            process_repo: ProcessRepository | None = None
+            if self._main_config.state_backend in {"dual", "sqlite"}:
+                runtime_db = RuntimeStateDB(self._main_config.resolved_state_db_path())
+                task_repo = TaskRepository(runtime_db)
+                message_repo = MessageRepository(runtime_db)
+                process_repo = ProcessRepository(runtime_db)
             registry = TaskRegistry(
                 registry_path=self._main_paths.tasks_registry_path,
                 tasks_dir=self._main_paths.tasks_dir,
+                state_repo=task_repo,
+                state_backend=self._main_config.state_backend,
             )
             self._task_hub = TaskHub(
                 registry,
                 self._main_paths,
                 cli_service=None,  # Set per-agent in _post_startup
+                process_repo=process_repo,
+                message_repo=message_repo,
                 config=self._main_config.tasks,
             )
             self._internal_api.set_task_hub(self._task_hub)

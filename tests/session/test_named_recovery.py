@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from ductor_bot.runtime.state import NamedSessionRepository, RuntimeStateDB
 from ductor_bot.session.named import NamedSessionRegistry
 
 
@@ -118,3 +119,47 @@ class TestRecoveredRunning:
         recovered = reg2.pop_recovered_running()
         assert len(recovered) == 1
         assert recovered[0].last_prompt == "my prompt"
+
+
+def test_dual_write_persists_named_sessions_to_state_db(tmp_path: Path) -> None:
+    repo = NamedSessionRepository(RuntimeStateDB(tmp_path / "state.db"))
+    reg = NamedSessionRegistry(
+        tmp_path / "named_sessions.json",
+        state_repo=repo,
+        state_backend="dual",
+    )
+
+    ns = reg.create(chat_id=1, provider="claude", model="opus", prompt_preview="hello")
+    reg.mark_running(1, ns.name, "prompt body")
+
+    loaded = repo.list_all()
+    assert len(loaded) == 1
+    assert loaded[0].name == ns.name
+    assert loaded[0].last_prompt == "prompt body"
+
+
+def test_sqlite_backend_reads_named_sessions_from_state_db(tmp_path: Path) -> None:
+    repo = NamedSessionRepository(RuntimeStateDB(tmp_path / "state.db"))
+    seed = NamedSessionRegistry(
+        tmp_path / "named_sessions.json",
+        state_repo=repo,
+        state_backend="dual",
+    )
+    ns = seed.create(chat_id=7, provider="claude", model="opus", prompt_preview="hello")
+    seed.mark_running(7, ns.name, "prompt body")
+
+    path = tmp_path / "named_sessions.json"
+    if path.exists():
+        path.unlink()
+
+    sqlite_reg = NamedSessionRegistry(
+        path,
+        state_repo=repo,
+        state_backend="sqlite",
+    )
+    loaded = sqlite_reg.get(7, ns.name)
+
+    assert loaded is not None
+    assert loaded.name == ns.name
+    assert loaded.last_prompt == "prompt body"
+    assert loaded.status == "idle"

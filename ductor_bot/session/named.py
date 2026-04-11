@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ductor_bot.infra.json_store import atomic_json_save, load_json
+from ductor_bot.runtime.state import NamedSessionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -170,21 +171,28 @@ class NamedSessionRegistry:
     but the CLI session ID may still be valid for ``--resume``).
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        state_repo: NamedSessionRepository | None = None,
+        *,
+        state_backend: str = "json",
+    ) -> None:
         self._path = path
+        self._state_backend = state_backend
         self._lock = asyncio.Lock()
         self._sessions: dict[tuple[int, str], NamedSession] = {}
         self._recovered_running: dict[tuple[int, str], NamedSession] = {}
+        self._state_repo = state_repo
         self._load()
 
     def _load(self) -> None:
-        """Load sessions from JSON on disk."""
-        raw = load_json(self._path)
-        if not raw:
-            return
-        entries: list[dict[str, Any]] = raw.get("sessions", [])
-        for entry in entries:
-            ns = _session_from_dict(entry)
+        """Load sessions from JSON or SQLite depending on the backend mode."""
+        repo_sessions = self._load_sessions_from_repo()
+        json_sessions = self._load_sessions_from_json()
+        sessions = self._resolve_loaded_sessions(json_sessions, repo_sessions)
+
+        for ns in sessions:
             if ns.status == "ended" or not ns.name:
                 continue
             # Downgrade stale "running" to "idle" after restart
@@ -205,10 +213,59 @@ class NamedSessionRegistry:
             self._sessions[(ns.chat_id, ns.name)] = ns
         logger.info("Loaded %d named sessions from %s", len(self._sessions), self._path)
 
+    def _resolve_loaded_sessions(
+        self,
+        json_sessions: list[NamedSession],
+        repo_sessions: list[NamedSession],
+    ) -> list[NamedSession]:
+        """Choose the active backend source and seed SQLite when needed."""
+        if self._state_repo is None:
+            return json_sessions
+
+        if self._state_backend == "sqlite":
+            if repo_sessions:
+                return repo_sessions
+            if json_sessions:
+                self._state_repo.replace_all(json_sessions)
+            return json_sessions
+
+        if self._state_backend == "dual":
+            if json_sessions:
+                if not repo_sessions:
+                    self._state_repo.replace_all(json_sessions)
+                return json_sessions
+            return repo_sessions
+
+        return json_sessions
+
+    def _load_sessions_from_json(self) -> list[NamedSession]:
+        """Load sessions from JSON on disk."""
+        raw = load_json(self._path)
+        if not raw:
+            return []
+        entries: list[dict[str, Any]] = raw.get("sessions", [])
+        return [_session_from_dict(entry) for entry in entries]
+
+    def _load_sessions_from_repo(self) -> list[NamedSession]:
+        """Load sessions from the SQLite repository when available."""
+        if self._state_repo is None:
+            return []
+        return self._state_repo.list_all()
+
     def _persist(self) -> None:
-        """Write all non-ended sessions to JSON."""
+        """Write all non-ended sessions to JSON or SQLite depending on backend."""
         entries = [asdict(ns) for ns in self._sessions.values() if ns.status != "ended"]
-        atomic_json_save(self._path, {"sessions": entries})
+        if self._state_backend in ("json", "dual"):
+            atomic_json_save(self._path, {"sessions": entries})
+        if self._state_repo is not None and self._state_backend in ("sqlite", "dual"):
+            self._state_repo.replace_all([ns for ns in self._sessions.values() if ns.status != "ended"])
+
+    def export_to_json(self, path: Path | None = None) -> None:
+        """Compatibility helper to export all active sessions to JSON."""
+        target = path or self._path
+        sessions = self._load_sessions_from_repo() if self._state_repo else self._load_sessions_from_json()
+        entries = [asdict(ns) for ns in sessions if ns.status != "ended"]
+        atomic_json_save(target, {"sessions": entries})
 
     def create(
         self,

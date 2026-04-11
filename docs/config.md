@@ -81,6 +81,8 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `reasoning_effort` | `str` | `"medium"` | Default Codex reasoning level |
 | `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for file sends and API `GET /files`; unknown values fall back to workspace-only |
 | `gemini_api_key` | `str \| None` | `None` | Config fallback key injected for Gemini API-key mode |
+| `state_backend` | `str` | `"json"` | Runtime state backend. Use `json` for current behavior, `dual` for mirrored writes, `sqlite` for the new state kernel |
+| `state_db_path` | `str` | `""` | Optional SQLite path for `dual` / `sqlite`. Empty means `~/.ductor/state.db` via `AgentConfig.resolved_state_db_path()` |
 | `transport` | `str` | `"telegram"` | Messaging transport: `"telegram"` or `"matrix"` |
 | `transports` | `list[str]` | `[]` | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
 | `telegram_token` | `str` | `""` | Telegram bot token (required when `transport=telegram`) |
@@ -405,6 +407,7 @@ Hot-reloadable top-level fields:
 - `streaming`, `heartbeat`, `cleanup`, `cli_parameters`
 - `allowed_user_ids`, `allowed_group_ids`, `group_mention_only`
 - `timeouts` is currently restart-required (not in hot-reloadable set)
+- `state_backend`, `state_db_path` are restart-required because they affect the runtime state backend and DB location.
 
 Observer lifecycle caveat:
 

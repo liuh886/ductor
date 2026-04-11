@@ -9,6 +9,7 @@ import pytest
 import time_machine
 
 from ductor_bot.config import AgentConfig
+from ductor_bot.runtime.state import RuntimeStateDB, SessionRepository
 from ductor_bot.session.key import SessionKey
 from ductor_bot.session.manager import SessionData, SessionManager
 
@@ -32,6 +33,10 @@ async def test_resolve_creates_new_session(tmp_path: Path) -> None:
     assert is_new is True
     assert session.chat_id == 1
     assert session.session_id == ""
+    assert session.lineage_root == session.lineage_id
+    assert session.lineage_parent == ""
+    assert session.lineage_depth == 0
+    assert session.lineage_reason == "create"
 
 
 async def test_resolve_reuses_fresh_session(tmp_path: Path) -> None:
@@ -69,6 +74,10 @@ async def test_session_expires_after_idle_timeout(tmp_path: Path) -> None:
         s3, new3 = await mgr.resolve_session(key=SessionKey(chat_id=1))
         assert new3 is True
         assert s3.session_id == ""
+        assert s3.lineage_parent == s1.lineage_id
+        assert s3.lineage_root == s1.lineage_root
+        assert s3.lineage_depth == s1.lineage_depth + 1
+        assert s3.lineage_reason == "stale_reset"
 
 
 @time_machine.travel("2025-06-15 03:30:00+00:00", tick=False)
@@ -185,6 +194,10 @@ async def test_reset_session(tmp_path: Path) -> None:
     s2 = await mgr.reset_session(key=SessionKey(chat_id=1))
     assert s2.session_id == ""
     assert s2.message_count == 0
+    assert s2.lineage_parent == s1.lineage_id
+    assert s2.lineage_root == s1.lineage_root
+    assert s2.lineage_depth == s1.lineage_depth + 1
+    assert s2.lineage_reason == "manual_reset"
 
 
 async def test_update_session_increments(tmp_path: Path) -> None:
@@ -230,6 +243,10 @@ async def test_session_data_defaults() -> None:
     assert s.message_count == 0
     assert s.total_cost_usd == 0.0
     assert s.total_tokens == 0
+    assert s.lineage_root == s.lineage_id
+    assert s.lineage_parent == ""
+    assert s.lineage_depth == 0
+    assert s.lineage_reason == "create"
 
 
 async def test_model_update_without_provider_switch(tmp_path: Path) -> None:
@@ -345,6 +362,54 @@ async def test_separate_chat_ids(tmp_path: Path) -> None:
     assert s1.chat_id != s2.chat_id
 
 
+async def test_resolve_reuses_fresh_session_without_changing_lineage(tmp_path: Path) -> None:
+    mgr = _make_manager(tmp_path, idle_timeout_minutes=30)
+    session, _ = await mgr.resolve_session(key=SessionKey(chat_id=1))
+    lineage_id = session.lineage_id
+
+    reused, is_new = await mgr.resolve_session(key=SessionKey(chat_id=1))
+
+    assert is_new is True
+    assert reused.lineage_id == lineage_id
+    assert reused.lineage_root == lineage_id
+    assert reused.lineage_parent == ""
+    assert reused.lineage_depth == 0
+
+
+async def test_reset_provider_session_branches_lineage(tmp_path: Path) -> None:
+    mgr = _make_manager(tmp_path)
+    s1, _ = await mgr.resolve_session(key=SessionKey(chat_id=1), provider="claude", model="opus")
+    await _simulate_cli_response(mgr, s1, "claude-sid")
+
+    s2 = await mgr.reset_provider_session(
+        key=SessionKey(chat_id=1),
+        provider="claude",
+        model="opus",
+    )
+
+    assert s2.session_id == ""
+    assert s2.provider == "claude"
+    assert s2.lineage_parent == s1.lineage_id
+    assert s2.lineage_root == s1.lineage_root
+    assert s2.lineage_depth == s1.lineage_depth + 1
+    assert s2.lineage_reason == "provider_reset"
+
+
+async def test_reset_provider_session_creates_root_lineage_when_missing(tmp_path: Path) -> None:
+    mgr = _make_manager(tmp_path)
+
+    session = await mgr.reset_provider_session(
+        key=SessionKey(chat_id=1),
+        provider="claude",
+        model="opus",
+    )
+
+    assert session.lineage_root == session.lineage_id
+    assert session.lineage_parent == ""
+    assert session.lineage_depth == 0
+    assert session.lineage_reason == "provider_reset"
+
+
 # -- topic_name ---------------------------------------------------------------
 
 
@@ -440,3 +505,41 @@ async def test_list_active_for_chat_excludes_stale(tmp_path: Path) -> None:
     with time_machine.travel("2099-01-01 00:00:00", tick=False):
         result = await mgr.list_active_for_chat(-100)
         assert len(result) == 0
+
+
+async def test_dual_write_persists_session_to_state_db(tmp_path: Path) -> None:
+    cfg = AgentConfig(state_backend="dual", state_db_path=str(tmp_path / "state.db"))
+    repo = SessionRepository(RuntimeStateDB(tmp_path / "state.db"))
+    mgr = SessionManager(tmp_path / "sessions.json", cfg, state_repo=repo)
+
+    session, _ = await mgr.resolve_session(key=SessionKey(chat_id=1))
+    session.session_id = "dual-sid"
+    await mgr.update_session(session, cost_usd=0.5, tokens=50)
+
+    loaded = repo.get("tg:1")
+    assert loaded is not None
+    assert loaded.session_id == "dual-sid"
+    assert loaded.total_tokens == 50
+
+
+async def test_sqlite_backend_reads_sessions_from_state_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    dual_cfg = AgentConfig(state_backend="dual", state_db_path=str(db_path))
+    repo = SessionRepository(RuntimeStateDB(db_path))
+    dual_mgr = SessionManager(tmp_path / "sessions.json", dual_cfg, state_repo=repo)
+
+    session, _ = await dual_mgr.resolve_session(key=SessionKey(chat_id=7))
+    session.session_id = "sqlite-sid"
+    await dual_mgr.update_session(session, cost_usd=1.0, tokens=99)
+
+    json_path = tmp_path / "sessions.json"
+    if json_path.exists():
+        json_path.unlink()
+
+    sqlite_cfg = AgentConfig(state_backend="sqlite", state_db_path=str(db_path))
+    sqlite_mgr = SessionManager(json_path, sqlite_cfg, state_repo=repo)
+    loaded = await sqlite_mgr.get_active(SessionKey(chat_id=7))
+
+    assert loaded is not None
+    assert loaded.session_id == "sqlite-sid"
+    assert loaded.total_tokens == 99

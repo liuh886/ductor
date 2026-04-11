@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ductor_bot.infra.inflight import InflightTracker, InflightTurn
 from ductor_bot.infra.recovery import RecoveryAction, RecoveryPlanner
+from ductor_bot.runtime.state import RuntimeStateDB
 
 
 def _make_turn(
@@ -32,9 +33,15 @@ def _make_turn(
     )
 
 
+def _make_sqlite_tracker(tmp_path: Path) -> InflightTracker:
+    db = RuntimeStateDB(tmp_path / "state.db")
+    db.ensure_schema()
+    return InflightTracker(tmp_path / "inflight.json", state_db=db)
+
+
 class TestRecoveryPlannerForeground:
     def test_finds_foreground_interrupt(self, tmp_path: Path) -> None:
-        tracker = InflightTracker(tmp_path / "inflight.json")
+        tracker = _make_sqlite_tracker(tmp_path)
         tracker.begin(_make_turn(chat_id=100, prompt_preview="fix the bug"))
         planner = RecoveryPlanner(
             inflight=tracker,
@@ -48,20 +55,20 @@ class TestRecoveryPlannerForeground:
         assert actions[0].prompt_preview == "fix the bug"
 
     def test_skips_recovery_turns(self, tmp_path: Path) -> None:
-        tracker = InflightTracker(tmp_path / "inflight.json")
+        tracker = _make_sqlite_tracker(tmp_path)
         tracker.begin(_make_turn(chat_id=100, is_recovery=True))
         planner = RecoveryPlanner(inflight=tracker, named_sessions=[], max_age_seconds=9999)
         assert planner.plan() == []
 
     def test_skips_old_turns(self, tmp_path: Path) -> None:
         old = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
-        tracker = InflightTracker(tmp_path / "inflight.json")
+        tracker = _make_sqlite_tracker(tmp_path)
         tracker.begin(_make_turn(chat_id=100, started_at=old))
         planner = RecoveryPlanner(inflight=tracker, named_sessions=[], max_age_seconds=3600)
         assert planner.plan() == []
 
     def test_session_id_preserved(self, tmp_path: Path) -> None:
-        tracker = InflightTracker(tmp_path / "inflight.json")
+        tracker = _make_sqlite_tracker(tmp_path)
         tracker.begin(_make_turn(chat_id=100, session_id="abc-123"))
         planner = RecoveryPlanner(inflight=tracker, named_sessions=[], max_age_seconds=9999)
         actions = planner.plan()
@@ -171,7 +178,7 @@ class TestRecoveryPlannerMixed:
     def test_foreground_and_named_combined(self, tmp_path: Path) -> None:
         from ductor_bot.session.named import NamedSession
 
-        tracker = InflightTracker(tmp_path / "inflight.json")
+        tracker = _make_sqlite_tracker(tmp_path)
         tracker.begin(_make_turn(chat_id=100, prompt_preview="fg task"))
         ns = NamedSession(
             name="boldowl",
@@ -195,7 +202,7 @@ class TestRecoveryPlannerMixed:
         assert kinds == {"foreground", "named_session"}
 
     def test_empty_state_returns_empty(self, tmp_path: Path) -> None:
-        tracker = InflightTracker(tmp_path / "inflight.json")
+        tracker = _make_sqlite_tracker(tmp_path)
         planner = RecoveryPlanner(inflight=tracker, named_sessions=[], max_age_seconds=9999)
         assert planner.plan() == []
 

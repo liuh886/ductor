@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -280,6 +281,8 @@ class AgentConfig(BaseModel):
     provider: str = "claude"
     model: str = "opus"
     ductor_home: str = "~/.ductor"
+    state_backend: Literal["json", "dual", "sqlite"] = "json"
+    state_db_path: str = ""
     idle_timeout_minutes: int = 1440
     session_age_warning_hours: int = 12
     daily_reset_hour: int = 4
@@ -326,6 +329,14 @@ class AgentConfig(BaseModel):
             return None
         return normalized
 
+    @field_validator("state_backend", mode="before")
+    @classmethod
+    def _normalize_state_backend(cls, value: object) -> object:
+        """Normalize backend names and keep validation strict."""
+        if not isinstance(value, str):
+            return value
+        return value.strip().lower()
+
     @model_validator(mode="after")
     def _sync_cli_timeout_to_timeouts(self) -> AgentConfig:
         """Sync legacy ``cli_timeout`` to ``timeouts.normal`` for backward compat.
@@ -336,6 +347,16 @@ class AgentConfig(BaseModel):
         if self.cli_timeout != 600.0 and self.timeouts.normal == 600.0:
             self.timeouts.normal = self.cli_timeout
         return self
+
+    def resolved_state_db_path(self) -> Path:
+        """Return the absolute DB path used by SQLite-backed state storage."""
+        configured = self.state_db_path.strip()
+        if configured:
+            path = Path(configured).expanduser()
+            if path.is_absolute():
+                return path
+            return Path(self.ductor_home).expanduser() / path
+        return Path(self.ductor_home).expanduser() / "state.db"
 
     @model_validator(mode="after")
     def _normalize_transports(self) -> AgentConfig:

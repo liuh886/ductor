@@ -26,17 +26,6 @@ from ductor_bot.errors import (
 )
 from ductor_bot.infra.docker import DockerManager
 from ductor_bot.infra.inflight import InflightTracker
-from ductor_bot.orchestrator.commands import (
-    cmd_cron,
-    cmd_diagnose,
-    cmd_memory,
-    cmd_model,
-    cmd_reset,
-    cmd_sessions,
-    cmd_status,
-    cmd_tasks,
-    cmd_upgrade,
-)
 from ductor_bot.orchestrator.directives import parse_directives
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
@@ -55,6 +44,15 @@ from ductor_bot.orchestrator.hooks import (
 from ductor_bot.orchestrator.observers import ObserverManager
 from ductor_bot.orchestrator.providers import ProviderManager
 from ductor_bot.orchestrator.registry import CommandRegistry, OrchestratorResult
+from ductor_bot.runtime.compression.context_compressor import ContextCompressor
+from ductor_bot.runtime.compression.summary_selector import SummarySelector
+from ductor_bot.runtime.state.db import RuntimeStateDB
+from ductor_bot.runtime.state.repositories.memory_fragment_repo import MemoryFragmentRepository
+from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
+from ductor_bot.runtime.state.repositories.named_session_repo import NamedSessionRepository
+from ductor_bot.runtime.state.repositories.process_repo import ProcessRepository
+from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
+from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
 from ductor_bot.security import detect_suspicious_patterns
 from ductor_bot.session import SessionKey, SessionManager
 from ductor_bot.session.manager import SessionData
@@ -123,10 +121,40 @@ class Orchestrator:
     ) -> None:
         self._config = config
         self._paths: DuctorPaths = paths
+        self._agent_name = agent_name
         self._docker: DockerManager | None = None
         self._providers = ProviderManager(config)
-        self._sessions = SessionManager(paths.sessions_path, config)
-        self._named_sessions = NamedSessionRegistry(paths.named_sessions_path)
+        runtime_db: RuntimeStateDB | None = None
+        session_repo: SessionRepository | None = None
+        named_session_repo: NamedSessionRepository | None = None
+        message_repo: MessageRepository | None = None
+        process_repo: ProcessRepository | None = None
+        summary_repo: SessionSummaryRepository | None = None
+        memory_fragment_repo: MemoryFragmentRepository | None = None
+        context_compressor: ContextCompressor | None = None
+        if config.state_backend in {"dual", "sqlite"}:
+            runtime_db = RuntimeStateDB(config.resolved_state_db_path())
+            session_repo = SessionRepository(runtime_db)
+            named_session_repo = NamedSessionRepository(runtime_db)
+            message_repo = MessageRepository(runtime_db)
+            process_repo = ProcessRepository(runtime_db)
+            summary_repo = SessionSummaryRepository(runtime_db)
+            memory_fragment_repo = MemoryFragmentRepository(runtime_db)
+            context_compressor = ContextCompressor(
+                SummarySelector(message_repo, summary_repo)
+            )
+        self._runtime_db = runtime_db
+        self._message_repo = message_repo
+        self._process_repo = process_repo
+        self._summary_repo = summary_repo
+        self._memory_fragment_repo = memory_fragment_repo
+        self._context_compressor = context_compressor
+        self._sessions = SessionManager(paths.sessions_path, config, state_repo=session_repo)
+        self._named_sessions = NamedSessionRegistry(
+            paths.named_sessions_path,
+            state_repo=named_session_repo,
+            state_backend=config.state_backend,
+        )
         self._process_registry = ProcessRegistry()
         self._cli_service = CLIService(
             config=CLIServiceConfig(
@@ -172,7 +200,7 @@ class Orchestrator:
             lambda: self._process_registry.kill_stale(stale_max)
         )
         self._api_stop: Callable[[], Awaitable[None]] | None = None
-        self._inflight_tracker = InflightTracker(paths.inflight_turns_path)
+        self._inflight_tracker = InflightTracker(paths.inflight_turns_path, state_db=runtime_db)
         self._hook_registry = MessageHookRegistry()
         self._hook_registry.register(MAINMEMORY_REMINDER)
         self._hook_registry.register(DELEGATION_BRIEF)
@@ -371,6 +399,18 @@ class Orchestrator:
         )
 
     def _register_commands(self) -> None:
+        from ductor_bot.orchestrator.commands import (
+            cmd_cron,
+            cmd_diagnose,
+            cmd_memory,
+            cmd_model,
+            cmd_reset,
+            cmd_sessions,
+            cmd_status,
+            cmd_tasks,
+            cmd_upgrade,
+        )
+
         reg = self._command_registry
         reg.register_async("/new", cmd_reset)
         # /stop is handled entirely by the Middleware abort path (before the lock)

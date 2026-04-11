@@ -22,6 +22,8 @@ def orch_ia(workspace: tuple[DuctorPaths, AgentConfig]) -> Orchestrator:
     """Orchestrator with mocked CLIService for inter-agent tests."""
     paths, config = workspace
     config.allowed_user_ids = [12345]
+    config.state_backend = "sqlite"
+    config.state_db_path = str(paths.ductor_home / "interagent-state.db")
     o = Orchestrator(config, paths, agent_name="codex")
     mock_cli = MagicMock()
     mock_cli._config = MagicMock()
@@ -178,6 +180,38 @@ class TestHandleInteragentMessage:
         request = call_args[0][0]
         assert request.process_label == "interagent:main"
 
+    async def test_records_runtime_state(self, orch_ia: Orchestrator) -> None:
+        await orch_ia.handle_interagent_message("main", "Persist this")
+
+        assert orch_ia._process_repo is not None
+        assert orch_ia._message_repo is not None
+        processes = orch_ia._process_repo.list_all()
+        messages = orch_ia._message_repo.list_by_session("ia:codex:main")
+
+        assert len(processes) == 1
+        assert processes[0]["process_label"] == "interagent:main"
+        assert processes[0]["ended_at"] is not None
+        assert [message["role"] for message in messages] == ["user", "assistant"]
+        assert messages[0]["source"] == "interagent_request"
+        assert messages[1]["source"] == "interagent_result"
+
+    async def test_interagent_prompt_includes_compressed_context(self, orch_ia: Orchestrator) -> None:
+        assert orch_ia._message_repo is not None
+        for idx in range(10):
+            orch_ia._message_repo.append(
+                "ia:codex:main",
+                "user" if idx % 2 == 0 else "assistant",
+                f"ia-history-{idx}",
+                source="interagent_result" if idx % 2 else "interagent_request",
+            )
+
+        await orch_ia.handle_interagent_message("main", "Fresh request")
+        call_args = orch_ia._cli_service.execute.call_args
+        request = call_args[0][0]
+
+        assert "## COMPRESSED CONTEXT" in request.prompt
+        assert "CURRENT INTER-AGENT REQUEST (main)" in request.prompt
+
     async def test_error_returns_error_text(self, orch_ia: Orchestrator) -> None:
         orch_ia._cli_service.execute = AsyncMock(side_effect=RuntimeError("crash"))
         result_text, session_name, _ = await orch_ia.handle_interagent_message("main", "Crash")
@@ -292,3 +326,25 @@ class TestHandleAsyncInteragentResult:
         call_args = orch_ia._cli_service.execute.call_args
         request = call_args[0][0]
         assert request.resume_session == "active-session-999"
+
+    async def test_async_result_records_runtime_state(self, orch_ia: Orchestrator) -> None:
+        await orch_ia.handle_async_interagent_result(
+            self._make_result(
+                result_text="Async persisted",
+                original_message="Collect logs",
+                session_name="ia-helper",
+            ),
+            chat_id=12345,
+        )
+
+        assert orch_ia._process_repo is not None
+        assert orch_ia._message_repo is not None
+        processes = orch_ia._process_repo.list_all()
+        messages = orch_ia._message_repo.list_by_session("tg:12345")
+
+        assert len(processes) == 1
+        assert processes[0]["process_label"] == "interagent-async:helper"
+        assert processes[0]["ended_at"] is not None
+        assert [message["role"] for message in messages] == ["user", "assistant"]
+        assert messages[0]["source"] == "interagent_async_result"
+        assert messages[1]["source"] == "interagent_async_result_result"

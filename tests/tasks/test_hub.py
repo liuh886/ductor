@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from ductor_bot.runtime.state import MessageRepository, ProcessRepository, RuntimeStateDB
 from ductor_bot.tasks.hub import TaskHub
 from ductor_bot.tasks.models import TaskResult, TaskSubmit
 from ductor_bot.tasks.registry import TaskRegistry
@@ -55,6 +56,28 @@ def _submit(prompt: str = "test", name: str = "Test Task") -> TaskSubmit:
         parent_agent="main",
         name=name,
     )
+
+
+def _find_task_execute_request(cli: MagicMock, task_id: str) -> object:
+    task_label = f"task:{task_id}"
+    for call in cli.execute.await_args_list:
+        request = call.args[0]
+        if getattr(request, "process_label", "") == task_label:
+            return request
+    msg = f"task request {task_label} not found"
+    raise AssertionError(msg)
+
+
+@pytest.fixture
+def state_db(tmp_path: Path) -> RuntimeStateDB:
+    db = RuntimeStateDB(tmp_path / "state.db")
+    db.ensure_schema()
+    return db
+
+
+@pytest.fixture
+def state_repos(state_db: RuntimeStateDB) -> tuple[ProcessRepository, MessageRepository]:
+    return ProcessRepository(state_db), MessageRepository(state_db)
 
 
 class TestSubmit:
@@ -135,6 +158,222 @@ class TestRunAndDeliver:
         entry = registry.get(task_id)
         assert entry is not None
         assert entry.status == "done"
+
+        await hub.shutdown()
+
+    async def test_result_delivery_is_not_blocked_by_skill_extraction(
+        self,
+        registry: TaskRegistry,
+        tmp_path: Path,
+        state_repos: tuple[ProcessRepository, MessageRepository],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _, message_repo = state_repos
+        extraction_started = asyncio.Event()
+        release_extraction = asyncio.Event()
+
+        async def _blocked_extract(_: object, __: object) -> None:
+            extraction_started.set()
+            await release_extraction.wait()
+
+        monkeypatch.setattr(
+            "ductor_bot.runtime.skills.extractor.SkillExtractor.extract",
+            _blocked_extract,
+        )
+
+        delivered: list[TaskResult] = []
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=_make_cli_service("task output"),
+            message_repo=message_repo,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock(side_effect=delivered.append))
+
+        hub.submit(_submit())
+        await asyncio.wait_for(extraction_started.wait(), timeout=0.2)
+
+        assert len(delivered) == 1
+        assert delivered[0].status == "done"
+
+        release_extraction.set()
+        await asyncio.sleep(0.05)
+        await hub.shutdown()
+
+
+class TestResultPackaging:
+    async def test_packages_taskmemory_as_summary_and_lists_artifacts(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        ready = asyncio.Event()
+        cli = _make_cli_service("task output")
+        response = cli.execute.return_value
+
+        async def _wait_for_release(_: object) -> object:
+            await ready.wait()
+            return response
+
+        cli.execute = AsyncMock(side_effect=_wait_for_release)
+
+        delivered: list[TaskResult] = []
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock(side_effect=delivered.append))
+
+        task_id = hub.submit(_submit(prompt="Build the report"))
+        folder = registry.task_folder(task_id)
+        (folder / "TASKMEMORY.md").write_text(
+            (
+                "# Task Memory\n\n## Goal\n- Build the report quickly and carefully.\n\n## Notes\n- "
+                "This line should be truncated because it is intentionally very long and specific: "
+                + "X" * 280
+                + "\n- Keep going"
+            ),
+        )
+        (folder / "report.txt").write_text("artifact")
+        artifacts_dir = folder / "artifacts"
+        artifacts_dir.mkdir()
+        (artifacts_dir / "chart.png").write_text("binary")
+
+        ready.set()
+        await asyncio.sleep(0.15)
+
+        assert len(delivered) == 1
+        result_text = delivered[0].result_text
+        assert "task output" in result_text
+        assert "TASK MEMORY SUMMARY" in result_text
+        assert "Goal:" in result_text
+        assert "Notes:" in result_text
+        assert "X" * 260 not in result_text
+        assert "ARTIFACTS" in result_text
+        assert "report.txt" in result_text
+        assert "artifacts/chart.png" in result_text
+        assert "CONTENT FROM TASKMEMORY.MD" not in result_text
+        assert result_text.count("resume_task.py") == 1
+
+        await hub.shutdown()
+
+    async def test_packages_without_taskmemory_still_lists_artifacts(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        ready = asyncio.Event()
+        cli = _make_cli_service("task output")
+        response = cli.execute.return_value
+
+        async def _wait_for_release(_: object) -> object:
+            await ready.wait()
+            return response
+
+        cli.execute = AsyncMock(side_effect=_wait_for_release)
+
+        delivered: list[TaskResult] = []
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock(side_effect=delivered.append))
+
+        task_id = hub.submit(_submit(prompt="Build the report"))
+        folder = registry.task_folder(task_id)
+        taskmemory = folder / "TASKMEMORY.md"
+        if taskmemory.exists():
+            taskmemory.unlink()
+        (folder / "log.txt").write_text("artifact")
+
+        ready.set()
+        await asyncio.sleep(0.15)
+
+        assert len(delivered) == 1
+        result_text = delivered[0].result_text
+        assert "TASK MEMORY SUMMARY" not in result_text
+        assert "ARTIFACTS" in result_text
+        assert "log.txt" in result_text
+        assert "task output" in result_text
+        assert result_text.count("resume_task.py") == 1
+
+        await hub.shutdown()
+
+
+class TestRuntimeStatePersistence:
+    async def test_records_process_and_messages(
+        self,
+        registry: TaskRegistry,
+        tmp_path: Path,
+        state_repos: tuple[ProcessRepository, MessageRepository],
+    ) -> None:
+        process_repo, message_repo = state_repos
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=_make_cli_service("persisted result"),
+            process_repo=process_repo,
+            message_repo=message_repo,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        task_id = hub.submit(_submit(prompt="Persist this"))
+        await asyncio.sleep(0.1)
+
+        processes = process_repo.list_all()
+        assert len(processes) == 1
+        assert processes[0]["process_label"] == f"task:{task_id}"
+        assert processes[0]["chat_id"] == 42
+        assert processes[0]["ended_at"] is not None
+        assert processes[0]["exit_code"] == 0
+
+        messages = message_repo.list_by_session(f"task:{task_id}")
+        assert [message["role"] for message in messages] == ["user", "assistant"]
+        assert messages[0]["source"] == "task_submit"
+        assert "Persist this" in str(messages[0]["content_text"])
+        assert messages[1]["source"] == "task_result"
+        assert "persisted result" in str(messages[1]["content_text"])
+
+        await hub.shutdown()
+
+    async def test_resume_records_additional_process_and_messages(
+        self,
+        registry: TaskRegistry,
+        tmp_path: Path,
+        state_repos: tuple[ProcessRepository, MessageRepository],
+    ) -> None:
+        process_repo, message_repo = state_repos
+        cli = _make_cli_service("initial result")
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            process_repo=process_repo,
+            message_repo=message_repo,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        task_id = hub.submit(_submit(prompt="Start"))
+        await asyncio.sleep(0.1)
+
+        cli.execute.return_value.result = "follow-up result"
+        resumed_id = hub.resume(task_id, "Continue")
+        assert resumed_id == task_id
+        await asyncio.sleep(0.1)
+
+        processes = process_repo.list_all()
+        assert len(processes) == 2
+        assert all(process["ended_at"] is not None for process in processes)
+
+        messages = message_repo.list_by_session(f"task:{task_id}")
+        assert len(messages) == 4
+        assert messages[2]["source"] == "task_resume"
+        assert "Continue" in str(messages[2]["content_text"])
+        assert messages[3]["source"] == "task_result"
+        assert "follow-up result" in str(messages[3]["content_text"])
 
         await hub.shutdown()
 
@@ -402,6 +641,90 @@ class TestResume:
         hub = self._hub(registry, tmp_path)
         with pytest.raises(ValueError, match="not found"):
             hub.resume("nonexistent", "follow up")
+
+
+class TestResumeCompression:
+    async def test_resume_includes_compressed_context_for_long_history(
+        self,
+        registry: TaskRegistry,
+        tmp_path: Path,
+        state_repos: tuple[ProcessRepository, MessageRepository],
+    ) -> None:
+        process_repo, message_repo = state_repos
+        cli = _make_cli_service("compressed follow-up result", session_id="sess-2")
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            process_repo=process_repo,
+            message_repo=message_repo,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        entry = registry.create(_submit(prompt="start"), "claude", "opus")
+        registry.update_status(entry.task_id, "done", session_id="sess-1")
+
+        for idx in range(10):
+            message_repo.append(
+                f"task:{entry.task_id}",
+                "user" if idx % 2 == 0 else "assistant",
+                f"history-{idx}",
+                source=f"history_{idx}",
+            )
+
+        resumed_id = hub.resume(entry.task_id, "Continue the task")
+        assert resumed_id == entry.task_id
+        await asyncio.sleep(0.1)
+
+        request = _find_task_execute_request(cli, entry.task_id)
+        assert request.prompt.startswith("## COMPRESSED CONTEXT")
+        assert "Older session summary:" in request.prompt
+        assert "Protected recent tail:" in request.prompt
+        assert "Continue the task" in request.prompt
+        assert "REMINDER: You are a background task agent" in request.prompt
+
+        await hub.shutdown()
+
+    async def test_resume_omits_compression_prefix_for_short_history(
+        self,
+        registry: TaskRegistry,
+        tmp_path: Path,
+        state_repos: tuple[ProcessRepository, MessageRepository],
+    ) -> None:
+        process_repo, message_repo = state_repos
+        cli = _make_cli_service("short history follow-up result", session_id="sess-2")
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            process_repo=process_repo,
+            message_repo=message_repo,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        entry = registry.create(_submit(prompt="start"), "claude", "opus")
+        registry.update_status(entry.task_id, "done", session_id="sess-1")
+
+        for idx in range(3):
+            message_repo.append(
+                f"task:{entry.task_id}",
+                "user" if idx % 2 == 0 else "assistant",
+                f"short-{idx}",
+                source=f"short_{idx}",
+            )
+
+        resumed_id = hub.resume(entry.task_id, "Continue briefly")
+        assert resumed_id == entry.task_id
+        await asyncio.sleep(0.1)
+
+        request = _find_task_execute_request(cli, entry.task_id)
+        assert not request.prompt.startswith("## COMPRESSED CONTEXT")
+        assert request.prompt.startswith("Continue briefly")
+        assert "REMINDER: You are a background task agent" in request.prompt
+
+        await hub.shutdown()
 
 
 class TestThinkingPersisted:

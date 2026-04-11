@@ -68,6 +68,7 @@ class TaskEntry:
             "question_count": self.question_count,
             "num_turns": self.num_turns,
             "last_question": self.last_question,
+            "original_prompt": self.original_prompt,
             "thinking": self.thinking,
             "tasks_dir": self.tasks_dir,
         }
@@ -95,6 +96,7 @@ class TaskEntry:
             question_count=d.get("question_count", 0),
             num_turns=d.get("num_turns", 0),
             last_question=d.get("last_question", ""),
+            original_prompt=d.get("original_prompt", ""),
             thinking=d.get("thinking", ""),
             tasks_dir=d.get("tasks_dir", ""),
             thread_id=d.get("thread_id"),

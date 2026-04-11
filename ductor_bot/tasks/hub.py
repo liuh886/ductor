@@ -1,5 +1,7 @@
 """TaskHub: central coordinator for background task delegation."""
 
+# ruff: noqa: PLR0913, PLR0915
+
 from __future__ import annotations
 
 import asyncio
@@ -7,8 +9,14 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ductor_bot.runtime.compression.context_compressor import ContextCompressor
+from ductor_bot.runtime.compression.summary_selector import SummarySelector
+from ductor_bot.runtime.memory import extract_markdown_fragments
+from ductor_bot.runtime.skills.extractor import SkillExtractor
+from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
 from ductor_bot.tasks.models import TaskEntry, TaskInFlight, TaskResult, TaskSubmit
 
 if TYPE_CHECKING:
@@ -16,6 +24,7 @@ if TYPE_CHECKING:
 
     from ductor_bot.cli.service import CLIService
     from ductor_bot.config import TasksConfig
+    from ductor_bot.runtime.state import MessageRepository, ProcessRepository
     from ductor_bot.tasks.registry import TaskRegistry
     from ductor_bot.workspace.paths import DuctorPaths
 
@@ -70,11 +79,15 @@ class TaskHub:
         paths: DuctorPaths,
         *,
         cli_service: CLIService | None = None,
+        process_repo: ProcessRepository | None = None,
+        message_repo: MessageRepository | None = None,
         config: TasksConfig,
     ) -> None:
         self._registry = registry
         self._paths = paths
         self._cli_service = cli_service
+        self._process_repo = process_repo
+        self._message_repo = message_repo
         self._cli_services: dict[str, CLIService] = {}
         self._agent_tasks_dirs: dict[str, Path] = {}
         self._config = config
@@ -83,6 +96,13 @@ class TaskHub:
         self._question_handlers: dict[str, QuestionHandler] = {}
         self._agent_chat_ids: dict[str, int] = {}
         self._maintenance_task: asyncio.Task[None] | None = None
+        self._resume_context_compressor: ContextCompressor | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._summary_repo: SessionSummaryRepository | None = None
+        if self._message_repo:
+            db = getattr(self._message_repo, "_db", None)
+            if db:
+                self._summary_repo = SessionSummaryRepository(db)
 
     def start_maintenance(self) -> None:
         """Start periodic orphan cleanup (call once after bot startup)."""
@@ -198,8 +218,14 @@ class TaskHub:
         # Append a short system reminder so the task agent remembers how to
         # communicate (ask_parent, TASKMEMORY, no direct user access).
         taskmemory = self._registry.taskmemory_path(entry.task_id)
-        full_prompt = follow_up + _RESUME_REMINDER.format(taskmemory_path=taskmemory)
-        self._spawn(entry, full_prompt, entry.thinking, resume_session=entry.session_id)
+        full_prompt = self._build_resume_prompt(entry.task_id, follow_up, taskmemory)
+        self._spawn(
+            entry,
+            full_prompt,
+            entry.thinking,
+            resume_session=entry.session_id,
+            message_source="task_resume",
+        )
 
         logger.info(
             "Task resumed id=%s name='%s' provider=%s",
@@ -209,6 +235,35 @@ class TaskHub:
         )
         return task_id
 
+    def _build_resume_prompt(self, task_id: str, follow_up: str, taskmemory: Path) -> str:
+        """Build the task-resume prompt with optional compressed runtime context."""
+        prompt = follow_up + _RESUME_REMINDER.format(taskmemory_path=taskmemory)
+        prefix = self._build_resume_context_prefix(task_id)
+        if not prefix:
+            return prompt
+        return f"{prefix}\n\n{prompt}"
+
+    def _build_resume_context_prefix(self, task_id: str) -> str:
+        """Return a compressed runtime-context prefix for a resumed task."""
+        compressor = self._get_resume_context_compressor()
+        if compressor is None:
+            return ""
+        return compressor.build_prompt_prefix(self._task_session_key(task_id))
+
+    def _get_resume_context_compressor(self) -> ContextCompressor | None:
+        """Build and cache a context compressor from the runtime message store."""
+        if self._resume_context_compressor is not None:
+            return self._resume_context_compressor
+        if self._message_repo is None:
+            return None
+        db = getattr(self._message_repo, "_db", None)
+        if db is None:
+            return None
+        summary_repo = SessionSummaryRepository(db)
+        selector = SummarySelector(self._message_repo, summary_repo)
+        self._resume_context_compressor = ContextCompressor(selector)
+        return self._resume_context_compressor
+
     def _spawn(
         self,
         entry: TaskEntry,
@@ -216,11 +271,18 @@ class TaskHub:
         thinking: str,
         *,
         resume_session: str | None = None,
+        message_source: str = "task_submit",
     ) -> None:
         """Create the asyncio task and register it in-flight."""
         inflight = TaskInFlight(entry=entry)
         atask = asyncio.create_task(
-            self._run(entry, prompt, thinking, resume_session=resume_session),
+            self._run(
+                entry,
+                prompt,
+                thinking,
+                resume_session=resume_session,
+                message_source=message_source,
+            ),
             name=f"task:{entry.task_id}",
         )
         inflight.asyncio_task = atask
@@ -343,6 +405,12 @@ class TaskHub:
                 cancelled.append(inflight.asyncio_task)
         if cancelled:
             await asyncio.gather(*cancelled, return_exceptions=True)
+        if self._background_tasks:
+            background = list(self._background_tasks)
+            for task in background:
+                task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
+            self._background_tasks.clear()
         self._in_flight.clear()
 
     async def _maintenance_loop(self) -> None:
@@ -366,6 +434,7 @@ class TaskHub:
         thinking: str,
         *,
         resume_session: str | None = None,
+        message_source: str = "task_submit",
     ) -> None:
         """Execute task as CLI subprocess."""
         from ductor_bot.cli.types import AgentRequest
@@ -374,6 +443,8 @@ class TaskHub:
         assert cli is not None
 
         t0 = time.monotonic()
+        process_id: int | None = None
+        process_exit_code: int | None = None
         try:
             timeout = self._config.timeout_seconds
 
@@ -396,20 +467,38 @@ class TaskHub:
                 entry.provider = eff_provider
                 entry.model = eff_model
 
+            process_id = self._record_process_start(entry)
+            self._record_message(
+                entry,
+                role="user",
+                content_text=prompt,
+                source=message_source,
+                process_id=process_id,
+                content_json={
+                    "task_id": entry.task_id,
+                    "chat_id": entry.chat_id,
+                    "parent_agent": entry.parent_agent,
+                    "resume_session": resume_session or "",
+                },
+            )
+
             response = await cli.execute(request)
 
             elapsed = time.monotonic() - t0
             if response.timed_out:
                 status = "failed"
                 error = f"Timeout after {timeout:.0f}s"
+                process_exit_code = 124
             elif response.is_error:
                 status = "failed"
                 error = response.result or "CLI error"
+                process_exit_code = 1
             else:
                 # If the task asked a question during this run, mark as waiting
                 inflight = self._in_flight.get(entry.task_id)
                 status = "waiting" if inflight and inflight.has_pending_question else "done"
                 error = ""
+                process_exit_code = 0
 
             # Accumulate turns (resume adds to previous count)
             total_turns = entry.num_turns + response.num_turns
@@ -428,10 +517,14 @@ class TaskHub:
             result_text = response.result or ""
             session_id = response.session_id or ""
 
-            # Append TASKMEMORY.md content so the parent gets the full picture
+            # Append a concise task-memory summary and artifact list for the parent.
             if status == "done":
                 taskmemory = self._registry.taskmemory_path(entry.task_id)
-                result_text = _append_taskmemory(result_text, taskmemory)
+                result_text = _package_task_result(
+                    result_text,
+                    taskmemory,
+                    self._registry.task_folder(entry.task_id),
+                )
 
             # Append resume hint so the parent agent knows it can follow up
             if status == "done" and session_id:
@@ -439,6 +532,24 @@ class TaskHub:
                     f"\n\n---\nTo continue this task's conversation, use:\n"
                     f'python3 tools/task_tools/resume_task.py {entry.task_id} "your follow-up"'
                 )
+
+            self._record_message(
+                entry,
+                role="assistant",
+                content_text=result_text or error,
+                source="task_result",
+                process_id=process_id,
+                session_id=session_id,
+                content_json={
+                    "task_id": entry.task_id,
+                    "chat_id": entry.chat_id,
+                    "parent_agent": entry.parent_agent,
+                    "status": status,
+                    "elapsed_seconds": elapsed,
+                    "session_id": session_id,
+                    "error": error,
+                },
+            )
 
             await self._deliver(
                 TaskResult(
@@ -459,6 +570,11 @@ class TaskHub:
                     thread_id=entry.thread_id,
                 )
             )
+
+            # Run skill extraction after the parent has already received the
+            # final result so extraction cannot hijack completion delivery.
+            if status == "done" and self._message_repo:
+                self._start_skill_extraction(entry, cli)
 
         except asyncio.CancelledError:
             elapsed = time.monotonic() - t0
@@ -491,12 +607,28 @@ class TaskHub:
             logger.exception("Task failed id=%s name='%s'", entry.task_id, entry.name)
             elapsed = time.monotonic() - t0
             error_msg = "Internal error (check logs)"
+            process_exit_code = 1
             self._registry.update_status(
                 entry.task_id,
                 "failed",
                 completed_at=time.time(),
                 elapsed_seconds=elapsed,
                 error=error_msg,
+            )
+            self._record_message(
+                entry,
+                role="assistant",
+                content_text=error_msg,
+                source="task_result",
+                process_id=process_id,
+                content_json={
+                    "task_id": entry.task_id,
+                    "chat_id": entry.chat_id,
+                    "parent_agent": entry.parent_agent,
+                    "status": "failed",
+                    "elapsed_seconds": elapsed,
+                    "error": error_msg,
+                },
             )
             with contextlib.suppress(Exception):
                 await self._deliver(
@@ -516,6 +648,8 @@ class TaskHub:
                         thread_id=entry.thread_id,
                     )
                 )
+        finally:
+            self._finish_process(process_id, process_exit_code)
 
     async def _deliver(self, result: TaskResult) -> None:
         """Deliver result to the parent agent's registered callback."""
@@ -536,24 +670,171 @@ class TaskHub:
                 result.parent_agent,
             )
 
+    def _start_skill_extraction(self, entry: TaskEntry, cli: CLIService) -> None:
+        """Run skill extraction in the background after delivery completes."""
+        task = asyncio.create_task(
+            self._run_skill_extraction(entry, cli),
+            name=f"task-skill-extract:{entry.task_id}",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _run_skill_extraction(self, entry: TaskEntry, cli: CLIService) -> None:
+        """Extract a reusable skill from a completed task without blocking delivery."""
+        if not self._message_repo or not self._summary_repo:
+            return
+        try:
+            extractor = SkillExtractor(
+                cli_service=cli,
+                message_repo=self._message_repo,
+                summary_repo=self._summary_repo,
+                skills_dir=self._paths.skills_dir,
+            )
+            await extractor.extract(entry)
+        except Exception:
+            logger.exception("Skill extraction failed for task %s", entry.task_id)
+
+    def _record_process_start(self, entry: TaskEntry) -> int | None:
+        """Persist task process start state when runtime storage is enabled."""
+        if self._process_repo is None:
+            return None
+        try:
+            return self._process_repo.create(
+                process_label=f"task:{entry.task_id}",
+                chat_id=entry.chat_id,
+                provider=entry.provider,
+                model=entry.model,
+                session_storage_key=self._task_session_key(entry.task_id),
+            )
+        except Exception:
+            logger.exception("Failed to record task process start id=%s", entry.task_id)
+            return None
+
+    def _finish_process(self, process_id: int | None, exit_code: int | None) -> None:
+        """Persist task process completion state when runtime storage is enabled."""
+        if self._process_repo is None or process_id is None or exit_code is None:
+            return
+        with contextlib.suppress(Exception):
+            self._process_repo.finish(process_id, exit_code=exit_code)
+
+    def _record_message(
+        self,
+        entry: TaskEntry,
+        *,
+        role: str,
+        content_text: str,
+        source: str,
+        process_id: int | None = None,
+        session_id: str = "",
+        content_json: dict[str, object] | None = None,
+    ) -> None:
+        """Append a task-local runtime-state message when enabled."""
+        if self._message_repo is None:
+            return
+        payload: dict[str, object] = {
+            "task_id": entry.task_id,
+            "chat_id": entry.chat_id,
+            "parent_agent": entry.parent_agent,
+            "session_id": session_id or entry.session_id,
+        }
+        if content_json:
+            payload.update(content_json)
+        try:
+            self._message_repo.append(
+                self._task_session_key(entry.task_id),
+                role,
+                content_text,
+                source=source,
+                content_json=payload,
+                process_id=process_id,
+            )
+        except Exception:
+            logger.exception("Failed to record task message id=%s source=%s", entry.task_id, source)
+
+    @staticmethod
+    def _task_session_key(task_id: str) -> str:
+        """Return the synthetic session key for task-scoped runtime messages."""
+        return f"task:{task_id}"
+
 
 _RESULT_PREVIEW_LEN = 200
-_TASKMEMORY_MAX_LEN = 4000
+_TASK_SUMMARY_FRAGMENTS = 4
+_TASK_SUMMARY_SNIPPET_LEN = 220
+_TASK_ARTIFACT_LIMIT = 12
+_IGNORED_TASK_ARTIFACTS = {
+    "TASKMEMORY.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "GEMINI.md",
+    "RULES.md",
+}
 
 
-def _append_taskmemory(result_text: str, taskmemory_path: Path) -> str:
-    """Append TASKMEMORY.md content to the result so the parent gets the full context."""
+def _package_task_result(result_text: str, taskmemory_path: Path, task_folder: Path) -> str:
+    """Append a concise task-memory summary and artifact list to the final result."""
+    sections: list[str] = [result_text]
+    summary = _summarize_taskmemory(taskmemory_path)
+    if summary:
+        sections.extend(["---", "TASK MEMORY SUMMARY", summary])
+
+    artifacts = _collect_task_artifacts(task_folder)
+    if artifacts:
+        artifact_lines = "\n".join(f"- {path}" for path in artifacts)
+        sections.extend(["", "---", "ARTIFACTS", artifact_lines])
+    return "\n\n".join(section for section in sections if section)
+
+
+def _summarize_taskmemory(taskmemory_path: Path) -> str:
+    """Summarize TASKMEMORY.md into a short, structured fragment digest."""
     try:
         if not taskmemory_path.is_file():
-            return result_text
+            return ""
         content = taskmemory_path.read_text(encoding="utf-8").strip()
         if not content:
-            return result_text
+            return ""
     except OSError:
         logger.debug("Could not read TASKMEMORY.md at %s", taskmemory_path)
-        return result_text
+        return ""
 
-    if len(content) > _TASKMEMORY_MAX_LEN:
-        content = content[:_TASKMEMORY_MAX_LEN] + "\n[... truncated]"
+    fragments = extract_markdown_fragments(
+        content,
+        source_path=str(taskmemory_path),
+        source_kind="taskmemory",
+        scope="taskmemory",
+        agent_name="",
+    )
+    if not fragments:
+        return ""
 
-    return f"{result_text}\n\n---\nCONTENT FROM TASKMEMORY.MD ({taskmemory_path}):\n\n{content}"
+    lines = ["- Task memory fragments:"]
+    for fragment in fragments[:_TASK_SUMMARY_FRAGMENTS]:
+        snippet = _compact_text(fragment.body, _TASK_SUMMARY_SNIPPET_LEN)
+        lines.append(f"- {fragment.title}: {snippet}")
+    if len(fragments) > _TASK_SUMMARY_FRAGMENTS:
+        lines.append(f"- ... {len(fragments) - _TASK_SUMMARY_FRAGMENTS} more fragment(s)")
+    return "\n".join(lines)
+
+
+def _collect_task_artifacts(task_folder: Path) -> list[str]:
+    """Return concise artifact paths from the task folder."""
+    if not task_folder.is_dir():
+        return []
+    paths: list[str] = []
+    for path in sorted(task_folder.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name in _IGNORED_TASK_ARTIFACTS:
+            continue
+        rel = path.relative_to(task_folder).as_posix()
+        paths.append(rel)
+        if len(paths) >= _TASK_ARTIFACT_LIMIT:
+            break
+    return paths
+
+
+def _compact_text(text: str, limit: int) -> str:
+    """Collapse whitespace and trim a summary line to a fixed length."""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "…"

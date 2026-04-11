@@ -155,9 +155,17 @@ def _ensure_link(link_path: Path, target: Path) -> bool:
     if link_path.exists() and not link_path.is_symlink():
         return False
     if link_path.is_symlink():
-        if link_path.resolve() == target.resolve():
+        try:
+            if link_path.resolve() == target.resolve():
+                return False
+        except (OSError, RuntimeError):
+            # Broken or looping links should be replaced instead of aborting
+            # workspace initialization.
+            pass
+        try:
+            link_path.unlink()
+        except FileNotFoundError:
             return False
-        link_path.unlink()
     _create_dir_link(link_path, target)
     return True
 
@@ -229,7 +237,10 @@ def _clean_broken_links(directory: Path) -> int:
     removed = 0
     for entry in directory.iterdir():
         if entry.is_symlink() and not entry.exists():
-            entry.unlink()
+            try:
+                entry.unlink()
+            except FileNotFoundError:
+                continue
             removed += 1
     return removed
 

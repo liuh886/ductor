@@ -9,9 +9,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from ductor_bot.config import AgentConfig, resolve_user_timezone
 from ductor_bot.infra.json_store import atomic_json_save, load_json
+from ductor_bot.runtime.state import RuntimeStateDB, SessionRepository
 from ductor_bot.session.key import SessionKey
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,12 @@ class SessionData:
     model: str
     created_at: str
     last_active: str
+    lineage_id: str
+    lineage_root: str
+    lineage_parent: str
+    lineage_depth: int
+    lineage_reason: str
+    lineage_created_at: str
     provider_sessions: dict[str, ProviderSessionData] = field(default_factory=dict)
 
     def __init__(self, chat_id: int, **raw: object) -> None:
@@ -107,6 +115,12 @@ class SessionData:
         model = _as_str(raw.pop("model", "opus"), default="opus")
         created_at = _as_str(raw.pop("created_at", ""), default="")
         last_active = _as_str(raw.pop("last_active", ""), default="")
+        lineage_id = _as_str(raw.pop("lineage_id", ""), default="")
+        lineage_root = _as_str(raw.pop("lineage_root", ""), default="")
+        lineage_parent = _as_str(raw.pop("lineage_parent", ""), default="")
+        lineage_depth = _as_optional_int(raw.pop("lineage_depth", None))
+        lineage_reason = _as_str(raw.pop("lineage_reason", ""), default="")
+        lineage_created_at = _as_str(raw.pop("lineage_created_at", ""), default="")
         provider_sessions = _as_mapping(raw.pop("provider_sessions", None))
 
         # Backward compatibility for old JSON/tests.
@@ -125,6 +139,13 @@ class SessionData:
         now = datetime.now(UTC).isoformat()
         self.created_at = created_at or now
         self.last_active = last_active or now
+        resolved_lineage_id = lineage_id or uuid4().hex
+        self.lineage_id = resolved_lineage_id
+        self.lineage_root = lineage_root or resolved_lineage_id
+        self.lineage_parent = lineage_parent
+        self.lineage_depth = lineage_depth or 0
+        self.lineage_reason = lineage_reason or "create"
+        self.lineage_created_at = lineage_created_at or self.created_at
 
         migrated = self._coerce_provider_sessions(provider_sessions)
         has_legacy_fields = any(
@@ -265,11 +286,19 @@ TopicNameResolver = Callable[[int, int], str]
 class SessionManager:
     """Manages session lifecycle with JSON file persistence."""
 
-    def __init__(self, sessions_path: Path, config: AgentConfig) -> None:
+    def __init__(
+        self,
+        sessions_path: Path,
+        config: AgentConfig,
+        state_repo: SessionRepository | None = None,
+    ) -> None:
         self._path = sessions_path
         self._config = config
         self._lock = asyncio.Lock()
         self._topic_name_resolver: TopicNameResolver | None = None
+        self._state_repo = state_repo
+        if self._state_repo is None and config.state_backend in {"dual", "sqlite"}:
+            self._state_repo = SessionRepository(RuntimeStateDB(config.resolved_state_db_path()))
 
     def set_topic_name_resolver(self, resolver: TopicNameResolver) -> None:
         """Register a callback that resolves ``(chat_id, topic_id)`` to a name."""
@@ -283,6 +312,34 @@ class SessionManager:
             return False
         session.topic_name = self._topic_name_resolver(session.chat_id, session.topic_id)
         return True
+
+    @staticmethod
+    def _new_lineage_fields(
+        *,
+        parent: SessionData | None,
+        reason: str,
+        created_at: str | None = None,
+    ) -> dict[str, object]:
+        """Build lineage metadata for a new session snapshot."""
+        lineage_id = uuid4().hex
+        timestamp = created_at or datetime.now(UTC).isoformat()
+        if parent is None:
+            return {
+                "lineage_id": lineage_id,
+                "lineage_root": lineage_id,
+                "lineage_parent": "",
+                "lineage_depth": 0,
+                "lineage_reason": reason,
+                "lineage_created_at": timestamp,
+            }
+        return {
+            "lineage_id": lineage_id,
+            "lineage_root": parent.lineage_root or parent.lineage_id or lineage_id,
+            "lineage_parent": parent.lineage_id,
+            "lineage_depth": parent.lineage_depth + 1,
+            "lineage_reason": reason,
+            "lineage_created_at": timestamp,
+        }
 
     async def resolve_session(
         self,
@@ -327,6 +384,7 @@ class SessionManager:
         if key.topic_id is not None and self._topic_name_resolver is not None:
             topic_name = self._topic_name_resolver(key.chat_id, key.topic_id)
 
+        reason = "create" if existing is None else "stale_reset"
         new = SessionData(
             chat_id=key.chat_id,
             transport=key.transport,
@@ -335,6 +393,7 @@ class SessionManager:
             provider=prov,
             model=model_name,
             provider_sessions={},
+            **self._new_lineage_fields(parent=existing, reason=reason),
         )
         sessions[skey] = new
         await self._save(sessions)
@@ -367,13 +426,23 @@ class SessionManager:
         sessions = await self._load()
         prov = provider or self._config.provider
         model_name = model or self._config.model
+        current = sessions.get(key.storage_key)
+        topic_name: str | None = current.topic_name if current is not None else None
+        if (
+            topic_name is None
+            and key.topic_id is not None
+            and self._topic_name_resolver is not None
+        ):
+            topic_name = self._topic_name_resolver(key.chat_id, key.topic_id)
         new = SessionData(
             chat_id=key.chat_id,
             transport=key.transport,
             topic_id=key.topic_id,
+            topic_name=topic_name,
             provider=prov,
             model=model_name,
             provider_sessions={},
+            **self._new_lineage_fields(parent=current, reason="manual_reset"),
         )
         sessions[key.storage_key] = new
         await self._save(sessions)
@@ -395,15 +464,29 @@ class SessionManager:
                 chat_id=key.chat_id,
                 transport=key.transport,
                 topic_id=key.topic_id,
+                topic_name=(
+                    self._topic_name_resolver(key.chat_id, key.topic_id)
+                    if key.topic_id is not None and self._topic_name_resolver is not None
+                    else None
+                ),
                 provider=provider,
                 model=model,
                 provider_sessions={},
+                **self._new_lineage_fields(parent=None, reason="provider_reset"),
             )
         else:
-            current.clear_provider_session(provider)
-            current.provider = provider
-            current.model = model
-            current.last_active = datetime.now(UTC).isoformat()
+            replacement = SessionData(
+                chat_id=key.chat_id,
+                transport=key.transport,
+                topic_id=key.topic_id,
+                topic_name=current.topic_name,
+                provider=provider,
+                model=model,
+                provider_sessions=self._clone_provider_sessions(current.provider_sessions),
+                **self._new_lineage_fields(parent=current, reason="provider_reset"),
+            )
+            replacement.clear_provider_session(provider)
+            current = replacement
         sessions[skey] = current
         await self._save(sessions)
         logger.info("Provider session reset provider=%s model=%s", provider, model)
@@ -546,6 +629,29 @@ class SessionManager:
                     break
         return isinstance(entry, dict) and "model" not in entry
 
+    def _load_sessions_from_repo(self) -> dict[str, SessionData]:
+        """Load sessions from the SQLite repository when available."""
+        if self._state_repo is None:
+            return {}
+        sessions = self._state_repo.list_all()
+        return {session.session_key.storage_key: session for session in sessions}
+
+    def _load_sessions_from_json(self) -> dict[str, SessionData]:
+        """Load sessions from the JSON file and migrate legacy keys."""
+        data = load_json(self._path)
+        if data is None:
+            return {}
+        result: dict[str, SessionData] = {}
+        for k, v in data.items():
+            parsed = SessionKey.parse(k)
+            if "topic_id" not in v and parsed.topic_id is not None:
+                v["topic_id"] = parsed.topic_id
+            if "transport" not in v:
+                v["transport"] = parsed.transport
+            sd = SessionData(**v)
+            result[parsed.storage_key] = sd
+        return result
+
     def _is_fresh(self, session: SessionData) -> bool:
         now = datetime.now(UTC)
         try:
@@ -599,29 +705,46 @@ class SessionManager:
         """
 
         def _read() -> dict[str, SessionData]:
-            data = load_json(self._path)
-            if data is None:
+            json_sessions = self._load_sessions_from_json()
+            repo_sessions = self._load_sessions_from_repo()
+
+            if self._config.state_backend == "sqlite":
+                if repo_sessions:
+                    return repo_sessions
+                if json_sessions and self._state_repo is not None:
+                    for storage_key, session in json_sessions.items():
+                        self._state_repo.upsert(storage_key, session)
+                    return json_sessions
                 return {}
-            result: dict[str, SessionData] = {}
-            for k, v in data.items():
-                parsed = SessionKey.parse(k)
-                if "topic_id" not in v and parsed.topic_id is not None:
-                    v["topic_id"] = parsed.topic_id
-                # Propagate transport from the parsed key into the dict
-                # so SessionData picks it up (legacy entries lack it).
-                if "transport" not in v:
-                    v["transport"] = parsed.transport
-                sd = SessionData(**v)
-                # Re-key under the canonical prefixed storage key
-                result[parsed.storage_key] = sd
-            return result
+
+            if self._config.state_backend == "dual":
+                if json_sessions:
+                    if not repo_sessions and self._state_repo is not None:
+                        for storage_key, session in json_sessions.items():
+                            self._state_repo.upsert(storage_key, session)
+                    return json_sessions
+                if repo_sessions:
+                    return repo_sessions
+                return {}
+
+            return json_sessions
 
         return await asyncio.to_thread(_read)
 
     async def _save(self, sessions: dict[str, SessionData]) -> None:
-        """Atomically write sessions to JSON file."""
+        """Atomically write sessions to JSON or SQLite depending on backend."""
 
         def _write() -> None:
-            atomic_json_save(self._path, {k: asdict(v) for k, v in sessions.items()})
+            if self._config.state_backend in ("json", "dual"):
+                atomic_json_save(self._path, {k: asdict(v) for k, v in sessions.items()})
+            if self._state_repo is not None and self._config.state_backend in ("sqlite", "dual"):
+                for storage_key, session in sessions.items():
+                    self._state_repo.upsert(storage_key, session)
 
         await asyncio.to_thread(_write)
+
+    def export_to_json(self, path: Path | None = None) -> None:
+        """Compatibility helper to export all sessions to JSON."""
+        target = path or self._path
+        sessions = self._load_sessions_from_repo() if self._state_repo else self._load_sessions_from_json()
+        atomic_json_save(target, {k: asdict(v) for k, v in sessions.items()})

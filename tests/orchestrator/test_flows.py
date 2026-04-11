@@ -2,23 +2,29 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from ductor_bot.cli.types import AgentResponse
+from ductor_bot.config import AgentConfig
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
     _finish_normal,
     _strip_ack_token,
     _update_session,
+    heartbeat_flow,
+    named_session_flow,
+    named_session_streaming,
     normal,
     normal_streaming,
 )
 from ductor_bot.orchestrator.registry import OrchestratorResult
+from ductor_bot.runtime.memory import MemoryFragment
 from ductor_bot.session import SessionData
 from ductor_bot.session.key import SessionKey
+from ductor_bot.workspace.paths import DuctorPaths
 
 
 @pytest.fixture
@@ -46,6 +52,39 @@ async def _establish_session(orch: Orchestrator) -> None:
     await normal(orch, SessionKey(chat_id=1), "Setup")
 
 
+def _make_state_orch(paths: DuctorPaths) -> Orchestrator:
+    """Create an orchestrator with sqlite runtime-state storage enabled."""
+    config = AgentConfig(
+        state_backend="sqlite",
+        state_db_path=str(paths.ductor_home / "runtime_state.db"),
+    )
+    orch = Orchestrator(config, paths)
+    mock_cli = MagicMock()
+    mock_cli.execute = AsyncMock()
+    mock_cli.execute_streaming = AsyncMock()
+    object.__setattr__(orch, "_cli_service", mock_cli)
+    return orch
+
+
+async def _seed_active_session(orch: Orchestrator) -> SessionData:
+    """Create a persisted active session for heartbeat tests."""
+    session = await orch._sessions.reset_session(
+        SessionKey(chat_id=1),
+        provider="claude",
+        model="opus",
+    )
+    session.session_id = "sess-heartbeat"
+    await orch._sessions.update_session(session)
+    return session
+
+
+async def _seed_named_session(orch: Orchestrator) -> str:
+    """Create a persisted named session that named_session_flow can resume."""
+    ns = orch._named_sessions.create(1, "claude", "opus", "hello")
+    orch._named_sessions.update_after_response(1, ns.name, "ns-sess-1", status="idle")
+    return ns.name
+
+
 # -- normal flow --
 
 
@@ -68,6 +107,41 @@ async def test_normal_new_session_injects_mainmemory(orch: Orchestrator) -> None
     assert request.append_system_prompt is not None
     assert "Important Context" in request.append_system_prompt
     assert request.resume_session is None  # New session
+
+
+async def test_normal_new_session_prefers_fragment_memory(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _ = workspace
+    state_orch = _make_state_orch(paths)
+    state_orch.paths.mainmemory_path.write_text("# Raw memory that should not be used")
+    fragment_repo = getattr(state_orch, "_memory_fragment_repo", None)
+    assert fragment_repo is not None
+    fragment_repo.create(
+        MemoryFragment(
+            title="Fragment Memory",
+            body="- Use compact memory\n- Prefer structured context",
+            source_kind="mainmemory",
+            source_path=str(state_orch.paths.mainmemory_path),
+            scope="mainmemory",
+            agent_name="main",
+            tags=["memory"],
+            importance=1.0,
+        ),
+    )
+
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(state_orch._cli_service, "execute", mock_execute)
+
+    await normal(state_orch, SessionKey(chat_id=1), "Hello")
+
+    call_args = mock_execute.call_args
+    request = call_args[0][0]
+    assert request.append_system_prompt is not None
+    assert "Fragment Memory" in request.append_system_prompt
+    assert "Use compact memory" in request.append_system_prompt
+    assert "Raw memory that should not be used" not in request.append_system_prompt
+    assert request.resume_session is None
 
 
 async def test_normal_resume_session_no_append(orch: Orchestrator) -> None:
@@ -271,6 +345,160 @@ async def test_normal_allows_gemini_api_key_mode_with_configured_key(orch: Orche
 
     assert result.text == "Gemini OK"
     mock_execute.assert_awaited_once()
+
+
+async def test_normal_records_runtime_state(workspace: tuple[DuctorPaths, AgentConfig]) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    object.__setattr__(orch._cli_service, "execute", AsyncMock(return_value=_mock_response()))
+
+    result = await normal(orch, SessionKey(chat_id=1), "Hello runtime state")
+
+    assert result.text == "Hello from agent"
+    assert orch._process_repo is not None
+    assert orch._message_repo is not None
+    processes = orch._process_repo.list_all()
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert len(processes) == 1
+    assert processes[0]["process_label"] == "normal"
+    assert processes[0]["ended_at"] is not None
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["source"] == "normal_prompt"
+    assert messages[1]["source"] == "normal_result"
+
+
+async def test_streaming_records_runtime_state(workspace: tuple[DuctorPaths, AgentConfig]) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    object.__setattr__(
+        orch._cli_service, "execute_streaming", AsyncMock(return_value=_mock_response())
+    )
+
+    result = await normal_streaming(orch, SessionKey(chat_id=1), "Hello stream runtime")
+
+    assert result.text == "Hello from agent"
+    assert orch._process_repo is not None
+    assert orch._message_repo is not None
+    processes = orch._process_repo.list_all()
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert len(processes) == 1
+    assert processes[0]["process_label"] == "normal_streaming"
+    assert processes[0]["ended_at"] is not None
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["source"] == "normal_stream_prompt"
+    assert messages[1]["source"] == "normal_stream_result"
+
+
+async def test_normal_resume_prompt_includes_compressed_context(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    for idx in range(6):
+        await normal(orch, SessionKey(chat_id=1), f"message-{idx}")
+
+    request = mock_execute.call_args_list[-1][0][0]
+    assert "## COMPRESSED CONTEXT" in request.prompt
+    assert "CURRENT USER MESSAGE" in request.prompt
+
+
+async def test_named_session_records_runtime_state(workspace: tuple[DuctorPaths, AgentConfig]) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    session_name = await _seed_named_session(orch)
+    object.__setattr__(orch._cli_service, "execute", AsyncMock(return_value=_mock_response()))
+
+    result = await named_session_flow(orch, SessionKey(chat_id=1), session_name, "Named hello")
+
+    assert result.text.startswith(f"**[{session_name} | claude]**")
+    assert orch._process_repo is not None
+    assert orch._message_repo is not None
+    processes = orch._process_repo.list_all()
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert len(processes) == 1
+    assert processes[0]["process_label"] == f"ns:{session_name}"
+    assert processes[0]["ended_at"] is not None
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["source"] == "named_session_prompt"
+    assert messages[1]["source"] == "named_session_result"
+
+
+async def test_named_session_prompt_includes_compressed_context(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    session_name = await _seed_named_session(orch)
+    assert orch._message_repo is not None
+    for idx in range(10):
+        orch._message_repo.append(
+            "tg:1",
+            "user" if idx % 2 == 0 else "assistant",
+            f"named-history-{idx}",
+            source="named_session_result" if idx % 2 else "named_session_prompt",
+        )
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await named_session_flow(orch, SessionKey(chat_id=1), session_name, "Named hello")
+
+    request = mock_execute.call_args[0][0]
+    assert "## COMPRESSED CONTEXT" in request.prompt
+    assert session_name in request.prompt
+
+
+async def test_named_session_streaming_records_runtime_state(
+    workspace: tuple[DuctorPaths, AgentConfig]
+) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    session_name = await _seed_named_session(orch)
+    object.__setattr__(
+        orch._cli_service, "execute_streaming", AsyncMock(return_value=_mock_response())
+    )
+
+    result = await named_session_streaming(
+        orch, SessionKey(chat_id=1), session_name, "Named stream hello"
+    )
+
+    assert result.text.startswith(f"**[{session_name} | claude]**")
+    assert orch._process_repo is not None
+    assert orch._message_repo is not None
+    processes = orch._process_repo.list_all()
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert len(processes) == 1
+    assert processes[0]["process_label"] == f"ns:{session_name}:streaming"
+    assert processes[0]["ended_at"] is not None
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["source"] == "named_session_stream_prompt"
+    assert messages[1]["source"] == "named_session_stream_result"
+
+
+async def test_heartbeat_records_runtime_state(workspace: tuple[DuctorPaths, AgentConfig]) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    await _seed_active_session(orch)
+    orch._config.heartbeat.cooldown_minutes = 0
+    object.__setattr__(
+        orch._cli_service, "execute", AsyncMock(return_value=_mock_response(result="PING"))
+    )
+
+    result = await heartbeat_flow(orch, SessionKey(chat_id=1), prompt="HB prompt", ack_token="ACK")
+
+    assert result == "PING"
+    assert orch._process_repo is not None
+    assert orch._message_repo is not None
+    processes = orch._process_repo.list_all()
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert len(processes) == 1
+    assert processes[0]["process_label"] == "heartbeat"
+    assert processes[0]["ended_at"] is not None
+    assert [message["role"] for message in messages] == ["system", "assistant"]
+    assert messages[0]["source"] == "heartbeat_prompt"
+    assert messages[1]["source"] == "heartbeat_alert"
 
 
 # -- streaming flow --

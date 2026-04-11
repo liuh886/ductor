@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from ductor_bot.runtime.state import RuntimeStateDB, TaskRepository
 from ductor_bot.tasks.models import TaskSubmit
 from ductor_bot.tasks.registry import TaskRegistry
 
@@ -325,3 +326,51 @@ class TestPerAgentTasksDir:
         # Reload — orphan cleanup should drop the entry
         reg2 = TaskRegistry(tmp_path / "tasks.json", tmp_path / "tasks")
         assert reg2.get(entry.task_id) is None
+
+
+class TestDualWrite:
+    def test_persists_tasks_to_state_db(self, tmp_path: Path) -> None:
+        repo = TaskRepository(RuntimeStateDB(tmp_path / "state.db"))
+        registry = TaskRegistry(
+            registry_path=tmp_path / "tasks.json",
+            tasks_dir=tmp_path / "tasks",
+            state_repo=repo,
+            state_backend="dual",
+        )
+
+        entry = registry.create(_submit(name="DB Task"), "claude", "opus")
+        registry.update_status(entry.task_id, "done", session_id="task-sid")
+
+        loaded = repo.list_all()
+        assert len(loaded) == 1
+        assert loaded[0].task_id == entry.task_id
+        assert loaded[0].status == "done"
+        assert loaded[0].session_id == "task-sid"
+
+    def test_sqlite_backend_reads_tasks_from_state_db(self, tmp_path: Path) -> None:
+        repo = TaskRepository(RuntimeStateDB(tmp_path / "state.db"))
+        seed = TaskRegistry(
+            registry_path=tmp_path / "tasks.json",
+            tasks_dir=tmp_path / "tasks",
+            state_repo=repo,
+            state_backend="dual",
+        )
+        entry = seed.create(_submit(name="DB Task"), "claude", "opus")
+        seed.update_status(entry.task_id, "done", session_id="task-sid")
+
+        path = tmp_path / "tasks.json"
+        if path.exists():
+            path.unlink()
+
+        sqlite_registry = TaskRegistry(
+            registry_path=path,
+            tasks_dir=tmp_path / "tasks",
+            state_repo=repo,
+            state_backend="sqlite",
+        )
+        loaded = sqlite_registry.get(entry.task_id)
+
+        assert loaded is not None
+        assert loaded.task_id == entry.task_id
+        assert loaded.status == "done"
+        assert loaded.session_id == "task-sid"
