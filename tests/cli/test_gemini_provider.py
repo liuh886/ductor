@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable
 from pathlib import Path
@@ -457,3 +458,20 @@ class TestLogCmd:
 
     def test_streaming_label(self) -> None:
         _log_cmd(["gemini", "--output-format", "stream-json"], streaming=True)
+
+    def test_redacts_secret_env_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        cmd = [
+            "docker",
+            "exec",
+            "-e",
+            "OPENAI_API_KEY=sk-secret-value",
+            "-e",
+            "GEMINI_API_KEY=gm-secret-value",
+            "gemini",
+        ]
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.gemini_provider"):
+            _log_cmd(cmd)
+        assert "OPENAI_API_KEY=<redacted>" in caplog.text
+        assert "GEMINI_API_KEY=<redacted>" in caplog.text
+        assert "sk-secret-value" not in caplog.text
+        assert "gm-secret-value" not in caplog.text

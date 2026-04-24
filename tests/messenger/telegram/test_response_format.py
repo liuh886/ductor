@@ -54,6 +54,24 @@ class TestSessionErrorText:
         assert "Something weird happened" in text
         assert "More details" not in text
 
+    def test_prefers_actionable_error_over_leading_warning(self) -> None:
+        text = session_error_text(
+            "gpt-5.4",
+            "WARNING: proceeding, even though we could not update PATH: Operation not permitted\n"
+            "error: unexpected argument '--sandbox' found\n"
+            "Usage: codex exec resume --json [SESSION_ID] [PROMPT]",
+        )
+        assert "unexpected argument '--sandbox' found" in text
+        assert "could not update PATH" not in text
+
+    def test_preserves_non_warning_when_no_error_line_exists(self) -> None:
+        text = session_error_text(
+            "gpt-5.4",
+            "WARNING: bootstrap noisy\nThe command line is too long.\nMore details",
+        )
+        assert "The command line is too long." in text
+        assert "bootstrap noisy" not in text
+
     def test_without_detail(self) -> None:
         text = session_error_text("opus")
         assert "Session Error" in text

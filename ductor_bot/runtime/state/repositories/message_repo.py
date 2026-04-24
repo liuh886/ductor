@@ -21,6 +21,7 @@ class MessageRepository:
         role: str,
         content_text: str = "",
         *,
+        thought: str = "",
         source: str = "normal",
         content_json: dict[str, object] | None = None,
         turn_index: int | None = None,
@@ -49,9 +50,9 @@ class MessageRepository:
                 """
                 INSERT INTO messages (
                     session_storage_key, turn_index, role, source, content_text,
-                    content_json, token_count, cost_usd, is_compressed, protected,
-                    tool_call_id, process_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    thought, content_json, token_count, cost_usd, is_compressed,
+                    protected, tool_call_id, process_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_storage_key,
@@ -59,6 +60,7 @@ class MessageRepository:
                     role,
                     source,
                     content_text,
+                    thought,
                     payload,
                     token_count,
                     cost_usd,

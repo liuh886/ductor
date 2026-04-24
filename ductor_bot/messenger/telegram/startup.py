@@ -11,6 +11,7 @@ from ductor_bot.i18n import t
 from ductor_bot.infra.restart import consume_restart_sentinel
 from ductor_bot.infra.updater import UpdateObserver, consume_upgrade_sentinel
 from ductor_bot.infra.version import get_current_version
+from ductor_bot.orchestrator.lifecycle import start_api_server
 
 if TYPE_CHECKING:
     from ductor_bot.messenger.telegram.app import TelegramBot
@@ -50,7 +51,7 @@ async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None)
     if sentinel is None and startup_info.kind.value != "service_restart":
         note = startup_notification_text(startup_info.kind.value)
         if note:
-            await bot.notification_service.notify_all(note)
+            await bot.notify_startup(note)
 
     from ductor_bot.infra.recovery import RecoveryPlanner
     from ductor_bot.text.response_format import recovery_notification_text
@@ -102,6 +103,8 @@ async def _run_primary_startup(bot: TelegramBot) -> None:
 
     bot._orch.wire_observers_to_bus(bot._bus, wake_handler=bot._handle_webhook_wake)
     bot._orchestrator.set_config_hot_reload_handler(bot._on_auth_hot_reload)
+    if bot.config.api.enabled:
+        await start_api_server(bot._orchestrator, bot.config, bot._orch.paths, lock_pool=bot._lock_pool)
 
     async def _validate_chat(chat_id: int) -> bool:
         try:

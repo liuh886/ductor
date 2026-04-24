@@ -144,7 +144,7 @@ class TestE2EHandshake:
                 },
             ]
         )
-        server.set_active_state_getter(lambda: ("sonnet", "claude"))
+        server.set_active_state_getter(lambda: ("claude", "sonnet"))
         ws = await client.ws_connect("/ws")
         _e2e, resp = await _do_handshake(ws)
         assert resp["providers"] == [
@@ -155,8 +155,8 @@ class TestE2EHandshake:
                 "models": ["haiku", "sonnet", "opus"],
             },
         ]
-        assert resp["active_provider"] == "sonnet"
-        assert resp["active_model"] == "claude"
+        assert resp["active_provider"] == "claude"
+        assert resp["active_model"] == "sonnet"
         await ws.close()
 
     async def test_auth_ok_without_providers_has_empty_list(
@@ -258,6 +258,24 @@ class TestEncryptedMessages:
         assert result["text"] == "ok"
         assert result["stream_fallback"] is False
         await ws.close()
+
+    async def test_empty_result_uses_placeholder(self, tmp_path: Path) -> None:
+        handler = AsyncMock(return_value=SimpleNamespace(text="", stream_fallback=False))
+        server = _make_server(tmp_path, message_handler=handler)
+        app = _build_app(server)
+        srv = TestServer(app)
+        tc = TestClient(srv)
+        await tc.start_server()
+
+        ws = await tc.ws_connect("/ws")
+        e2e, _ = await _do_handshake(ws)
+        await _send_encrypted(ws, e2e, {"type": "message", "text": "hello"})
+        result = await _recv_encrypted(ws, e2e)
+
+        assert result["type"] == "result"
+        assert "No final text response was returned" in result["text"]
+        await ws.close()
+        await tc.close()
 
     async def test_streaming_callbacks_encrypted(self, tmp_path: Path) -> None:
         """Verify text_delta, tool_activity, system_status are all encrypted."""
@@ -387,6 +405,31 @@ class TestEncryptedMessages:
         assert resp["type"] == "error"
         assert resp["code"] == "decrypt_failed"
         await ws.close()
+
+    async def test_disconnect_mid_stream_triggers_abort(self, tmp_path: Path) -> None:
+        server = _make_server(tmp_path)
+        server.set_abort_handler(AsyncMock(return_value=1))
+
+        async def fake_handler(
+            _key: Any,
+            _text: str,
+            *,
+            on_text_delta: Any,
+            on_tool_activity: Any,
+            on_system_status: Any,
+        ) -> SimpleNamespace:
+            await on_system_status("thinking")
+            return SimpleNamespace(text="final", stream_fallback=False)
+
+        server.set_message_handler(AsyncMock(side_effect=fake_handler))
+
+        channel = SimpleNamespace(send=AsyncMock(return_value=False))
+        key = SimpleNamespace(chat_id=42, topic_id=7, storage_key="api:42:7")
+
+        await server._dispatch_message(channel, key, "hello")
+
+        server._handle_abort.assert_awaited_once_with(42, 7)
+        assert channel.send.await_count == 1
 
 
 # ---------------------------------------------------------------------------

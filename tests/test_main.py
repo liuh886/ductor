@@ -433,24 +433,32 @@ class TestUpgradeCli:
 class TestReExecBot:
     def test_re_exec_uses_popen_on_posix(self) -> None:
         from ductor_bot.cli_commands.lifecycle import _re_exec_bot
+        from ductor_bot.infra.platform import CREATION_FLAGS
 
         with (
             patch(f"{_LIFECYCLE}.subprocess.Popen") as mock_popen,
             pytest.raises(SystemExit) as exc_info,
         ):
             _re_exec_bot()
-        mock_popen.assert_called_once_with([sys.executable, "-m", "ductor_bot"])
+        mock_popen.assert_called_once_with(
+            [sys.executable, "-m", "ductor_bot"],
+            creationflags=CREATION_FLAGS,
+        )
         assert exc_info.value.code == 0
 
     def test_re_exec_uses_same_args_on_windows_flag(self) -> None:
         from ductor_bot.cli_commands.lifecycle import _re_exec_bot
+        from ductor_bot.infra.platform import CREATION_FLAGS
 
         with (
             patch(f"{_LIFECYCLE}.subprocess.Popen") as mock_popen,
             pytest.raises(SystemExit) as exc_info,
         ):
             _re_exec_bot()
-        mock_popen.assert_called_once_with([sys.executable, "-m", "ductor_bot"])
+        mock_popen.assert_called_once_with(
+            [sys.executable, "-m", "ductor_bot"],
+            creationflags=CREATION_FLAGS,
+        )
         assert exc_info.value.code == 0
 
 

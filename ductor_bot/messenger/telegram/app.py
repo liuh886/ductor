@@ -305,6 +305,72 @@ class TelegramBot:
         for uid in self._config.allowed_user_ids:
             await send_rich(self._bot, uid, text, opts)
 
+    async def notify_startup(self, text: str) -> None:
+        """Route startup-lifecycle notifications (#64).
+
+        Fallback policy:
+          * ``startup_targets`` empty (default) -> broadcast via ``notify_all``.
+          * ``startup_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback). This is how users opt out of lifecycle
+            notifications without losing upgrade routing.
+
+        Per-target failures are swallowed at warning level so a single bad
+        target does not mask the rest.
+        """
+        configured = self._config.notifications.startup_targets
+        if not configured:
+            await self._notification_service.notify_all(text)
+            return
+        targets = [t for t in configured if t.enabled and t.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                await send_rich(
+                    self._bot,
+                    target.chat_id,
+                    text,
+                    SendRichOpts(thread_id=target.topic_id),
+                )
+            except Exception:
+                logger.warning(
+                    "notify_startup: delivery failed for chat_id=%s topic_id=%s",
+                    target.chat_id,
+                    target.topic_id,
+                    exc_info=True,
+                )
+
+    async def notify_upgrade(self, text: str, opts: SendRichOpts | None = None) -> None:
+        """Route upgrade-available notifications (#64).
+
+        Fallback policy (mirrors ``notify_startup``):
+          * ``upgrade_targets`` empty (default) -> ``broadcast``.
+          * ``upgrade_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback).
+        ``opts`` (reply_markup, etc.) is preserved on each per-target send.
+        """
+        configured = self._config.notifications.upgrade_targets
+        if not configured:
+            await self.broadcast(text, opts)
+            return
+        targets = [t for t in configured if t.enabled and t.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                target_opts = SendRichOpts(
+                    reply_markup=opts.reply_markup if opts else None,
+                    allowed_roots=opts.allowed_roots if opts else None,
+                    thread_id=target.topic_id,
+                    reply_to_message_id=opts.reply_to_message_id if opts else None,
+                )
+                await send_rich(self._bot, target.chat_id, text, target_opts)
+            except Exception:
+                logger.warning(
+                    "notify_upgrade: delivery failed for chat_id=%s topic_id=%s",
+                    target.chat_id,
+                    target.topic_id,
+                    exc_info=True,
+                )
+
     async def _on_startup(self) -> None:
         from ductor_bot.messenger.telegram.startup import run_startup
 
@@ -1349,7 +1415,12 @@ class TelegramBot:
         *,
         thread_id: int | None = None,
     ) -> None:
-        """Non-streaming flow: one-shot orchestrator call -> Telegram delivery."""
+        """Non-streaming flow: one-shot orchestrator call -> Telegram delivery.
+
+        ``reply_to`` doubles as the user's trigger message (passed as
+        ``message`` so the reaction tracker anchors consistently with the
+        streaming path — MED #10).
+        """
         await run_non_streaming_message(
             NonStreamingDispatch(
                 bot=self._bot,
@@ -1357,6 +1428,7 @@ class TelegramBot:
                 key=key,
                 text=text,
                 allowed_roots=self.file_roots(self._orch.paths),
+                message=reply_to,
                 reply_to=reply_to,
                 thread_id=thread_id,
                 scene_config=self._config.scene,

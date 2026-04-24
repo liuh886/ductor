@@ -58,7 +58,20 @@ def guess_mime(path: Path | str) -> str:
     kind = _filetype.guess(str(path))
     if kind is not None:
         return str(kind.mime)
-    return mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    
+    # Manual override for common programming languages if mimetypes is too generic (common on Windows)
+    suffix = Path(path).suffix.lower()
+    overrides = {
+        ".py": "text/x-python",
+        ".js": "application/javascript",
+        ".ts": "application/x-typescript",
+        ".webp": "image/webp",
+    }
+    if suffix in overrides:
+        return overrides[suffix]
+
+    mime, _ = mimetypes.guess_type(str(path))
+    return mime or "application/octet-stream"
 
 
 def classify_mime(mime: str) -> str:
@@ -81,8 +94,11 @@ def is_image_path(path_str: str) -> bool:
     Uses extension-based detection only (no file access).  For content-based
     detection on files that exist on disk, use ``guess_mime`` instead.
     """
+    suffix = Path(path_str).suffix.lower()
+    if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
+        return True
     mime = mimetypes.guess_type(path_str)[0] or ""
-    return mime.startswith("image/") and Path(path_str).suffix.lower() not in _SVG_SUFFIXES
+    return mime.startswith("image/") and suffix not in _SVG_SUFFIXES
 
 
 _DOCKER_MOUNT = "/ductor"

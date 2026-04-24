@@ -12,6 +12,8 @@ from ductor_bot.runtime.state import RuntimeStateDB
 def _make_turn(
     chat_id: int = 100,
     *,
+    transport: str = "tg",
+    topic_id: int | None = None,
     provider: str = "claude",
     model: str = "opus",
     session_id: str = "sess-1",
@@ -29,6 +31,8 @@ def _make_turn(
         started_at=started_at or datetime.now(UTC).isoformat(),
         is_recovery=is_recovery,
         path=path,
+        transport=transport,
+        topic_id=topic_id,
     )
 
 
@@ -154,3 +158,30 @@ class TestEdgeCases:
         tracker.begin(_make_turn(chat_id=200))
         tracker.clear()
         assert tracker.load_interrupted(max_age_seconds=9999) == []
+
+    def test_topic_scoped_entries_do_not_overwrite_each_other(self, tmp_path: Path) -> None:
+        tracker = _make_sqlite_tracker(tmp_path)
+        tracker.begin(_make_turn(chat_id=100, topic_id=10, prompt_preview="topic-10"))
+        tracker.begin(_make_turn(chat_id=100, topic_id=20, prompt_preview="topic-20"))
+
+        interrupted = sorted(
+            tracker.load_interrupted(max_age_seconds=9999),
+            key=lambda turn: turn.topic_id or 0,
+        )
+
+        assert len(interrupted) == 2
+        assert interrupted[0].topic_id == 10
+        assert interrupted[0].prompt_preview == "topic-10"
+        assert interrupted[1].topic_id == 20
+        assert interrupted[1].prompt_preview == "topic-20"
+
+    def test_complete_with_topic_only_removes_matching_entry(self, tmp_path: Path) -> None:
+        tracker = _make_sqlite_tracker(tmp_path)
+        tracker.begin(_make_turn(chat_id=100, topic_id=10))
+        tracker.begin(_make_turn(chat_id=100, topic_id=20))
+
+        tracker.complete(100, topic_id=10)
+        interrupted = tracker.load_interrupted(max_age_seconds=9999)
+
+        assert len(interrupted) == 1
+        assert interrupted[0].topic_id == 20

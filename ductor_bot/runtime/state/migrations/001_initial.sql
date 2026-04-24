@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'normal',
     content_text TEXT NOT NULL DEFAULT '',
+    thought TEXT NOT NULL DEFAULT '',
     content_json TEXT NOT NULL DEFAULT '{}',
     token_count INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0,
@@ -132,6 +133,20 @@ CREATE TABLE IF NOT EXISTS messages (
     process_id INTEGER,
     created_at REAL NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    session_storage_key UNINDEXED,
+    role UNINDEXED,
+    content_text,
+    thought
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_after_insert
+AFTER INSERT ON messages
+BEGIN
+    INSERT INTO messages_fts (rowid, session_storage_key, role, content_text, thought)
+    VALUES (new.id, new.session_storage_key, new.role, new.content_text, new.thought);
+END;
 
 CREATE TABLE IF NOT EXISTS session_summaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,7 +176,7 @@ CREATE TABLE IF NOT EXISTS memory_fragments (
 );
 
 CREATE TABLE IF NOT EXISTS inflight_turns (
-    chat_id INTEGER PRIMARY KEY,
+    storage_key TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL,
     updated_at REAL NOT NULL
 );

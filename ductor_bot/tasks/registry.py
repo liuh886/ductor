@@ -144,13 +144,14 @@ class TaskRegistry:
         self._persist_entries(list(self._entries.values()))
 
     def _persist_entries(self, entries: list[TaskEntry]) -> None:
+        persisted_entries = [_sanitized_task_entry(entry) for entry in entries]
         if self._state_backend in ("json", "dual"):
             data: dict[str, Any] = {
-                "tasks": [e.to_dict() for e in entries],
+                "tasks": [e.to_dict() for e in persisted_entries],
             }
             atomic_json_save(self._path, data)
         if self._state_repo is not None and self._state_backend in ("sqlite", "dual"):
-            self._state_repo.replace_all(entries)
+            self._state_repo.replace_all(persisted_entries)
 
     def export_to_json(self, path: Path | None = None) -> None:
         """Compatibility helper to export all tasks to JSON."""
@@ -353,17 +354,45 @@ def _seed_task_folder(
     if not taskmemory.exists():
         taskmemory.write_text(
             f"# Task: {entry.name}\n\n"
-            f"Created: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Provider: {provider}/{model}\n\n"
-            f"## Task Description\n\n"
-            f"{prompt[:500]}\n\n"
-            f"## Progress\n\n"
-            f"_Update this section as you work._\n",
-            encoding="utf-8",
-        )
+                f"Created: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Provider: {provider}/{model}\n\n"
+                f"## Task Description\n\n"
+                f"Prompt preview: {entry.prompt_preview}\n"
+                "Sensitive full prompt is kept in the active CLI session only and is not duplicated here.\n\n"
+                f"## Progress\n\n"
+                f"_Update this section as you work._\n",
+                encoding="utf-8",
+            )
 
     # Deploy rule files for all providers
     rules_content = _TASK_RULES.format(taskmemory_path=taskmemory)
     for name in ("CLAUDE.md", "AGENTS.md", "GEMINI.md"):
         rules_path = folder / name
         rules_path.write_text(rules_content, encoding="utf-8")
+
+
+def _sanitized_task_entry(entry: TaskEntry) -> TaskEntry:
+    """Drop high-sensitivity fields before persisting task metadata."""
+    return TaskEntry(
+        task_id=entry.task_id,
+        chat_id=entry.chat_id,
+        parent_agent=entry.parent_agent,
+        name=entry.name,
+        prompt_preview=entry.prompt_preview,
+        provider=entry.provider,
+        model=entry.model,
+        status=entry.status,
+        session_id=entry.session_id,
+        created_at=entry.created_at,
+        completed_at=entry.completed_at,
+        elapsed_seconds=entry.elapsed_seconds,
+        error=entry.error,
+        result_preview=entry.result_preview,
+        question_count=entry.question_count,
+        num_turns=entry.num_turns,
+        last_question="",
+        original_prompt="",
+        thinking="",
+        tasks_dir=entry.tasks_dir,
+        thread_id=entry.thread_id,
+    )

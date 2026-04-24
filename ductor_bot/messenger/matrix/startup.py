@@ -6,16 +6,43 @@ parts (bot username lookup, command registration, group audit).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
 from ductor_bot.i18n import t
 from ductor_bot.infra.restart import consume_restart_marker
+from ductor_bot.orchestrator.lifecycle import start_api_server
 
 if TYPE_CHECKING:
     from ductor_bot.messenger.matrix.bot import MatrixBot
 
 logger = logging.getLogger(__name__)
+
+
+async def _handle_recovery(bot: MatrixBot) -> None:
+    """Handle interrupted foreground/named-session recovery for Matrix."""
+    from ductor_bot.infra.recovery import RecoveryPlanner
+    from ductor_bot.text.response_format import recovery_notification_text
+
+    planner = RecoveryPlanner(
+        inflight=bot._orch.inflight_tracker,
+        named_sessions=bot._orch.named_sessions.pop_recovered_running(),
+        max_age_seconds=bot._config.timeouts.normal * 2,
+    )
+    for action in planner.plan():
+        note = recovery_notification_text(action.kind, action.prompt_preview, action.session_name)
+        await bot.notification_service.notify(action.chat_id, note)
+        if action.kind == "named_session" and action.session_name:
+            with contextlib.suppress(Exception):
+                bot._orch.submit_named_followup_bg(
+                    action.chat_id,
+                    action.session_name,
+                    action.prompt_preview,
+                    message_id=0,
+                    thread_id=None,
+                )
+    bot._orch.inflight_tracker.clear()
 
 
 async def run_matrix_startup(bot: MatrixBot) -> None:
@@ -33,6 +60,13 @@ async def run_matrix_startup(bot: MatrixBot) -> None:
 
         # Wire all observers + injector to bus in one call
         bot._orchestrator.wire_observers_to_bus(bot._bus)
+        if bot._config.api.enabled:
+            await start_api_server(
+                bot._orchestrator,
+                bot._config,
+                bot._orchestrator.paths,
+                lock_pool=bot._lock_pool,
+            )
 
         # Handle restart sentinel
         restart_reason = _consume_restart_sentinel(bot)
@@ -42,6 +76,8 @@ async def run_matrix_startup(bot: MatrixBot) -> None:
             await bot.notification_service.notify_all(
                 t("startup.matrix_restart", reason=restart_reason)
             )
+
+        await _handle_recovery(bot)
 
         # Update checker
         try:

@@ -34,6 +34,7 @@ class _FakeBackgroundResult:
     model: str = "opus"
     session_name: str = "my-session"
     session_id: str = "sid1"
+    silent: bool = False
 
 
 @dataclass

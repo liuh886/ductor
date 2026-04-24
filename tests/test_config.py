@@ -34,7 +34,8 @@ def test_agent_config_defaults() -> None:
     assert cfg.idle_timeout_minutes == 1440
     assert cfg.daily_reset_hour == 4
     assert cfg.cli_timeout == 1800.0
-    assert cfg.permission_mode == "bypassPermissions"
+    assert cfg.permission_mode == "normal"
+    assert cfg.file_access == "workspace"
     assert cfg.gemini_api_key is None
     assert cfg.telegram_token == ""
     assert cfg.allowed_user_ids == []
@@ -66,6 +67,7 @@ def test_agent_config_streaming_defaults() -> None:
     assert cfg.streaming.enabled is True
     assert cfg.streaming.min_chars == 200
     assert cfg.streaming.max_chars == 4000
+    assert cfg.scene.status_reaction is False
 
 
 def test_agent_config_docker_defaults() -> None:

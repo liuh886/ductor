@@ -155,7 +155,9 @@ This enables task submission from any agent while preserving owner routing.
 
 ## Shared knowledge sync
 
-`SharedKnowledgeSync` watches `~/.ductor/SHAREDMEMORY.md` and mirrors content into each agent's `MAINMEMORY.md` block.
+`SharedKnowledgeSync` watches `~/.ductor/SHAREDMEMORY.md`, audits it for size/secret guardrails,
+and keeps the shared-memory channel active for runtime loading. It is not a replication engine that
+copies the full file into each agent's `MAINMEMORY.md`.
 
 Legacy HTML marker format is migrated to current block markers when rewritten.
 

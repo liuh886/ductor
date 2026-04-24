@@ -69,6 +69,7 @@ class DockerConfig(BaseModel):
     mount_host_cache: bool = False
     mounts: list[str] = Field(default_factory=list)
     extras: list[str] = Field(default_factory=list)
+    bind_internal_api_public: bool = False
 
 
 _DEFAULT_HEARTBEAT_PROMPT = (
@@ -180,10 +181,40 @@ class TasksConfig(BaseModel):
     timeout_seconds: float = 3600.0
 
 
+class MemoryFlushConfig(BaseModel):
+    """Settings for silent context synchronization (#77)."""
+
+    enabled: bool = True
+    dedup_seconds: float = 120.0
+    flush_prompt: str = (
+        "SILENT CONTEXT SYNC: review the conversation history and update "
+        "durable memory in `workspace/memory_system/MAINMEMORY.md` so the "
+        "facts are preserved after the upcoming context compaction. Do not "
+        "reply conversationally to the user."
+    )
+
+
+class MemoryCompactionConfig(BaseModel):
+    """Settings for LLM-driven dense memory compaction (#80)."""
+
+    enabled: bool = True
+    trigger_lines: int = 150
+    target_lines: int = 50
+    preserve_recency_days: int = 7
+    prompt: str = (
+        "SYSTEM: Density maintenance in `workspace/memory_system/MAINMEMORY.md`.\n"
+        "1. Rewrite the file to be under {target_lines} lines.\n"
+        "2. Keep facts from the last {preserve_days} days verbatim.\n"
+        "3. Condense older clusters into dense, high-signal semantic summaries.\n"
+        "4. Preserve architectural decisions and core user preferences.\n"
+        "Finish silently without conversational filler."
+    )
+
+
 class TimeoutConfig(BaseModel):
     """Per-execution-path timeout settings."""
 
-    normal: float = 600.0
+    normal: float = 1200.0
     background: float = 1800.0
     subagent: float = 3600.0
     warning_intervals: list[float] = Field(default_factory=lambda: [60.0, 10.0])
@@ -203,10 +234,35 @@ class WebhookConfig(BaseModel):
     rate_limit_per_minute: int = 30
 
 
+class NotificationTarget(BaseModel):
+    """A chat/topic to route startup or upgrade notifications to (#64).
+
+    ``topic_id`` is Telegram-specific (forum-topic thread). Matrix ignores it.
+    """
+
+    enabled: bool = True
+    chat_id: int | None = None
+    topic_id: int | None = None
+
+
+class NotificationsConfig(BaseModel):
+    """Opt-in routing for lifecycle notifications (#64).
+
+    Empty lists preserve the previous fan-out-to-all behaviour. When
+    ``startup_targets`` has at least one enabled target with a valid
+    ``chat_id``, startup notices go to those targets only; same for
+    ``upgrade_targets`` and new-version notices.
+    """
+
+    startup_targets: list[NotificationTarget] = Field(default_factory=list)
+    upgrade_targets: list[NotificationTarget] = Field(default_factory=list)
+
+
 class SceneConfig(BaseModel):
     """Settings for scene indicators and technical footer."""
 
     seen_reaction: bool = False
+    status_reaction: bool = False
     technical_footer: bool = False
 
 
@@ -290,11 +346,14 @@ class AgentConfig(BaseModel):
     max_budget_usd: float | None = None
     max_turns: int | None = None
     max_session_messages: int | None = None
-    permission_mode: str = "bypassPermissions"
+    permission_mode: str = "normal"
     cli_timeout: float = 1800.0
     reasoning_effort: str = "medium"
-    file_access: str = "all"
+    file_access: str = "workspace"
     gemini_api_key: str | None = None
+    interagent_token: str = ""
+    memory_flush: MemoryFlushConfig = Field(default_factory=MemoryFlushConfig)
+    memory_compaction: MemoryCompactionConfig = Field(default_factory=MemoryCompactionConfig)
     streaming: StreamingConfig = Field(default_factory=StreamingConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
@@ -341,10 +400,10 @@ class AgentConfig(BaseModel):
     def _sync_cli_timeout_to_timeouts(self) -> AgentConfig:
         """Sync legacy ``cli_timeout`` to ``timeouts.normal`` for backward compat.
 
-        When ``cli_timeout`` differs from the default 600.0 and ``timeouts.normal``
+        When ``cli_timeout`` differs from the default 1200.0 and ``timeouts.normal``
         is still at its default, propagate ``cli_timeout`` into ``timeouts.normal``.
         """
-        if self.cli_timeout != 600.0 and self.timeouts.normal == 600.0:
+        if self.cli_timeout != 1200.0 and self.timeouts.normal == 1200.0:
             self.timeouts.normal = self.cli_timeout
         return self
 
@@ -446,7 +505,17 @@ def _detect_posix_timezone() -> ZoneInfo | None:
         return None
 
 
-CLAUDE_MODELS_ORDERED: tuple[str, ...] = ("haiku", "sonnet", "opus")
+# `[1m]` suffix unlocks Claude Code's 1M-context beta on sonnet + opus.
+# The Claude CLI strips the suffix before dispatch and sets the beta header
+# internally (see https://code.claude.com/docs/en/model-config). Haiku has
+# no 1M variant upstream, so it is intentionally omitted.
+CLAUDE_MODELS_ORDERED: tuple[str, ...] = (
+    "haiku",
+    "sonnet",
+    "sonnet[1m]",
+    "opus",
+    "opus[1m]",
+)
 CLAUDE_MODELS: frozenset[str] = frozenset(CLAUDE_MODELS_ORDERED)
 
 # "auto" is a Gemini-specific alias (Gemini CLI auto-selects the best model).

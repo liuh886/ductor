@@ -13,7 +13,9 @@ Environment variables DUCTOR_AGENT_NAME, DUCTOR_INTERAGENT_PORT, and
 DUCTOR_INTERAGENT_HOST are automatically set by the Ductor framework.
 
 Usage:
-    python3 ask_agent_async.py [--new] [--summary "Short description"] TARGET_AGENT "Your message here"
+    python3 ask_agent_async.py [--new] [--summary "Short description"]
+                               [--reply-to AGENT] [--silent]
+                               TARGET_AGENT "Your message here"
 
 Options:
     --new                Start a fresh session, discarding any prior inter-agent context
@@ -21,6 +23,13 @@ Options:
                          the existing session (if any).
     --summary "text"     Short description shown in the recipient's Telegram chat
                          notification instead of a truncated message excerpt.
+    --reply-to AGENT     Route the response to AGENT instead of the sending agent.
+                         Useful when sender identity is lost (e.g. SSH bridge where
+                         DUCTOR_AGENT_NAME falls back to "unknown"). The async result
+                         handler lookup uses AGENT instead of the sender field.
+    --silent             Suppress the "Async task received from X" notification in the
+                         recipient's chat. Useful for automated pipelines where only
+                         the final result should be user-visible.
 """
 
 from __future__ import annotations
@@ -32,10 +41,20 @@ import urllib.error
 import urllib.request
 
 
+def _auth_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("DUCTOR_INTERAGENT_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def main() -> None:
     args = sys.argv[1:]
     new_session = False
     summary = ""
+    reply_to = ""
+    silent = False
 
     # Parse flags
     while args:
@@ -48,12 +67,22 @@ def main() -> None:
                 sys.exit(1)
             summary = args[1]
             args = args[2:]
+        elif args[0] == "--reply-to":
+            if len(args) < 2:
+                print("Error: --reply-to requires a value", file=sys.stderr)
+                sys.exit(1)
+            reply_to = args[1]
+            args = args[2:]
+        elif args[0] == "--silent":
+            silent = True
+            args = args[1:]
         else:
             break
 
     if len(args) < 2:
         print(
-            'Usage: python3 ask_agent_async.py [--new] [--summary "desc"] TARGET_AGENT "message"',
+            'Usage: python3 ask_agent_async.py [--new] [--summary "desc"] '
+            '[--reply-to AGENT] [--silent] TARGET_AGENT "message"',
             file=sys.stderr,
         )
         sys.exit(1)
@@ -70,6 +99,10 @@ def main() -> None:
         body["new_session"] = True
     if summary:
         body["summary"] = summary
+    if reply_to:
+        body["reply_to"] = reply_to
+    if silent:
+        body["silent"] = True
     chat_id = os.environ.get("DUCTOR_CHAT_ID", "")
     topic_id = os.environ.get("DUCTOR_TOPIC_ID", "")
     if chat_id:
@@ -81,7 +114,7 @@ def main() -> None:
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=_auth_headers(),
         method="POST",
     )
 

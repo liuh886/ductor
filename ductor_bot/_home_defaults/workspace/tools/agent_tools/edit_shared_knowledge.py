@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """View or edit the shared knowledge file (SHAREDMEMORY.md).
 
-SHAREDMEMORY.md is automatically synced into every agent's MAINMEMORY.md
-by the AgentSupervisor. Use this tool to read or update shared knowledge
-without needing to know the file path.
+SHAREDMEMORY.md is the shared alert/coordination channel used across agents.
+It is watched by the supervisor and surfaced dynamically by the workspace
+loader, but it is not mirrored wholesale into every agent MAINMEMORY.md.
+Use this tool to read or update shared knowledge without needing to know the
+file path.
 
 Usage:
     python3 edit_shared_knowledge.py --show
@@ -68,7 +70,7 @@ def main() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(args.set.strip() + "\n", encoding="utf-8")
         print(f"Shared knowledge replaced ({len(args.set)} chars).")
-        print("Changes will sync to all agents automatically.")
+        print("Changes are now available to agents through shared-memory loading.")
         return
 
     if args.append is not None:
@@ -77,7 +79,7 @@ def main() -> None:
         new_content = f"{existing}\n\n{args.append.strip()}\n" if existing else f"{args.append.strip()}\n"
         path.write_text(new_content, encoding="utf-8")
         print(f"Appended to shared knowledge ({len(args.append)} chars).")
-        print("Changes will sync to all agents automatically.")
+        print("Changes are now available to agents through shared-memory loading.")
 
 
 if __name__ == "__main__":

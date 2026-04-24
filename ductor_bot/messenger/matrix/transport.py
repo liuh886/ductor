@@ -72,6 +72,8 @@ class MatrixTransport:
         room_id = self._resolve_room(env)
         if not room_id:
             return
+        if env.metadata.get("silent"):
+            return
         elapsed = f"{env.elapsed_seconds:.0f}s"
         if env.session_name:
             if env.status == "aborted":

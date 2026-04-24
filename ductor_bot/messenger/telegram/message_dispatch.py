@@ -45,16 +45,27 @@ def _build_footer(result: OrchestratorResult, scene: SceneConfig | None) -> str:
 
 @dataclass(slots=True)
 class NonStreamingDispatch:
-    """Input payload for one non-streaming message turn."""
+    """Input payload for one non-streaming message turn.
+
+    ``message`` is the user's current trigger (text message, callback query
+    message, or ``None`` for inline commands). It anchors the reaction
+    tracker so reactions always land on the message that initiated the
+    turn — mirroring ``StreamingDispatch.message`` (MED #10).
+
+    ``reply_to`` is the optional reply-to destination for the outgoing
+    Telegram message. Usually the same as ``message`` but can differ.
+    """
 
     bot: Bot
     orchestrator: Orchestrator
     key: SessionKey
     text: str
     allowed_roots: list[Path] | None
+    message: Message | None = None
     reply_to: Message | None = None
     thread_id: int | None = None
     scene_config: SceneConfig | None = None
+    timeout_seconds: float | None = None
 
 
 @dataclass(slots=True)
@@ -72,27 +83,101 @@ class StreamingDispatch:
     scene_config: SceneConfig | None = None
 
 
+_REACTION_THINKING = "\U0001f4ad"  # thought balloon
+_REACTION_SYSTEM = "\u2699\ufe0f"  # gear
+_REACTION_DEFAULT = "\U0001f440"  # eyes
+
+
+class ReactionTracker:
+    """Helper to manage status emoji reactions on a trigger message.
+
+    Each turn (non-streaming or streaming) can set one reaction on the
+    user's trigger message to show the agent's current state. This class
+    tracks the active emoji and ensures we don't spam the Telegram API
+    if the state hasn't changed.
+    """
+
+    def __init__(self, bot: Bot, chat_id: int, message_id: int | None) -> None:
+        self._bot = bot
+        self._chat_id = chat_id
+        self._message_id = message_id
+        self._current: str | None = None
+
+    async def set_thinking(self) -> None:
+        await self.set_emoji(_REACTION_THINKING)
+
+    async def set_system(self) -> None:
+        await self.set_emoji(_REACTION_SYSTEM)
+
+    async def set_default(self) -> None:
+        await self.set_emoji(_REACTION_DEFAULT)
+
+    async def clear(self) -> None:
+        await self.set_emoji(None)
+
+    async def set_emoji(self, emoji: str | None) -> None:
+        """Set or clear the reaction emoji. Swallows all Telegram errors."""
+        if self._message_id is None or emoji == self._current:
+            return
+        try:
+            from aiogram.types import ReactionTypeEmoji
+
+            reaction = [ReactionTypeEmoji(emoji=emoji)] if emoji else []
+            await self._bot.set_message_reaction(
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+                reaction=reaction,
+            )
+            self._current = emoji
+        except Exception:
+            # Reactions are purely cosmetic; never block the turn on failure.
+            logger.debug("Failed to set reaction emoji=%s", emoji, exc_info=True)
+
+
+def _status_reaction_enabled(scene: SceneConfig | None) -> bool:
+    """True if status reactions are enabled in the scene config."""
+    return scene is not None and scene.status_reaction
+
+
 async def run_non_streaming_message(
     dispatch: NonStreamingDispatch,
 ) -> str:
     """Execute one non-streaming turn and deliver the result to Telegram."""
-    async with TypingContext(dispatch.bot, dispatch.key.chat_id, thread_id=dispatch.thread_id):
-        result = await dispatch.orchestrator.handle_message(dispatch.key, dispatch.text)
-
-    footer = _build_footer(result, dispatch.scene_config)
-    result.text += footer
-    reply_id = dispatch.reply_to.message_id if dispatch.reply_to else None
-    await send_rich(
+    # MED #10: anchor the reaction tracker on the user's current trigger
+    # message (``dispatch.message``), mirroring the streaming path. Using
+    # ``reply_to`` instead risked landing reactions on a prior bot message
+    # when a callback query repurposed ``reply_to`` for the outgoing reply.
+    reaction_target = dispatch.message
+    tracker = ReactionTracker(
         dispatch.bot,
         dispatch.key.chat_id,
-        result.text,
-        SendRichOpts(
-            reply_to_message_id=reply_id,
-            allowed_roots=dispatch.allowed_roots,
-            thread_id=dispatch.thread_id,
-        ),
+        reaction_target.message_id if reaction_target else None,
     )
-    return result.text
+
+    if _status_reaction_enabled(dispatch.scene_config):
+        await tracker.set_thinking()
+
+    try:
+        async with TypingContext(dispatch.bot, dispatch.key.chat_id, thread_id=dispatch.thread_id):
+            result = await dispatch.orchestrator.handle_message(dispatch.key, dispatch.text)
+
+        footer = _build_footer(result, dispatch.scene_config)
+        result.text += footer
+        reply_id = dispatch.reply_to.message_id if dispatch.reply_to else None
+        await send_rich(
+            dispatch.bot,
+            dispatch.key.chat_id,
+            result.text,
+            SendRichOpts(
+                reply_to_message_id=reply_id,
+                allowed_roots=dispatch.allowed_roots,
+                thread_id=dispatch.thread_id,
+            ),
+        )
+        return result.text
+    finally:
+        if _status_reaction_enabled(dispatch.scene_config):
+            await tracker.clear()
 
 
 async def run_streaming_message(

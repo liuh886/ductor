@@ -19,6 +19,19 @@ SKILL_EXTRACTION_PROMPT = """
 Analyze the following task execution history and extract a reusable 'Skill' in Markdown format.
 A Skill should be a procedural 'How-To' guide that can be followed by another agent to achieve a similar result.
 
+You MUST include valid YAML frontmatter at the very top of the Markdown file, enclosed by `---`.
+The YAML frontmatter MUST contain the following required keys:
+- `name`: A short, descriptive name for the skill (e.g., 'sqlite-wal-debugger').
+- `description`: A brief summary of what the skill does.
+- `phase_trigger`: The phase when this skill should be used (e.g., RESEARCH, DESIGN, EXECUTION, DEBUGGING).
+
+Example:
+---
+name: sqlite-wal-debugger
+description: Guide on how to debug SQLite Write-Ahead Logging issues.
+phase_trigger: DEBUGGING
+---
+
 Focus on:
 1. Successful steps taken.
 2. Tools used and why.
@@ -26,7 +39,8 @@ Focus on:
 4. Specific commands or code snippets that were effective.
 
 The output should be a single Markdown file with:
-- A clear, descriptive title (e.g., 'How to Debug SQLite WAL Issues').
+- The required YAML frontmatter at the very top.
+- A clear, descriptive title (e.g., '# How to Debug SQLite WAL Issues').
 - A 'Context' or 'Objective' section.
 - A 'Procedural Steps' section (numbered).
 - A 'Key Findings' section.
@@ -38,7 +52,7 @@ Original Prompt: {original_prompt}
 Execution History (Compressed):
 {history}
 
-Return ONLY the Markdown content for the skill.
+Return ONLY the Markdown content for the skill (including the frontmatter). Do NOT wrap the output in ```markdown blocks.
 """
 
 
@@ -60,9 +74,9 @@ class SkillExtractor:
         self._selector = SummarySelector(
             message_repo,
             summary_repo,
-            trigger_messages=12,
-            protected_tail=6,
-            max_summary_items=10,
+            trigger_messages=8,
+            protected_tail=2,
+            max_summary_items=6,
         )
 
     async def extract(self, entry: TaskEntry) -> Path | None:
@@ -106,13 +120,13 @@ class SkillExtractor:
                 logger.error("Skill extraction failed for %s", entry.task_id)
                 return None
 
+            import re
             skill_content = response.result.strip()
             # Basic cleanup of LLM-wrapped markdown blocks
-            for prefix in ("```markdown", "```"):
-                if skill_content.lower().startswith(prefix):
-                    skill_content = skill_content[len(prefix) :].strip()
-            if skill_content.endswith("```"):
-                skill_content = skill_content[:-3].strip()
+            skill_content = re.sub(r"^```[mM]arkdown\s*\n", "", skill_content)
+            skill_content = re.sub(r"^```\s*\n", "", skill_content)
+            skill_content = re.sub(r"\n```\s*$", "", skill_content)
+            skill_content = skill_content.strip()
 
             # Generate a safe skill directory name.
             safe_name = "".join(c if c.isalnum() else "_" for c in (entry.name or entry.task_id))
@@ -123,6 +137,45 @@ class SkillExtractor:
             skill_path.write_text(skill_content, encoding="utf-8")
 
             logger.info("Skill extracted to %s", skill_path)
+
+            # Update Capability Registry
+            try:
+                name, desc, phase = safe_name, "Extracted skill", "EXECUTION"
+                
+                # Extract frontmatter
+                frontmatter_match = re.search(r"^---\s*\n(.*?)\n---", skill_content, flags=re.DOTALL)
+                if frontmatter_match:
+                    frontmatter = frontmatter_match.group(1)
+                    
+                    name_match = re.search(r"^name:\s*(.*?)$", frontmatter, flags=re.MULTILINE)
+                    if name_match:
+                        name = name_match.group(1).strip(" '\"")
+                        
+                    desc_match = re.search(r"^description:\s*(.*?)$", frontmatter, flags=re.MULTILINE)
+                    if desc_match:
+                        desc = desc_match.group(1).strip(" '\"")
+                        
+                    phase_match = re.search(r"^phase_trigger:\s*(.*?)$", frontmatter, flags=re.MULTILINE)
+                    if phase_match:
+                        phase = phase_match.group(1).strip(" '\"")
+                
+                registry_path = self._skills_dir.parent.parent / "memory_system" / "CAPABILITY_REGISTRY.md"
+                if registry_path.exists():
+                    registry_content = registry_path.read_text(encoding="utf-8")
+                    
+                    # Ensure we have an Extracted Skills section
+                    if "## Extracted Skills" not in registry_content:
+                        with registry_path.open("a", encoding="utf-8") as f:
+                            f.write("\n## Extracted Skills\n\n")
+                    
+                    entry_line = f"- **{name}** ({phase}): {desc} [Dir: {skill_dir.name}]\n"
+                    with registry_path.open("a", encoding="utf-8") as f:
+                        f.write(entry_line)
+                        
+                    logger.info("Added skill %s to Capability Registry.", name)
+            except Exception as e:
+                logger.error("Failed to update Capability Registry: %s", e)
+
             return skill_dir
 
         except Exception:

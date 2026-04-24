@@ -41,7 +41,7 @@ async def handle_interrupt(
     if orchestrator is None:
         return False
 
-    interrupted = orchestrator.interrupt(chat_id)
+    interrupted = orchestrator.interrupt(chat_id, topic_id=get_thread_id(message))
     logger.info("Interrupt requested interrupted=%d", interrupted)
     msg = t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
     await send_rich(
@@ -67,7 +67,7 @@ async def handle_abort(
     if orchestrator is None:
         return False
 
-    killed = await orchestrator.abort(chat_id)
+    killed = await orchestrator.abort(chat_id, topic_id=get_thread_id(message))
     logger.info("Abort requested killed=%d", killed)
     text = stop_text(bool(killed), orchestrator.active_provider_name)
     await send_rich(

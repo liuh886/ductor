@@ -45,7 +45,8 @@ class TestResolveMountTarget:
     def test_tilde_expansion(self, tmp_path: Path) -> None:
         proj = tmp_path / "proj"
         proj.mkdir()
-        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
+        # Patch both HOME and USERPROFILE for platform independence
+        with patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}):
             result = resolve_mount_target("~/proj", set())
         assert result is not None
         assert result[0] == proj

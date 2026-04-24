@@ -52,6 +52,23 @@ async def test_kill_all() -> None:
     assert count == 1
 
 
+async def test_kill_all_with_topic_id_kills_only_matching_topic() -> None:
+    reg = ProcessRegistry()
+    proc1 = _mock_process(pid=101)
+    proc2 = _mock_process(pid=102)
+    reg.register(chat_id=1, process=proc1, label="topic-10", topic_id=10)
+    reg.register(chat_id=1, process=proc2, label="topic-20", topic_id=20)
+
+    with patch("ductor_bot.cli.process_registry.asyncio.sleep", new_callable=AsyncMock):
+        count = await reg.kill_all(chat_id=1, topic_id=10)
+
+    assert count == 1
+    assert reg.has_active(1, topic_id=10) is False
+    assert reg.has_active(1, topic_id=20) is True
+    assert reg.was_aborted(1, topic_id=10) is True
+    assert reg.was_aborted(1, topic_id=20) is False
+
+
 async def test_kill_all_sets_aborted() -> None:
     reg = ProcessRegistry()
     proc = _mock_process()
@@ -68,6 +85,14 @@ def test_clear_abort() -> None:
     assert reg.was_aborted(1) is True
     reg.clear_abort(1)
     assert reg.was_aborted(1) is False
+
+
+def test_clear_abort_with_topic_id() -> None:
+    reg = ProcessRegistry()
+    reg._aborted.add((1, 10))
+    assert reg.was_aborted(1, topic_id=10) is True
+    reg.clear_abort(1, topic_id=10)
+    assert reg.was_aborted(1, topic_id=10) is False
 
 
 async def test_kill_all_empty_returns_zero() -> None:

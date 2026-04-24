@@ -86,15 +86,19 @@ def test_main_agent_codex_parameters() -> None:
     provider = CodexCLI(config)
     cmd = provider._build_command("test prompt")
 
-    # Verify Codex parameters are present before --
-    separator_idx = cmd.index("--")
-    params_before_separator = cmd[:separator_idx]
+    # Verify Codex parameters stay in the option section on both POSIX argv
+    # mode and Windows stdin mode.
+    params_before_separator = cmd[: cmd.index("--")] if "--" in cmd else cmd
 
     assert "--codex-flag" in params_before_separator
     assert "codex-value" in params_before_separator
 
-    # Verify prompt comes after separator
-    assert cmd[separator_idx + 1] == "test prompt"
+    # POSIX passes the prompt as a positional arg; Windows feeds it via stdin.
+    if "--" in cmd:
+        separator_idx = cmd.index("--")
+        assert cmd[separator_idx + 1] == "test prompt"
+    else:
+        assert provider._stdin_prompt("test prompt") == "test prompt"
 
 
 def test_parameter_isolation() -> None:

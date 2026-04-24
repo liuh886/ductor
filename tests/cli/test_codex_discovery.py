@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ductor_bot.cli.codex_discovery import CodexModelInfo, discover_codex_models
+from ductor_bot.cli.codex_discovery import _INPUT, CodexModelInfo, discover_codex_models
 
 _INIT_RESPONSE = json.dumps(
     {
@@ -64,6 +64,7 @@ def _mock_process(stdout: str = _STDOUT, returncode: int = 0) -> AsyncMock:
     proc.stdout = MagicMock()
     lines = [f"{line}\n".encode() for line in stdout.splitlines()] + [b""]
     proc.stdout.readline = AsyncMock(side_effect=lines)
+    proc.communicate = AsyncMock(return_value=(stdout.encode(), b""))
     proc.returncode = returncode
     proc.kill = MagicMock()
     proc.wait = AsyncMock(return_value=returncode)
@@ -91,7 +92,7 @@ async def test_discover_models_parses_response() -> None:
     assert second.id == "gpt-5.1-codex-mini"
     assert second.supported_efforts == ("medium", "high")
     assert second.is_default is False
-    proc.stdin.close.assert_not_called()
+    proc.communicate.assert_awaited_once_with(input=_INPUT.encode())
 
 
 async def test_discover_models_codex_not_installed() -> None:

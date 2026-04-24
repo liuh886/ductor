@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -15,12 +16,15 @@ class MemoryFragment:
 
     title: str
     body: str
+    ulid: str = ""
     source_kind: str = ""
     source_path: str = ""
     scope: str = ""
     agent_name: str = ""
     tags: list[str] = field(default_factory=list)
     importance: float = 0.0
+    created_at: float = 0.0
+    updated_at: float = 0.0
 
 
 def extract_markdown_fragments(
@@ -37,21 +41,37 @@ def extract_markdown_fragments(
     current_title = "ROOT"
     current_lines: list[str] = []
     current_tags: list[str] = []
+    fragment_index = 0
 
     def flush() -> None:
-        nonlocal current_lines, current_tags
+        nonlocal current_lines, current_tags, fragment_index
         body = "\n".join(line.rstrip() for line in current_lines).strip()
         if body:
+            fragment_index += 1
+            ulid = _deterministic_fragment_ulid(
+                fragment_index,
+                (
+                    source_path,
+                    source_kind,
+                    scope,
+                    agent_name,
+                    current_title,
+                    body,
+                ),
+            )
             fragments.append(
                 MemoryFragment(
                     title=current_title,
                     body=body,
+                    ulid=ulid,
                     source_path=source_path,
                     source_kind=source_kind,
                     scope=scope,
                     agent_name=agent_name,
                     tags=list(dict.fromkeys(current_tags)),
                     importance=_score_fragment(current_title, body),
+                    created_at=0.0,
+                    updated_at=0.0,
                 )
             )
         current_lines = []
@@ -92,6 +112,17 @@ def _extract_tags(text: str) -> list[str]:
         if cleaned and cleaned.lower() not in {"the", "and", "for", "with", "from", "this"}:
             tags.append(cleaned.lower())
     return tags
+
+
+def _deterministic_fragment_ulid(
+    fragment_index: int,
+    parts: tuple[str, str, str, str, str, str],
+) -> str:
+    """Return a stable content-derived identifier for a fragment."""
+    digest = hashlib.sha256(
+        "\x1f".join((str(fragment_index), *parts)).encode("utf-8")
+    ).hexdigest()
+    return f"mf_{digest[:26]}"
 
 
 def _score_fragment(title: str, body: str) -> float:

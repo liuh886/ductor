@@ -214,6 +214,8 @@ def test_memory_fragment_repository_scope_query(tmp_path: Path) -> None:
 
     all_rows = repo.list_all()
     assert [row["title"] for row in all_rows] == ["A", "B", "C"]
+    assert all(float(row["created_at"]) > 0 for row in all_rows)
+    assert all(float(row["updated_at"]) > 0 for row in all_rows)
 
 
 def test_memory_fragment_repository_replace_for_scope(tmp_path: Path) -> None:
@@ -235,3 +237,7 @@ def test_memory_fragment_repository_replace_for_scope(tmp_path: Path) -> None:
     shared = repo.list_by_scope("sharedmemory")
     assert [row["title"] for row in scoped] == ["New Main"]
     assert [row["title"] for row in shared] == ["Shared"]
+    assert float(scoped[0]["created_at"]) > 0
+    assert float(scoped[0]["updated_at"]) > 0
+    assert float(shared[0]["created_at"]) > 0
+    assert float(shared[0]["updated_at"]) > 0

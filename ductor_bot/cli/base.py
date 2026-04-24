@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
+_REDACTED_ENV_DISPLAY = "<redacted>"
 
 
 def _win_feed_stdin(process: asyncio.subprocess.Process, data: str) -> None:
@@ -103,9 +104,81 @@ class CLIConfig:
     # Multi-agent identification:
     agent_name: str = "main"
     interagent_port: int = 8799
+    interagent_token: str = ""
+    # External transcription hooks (#66) — empty strings keep built-in strategies.
+    transcribe_command: str = ""
+    video_transcribe_command: str = ""
 
 
 _CONTAINER_DUCTOR_MOUNT = "/ductor"
+_SCOPED_SECRET_KEYS: dict[str, frozenset[str]] = {
+    "gemini": frozenset(
+        {
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_GCA",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+        }
+    ),
+    "codex": frozenset({"OPENAI_API_KEY"}),
+    "claude": frozenset(),
+}
+
+
+def redact_command_for_logging(
+    cmd: list[str],
+    *,
+    truncate_long_options: bool = True,
+) -> list[str]:
+    """Return a log-safe copy of *cmd* with secret env values redacted."""
+    safe: list[str] = []
+    idx = 0
+    while idx < len(cmd):
+        part = cmd[idx]
+        if part == "-e" and idx + 1 < len(cmd):
+            safe.append(part)
+            key_value = cmd[idx + 1]
+            key, sep, value = key_value.partition("=")
+            if sep and _should_redact_env_key(key):
+                safe.append(f"{key}={_REDACTED_ENV_DISPLAY}")
+            elif truncate_long_options and len(key_value) > 80:
+                safe.append(key_value[:80] + "...")
+            else:
+                safe.append(key_value)
+            idx += 2
+            continue
+
+        if (
+            len(part) > 80
+            and (
+                not truncate_long_options
+                or (idx > 0 and cmd[idx - 1].startswith("--"))
+            )
+        ):
+            safe.append(part[:80] + "...")
+        else:
+            safe.append(part)
+        idx += 1
+    return safe
+
+
+def _should_redact_env_key(key: str) -> bool:
+    """Return True when an env-var name is likely to contain a secret."""
+    lowered = key.lower()
+    return any(token in lowered for token in ("token", "secret", "password", "key"))
+
+
+def _append_env_flag(env_flags: list[str], key: str, value: str | int) -> None:
+    """Append one Docker environment flag pair."""
+    env_flags += ["-e", f"{key}={value}"]
+
+
+def _provider_secret_env(provider: str, secret_env: dict[str, str]) -> dict[str, str]:
+    """Return the subset of secrets needed by one provider process."""
+    allowed = _SCOPED_SECRET_KEYS.get(provider, frozenset())
+    return {key: value for key, value in secret_env.items() if key in allowed}
 
 
 def _to_container_path(host_path: Path, main_home: Path) -> str:
@@ -117,6 +190,42 @@ def _to_container_path(host_path: Path, main_home: Path) -> str:
     if str(rel) == ".":
         return _CONTAINER_DUCTOR_MOUNT
     return f"{_CONTAINER_DUCTOR_MOUNT}/{rel.as_posix()}"
+
+
+def _docker_env_flags(
+    config: CLIConfig,
+    container_home: str,
+    container_shared: str,
+) -> list[str]:
+    """Build the ``-e KEY=VAL`` argv flags for ``docker exec``."""
+    env_flags: list[str] = [
+        "-e",
+        f"DUCTOR_CHAT_ID={config.chat_id}",
+        "-e",
+        f"DUCTOR_TRANSPORT={config.transport}",
+        "-e",
+        f"DUCTOR_AGENT_NAME={config.agent_name}",
+        "-e",
+        f"DUCTOR_INTERAGENT_PORT={config.interagent_port}",
+        "-e",
+        f"DUCTOR_HOME={container_home}",
+        "-e",
+        f"DUCTOR_SHARED_MEMORY_PATH={container_shared}",
+        "-e",
+        "DUCTOR_INTERAGENT_HOST=host.docker.internal",
+    ]
+    if config.interagent_token:
+        env_flags += ["-e", f"DUCTOR_INTERAGENT_TOKEN={config.interagent_token}"]
+    if config.topic_id:
+        env_flags += ["-e", f"DUCTOR_TOPIC_ID={config.topic_id}"]
+    if config.transcribe_command:
+        env_flags += ["-e", f"DUCTOR_TRANSCRIBE_COMMAND={config.transcribe_command}"]
+    if config.video_transcribe_command:
+        env_flags += [
+            "-e",
+            f"DUCTOR_VIDEO_TRANSCRIBE_COMMAND={config.video_transcribe_command}",
+        ]
+    return env_flags
 
 
 def docker_wrap(
@@ -155,7 +264,7 @@ def docker_wrap(
 
         from ductor_bot.infra.env_secrets import load_env_secrets
 
-        merged_extra = dict(load_env_secrets(main_home / ".env"))
+        merged_extra = _provider_secret_env(config.provider, load_env_secrets(main_home / ".env"))
         # Remove keys already in host env (subprocess inherits docker binary env).
         for key in list(merged_extra):
             if key in os.environ:
@@ -164,24 +273,7 @@ def docker_wrap(
             merged_extra.update(extra_env)  # Provider-specific overrides win.
         extra_env = merged_extra or None
 
-        env_flags: list[str] = [
-            "-e",
-            f"DUCTOR_CHAT_ID={config.chat_id}",
-            "-e",
-            f"DUCTOR_TRANSPORT={config.transport}",
-            "-e",
-            f"DUCTOR_AGENT_NAME={config.agent_name}",
-            "-e",
-            f"DUCTOR_INTERAGENT_PORT={config.interagent_port}",
-            "-e",
-            f"DUCTOR_HOME={container_home}",
-            "-e",
-            f"DUCTOR_SHARED_MEMORY_PATH={container_shared}",
-            "-e",
-            "DUCTOR_INTERAGENT_HOST=host.docker.internal",
-        ]
-        if config.topic_id:
-            env_flags += ["-e", f"DUCTOR_TOPIC_ID={config.topic_id}"]
+        env_flags = _docker_env_flags(config, container_home, container_shared)
         if extra_env:
             for key, value in extra_env.items():
                 env_flags += ["-e", f"{key}={value}"]

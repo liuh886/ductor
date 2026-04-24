@@ -52,6 +52,7 @@ class AgentRequest:
     append_system_prompt: str | None = None
     model_override: str | None = None
     provider_override: str | None = None
+    transport: str = "tg"
     chat_id: int = 0
     topic_id: int | None = None
     process_label: str = "main"

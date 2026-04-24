@@ -28,6 +28,7 @@ def _make_service(tmp_path: Path, **overrides: Any) -> CLIService:
         models=ModelRegistry(),
         available_providers=overrides.pop("available_providers", frozenset({"claude"})),
         process_registry=ProcessRegistry(),
+        inflight_repo=MagicMock(),
     )
 
 

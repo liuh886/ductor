@@ -50,7 +50,7 @@ class TestHandleAbort:
         msg = _make_message(chat_id=42)
         result = await handle_abort(orchestrator, bot, chat_id=42, message=msg)
         assert result is True
-        orchestrator.abort.assert_called_once_with(42)
+        orchestrator.abort.assert_called_once_with(42, topic_id=None)
 
     async def test_abort_no_orchestrator(self) -> None:
         from ductor_bot.messenger.telegram.handlers import handle_abort

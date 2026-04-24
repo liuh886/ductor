@@ -59,7 +59,7 @@ async def discover_codex_models(*, deadline: float = DISCOVERY_TIMEOUT) -> list[
         return []
 
     process: asyncio.subprocess.Process | None = None
-    lines: list[str] = []
+    raw_stdout = ""
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -74,21 +74,9 @@ async def discover_codex_models(*, deadline: float = DISCOVERY_TIMEOUT) -> list[
             logger.warning("Codex app-server spawned without pipes")
             return []
 
-        process.stdin.write(_INPUT.encode())
-        await process.stdin.drain()
-        # Keep stdin open while reading; closing early can terminate app-server
-        # before it sends the model/list response.
-
         async with asyncio.timeout(deadline):
-            while True:
-                line_bytes = await process.stdout.readline()
-                if not line_bytes:
-                    break
-                line = line_bytes.decode(errors="replace")
-                lines.append(line)
-                with contextlib.suppress(json.JSONDecodeError):
-                    if json.loads(line).get("id") == 2:
-                        break
+            stdout, _stderr = await process.communicate(input=_INPUT.encode())
+            raw_stdout = stdout.decode(errors="replace")
     except TimeoutError:
         logger.warning("Codex discovery timeout after %.0fs", deadline)
         return []
@@ -97,12 +85,9 @@ async def discover_codex_models(*, deadline: float = DISCOVERY_TIMEOUT) -> list[
         return []
     finally:
         if process is not None:
-            if process.stdin is not None and not process.stdin.is_closing():
-                with contextlib.suppress(Exception):
-                    process.stdin.close()
             await _kill_process(process)
 
-    models = _parse_response("".join(lines))
+    models = _parse_response(raw_stdout)
     logger.info("Codex discovery found %d models", len(models))
     return models
 

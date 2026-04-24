@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from ductor_bot.multiagent.health import AgentHealth
 from ductor_bot.multiagent.models import SubAgentConfig, merge_sub_agent_config
 from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.multiagent.stack import AgentStack
+from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.runtime.state import (
     MessageRepository,
     ProcessRepository,
@@ -106,19 +108,29 @@ class AgentSupervisor:
     def bus(self) -> InterAgentBus | None:
         return self._bus
 
-    async def start(self) -> int:
+    async def start(self) -> int:  # noqa: PLR0915
         """Start main agent + all sub-agents. Blocks until main agent exits."""
         self._running = True
 
         # Initialize inter-agent bus
         from ductor_bot.multiagent.bus import InterAgentBus
         from ductor_bot.multiagent.internal_api import InternalAgentAPI
+        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
 
         self._bus = InterAgentBus()
+        if not self._main_config.interagent_token:
+            self._main_config.interagent_token = secrets.token_urlsafe(32)
+            await update_config_file_async(
+                self._main_paths.config_path,
+                interagent_token=self._main_config.interagent_token,
+            )
+            logger.info("Generated internal agent API token (persisted to config)")
         self._internal_api = InternalAgentAPI(
             self._bus,
             port=self._main_config.interagent_port,
             docker_mode=self._main_config.docker.enabled,
+            auth_token=self._main_config.interagent_token,
+            bind_public=self._main_config.docker.bind_internal_api_public,
         )
         self._internal_api.set_health_ref(self._health)
         started = await self._internal_api.start()
@@ -126,6 +138,12 @@ class AgentSupervisor:
             msg = "Internal agent API failed to start"
             raise RuntimeError(msg)
         logger.info("InterAgentBus and internal API started")
+
+        self._shared_knowledge = SharedKnowledgeSync(
+            self._main_paths.sharedmemory_path,
+            self,
+        )
+        await self._shared_knowledge.start()
 
         # Initialize task hub (background task delegation)
         if self._main_config.tasks.enabled:
@@ -146,6 +164,10 @@ class AgentSupervisor:
                 state_repo=task_repo,
                 state_backend=self._main_config.state_backend,
             )
+
+            # #92: task-scoped registry to kill subprocess trees on cancel
+            self._task_process_registry = ProcessRegistry()
+
             self._task_hub = TaskHub(
                 registry,
                 self._main_paths,
@@ -153,6 +175,7 @@ class AgentSupervisor:
                 process_repo=process_repo,
                 message_repo=message_repo,
                 config=self._main_config.tasks,
+                process_registry=self._task_process_registry,
             )
             self._internal_api.set_task_hub(self._task_hub)
             logger.info(
@@ -199,14 +222,7 @@ class AgentSupervisor:
         # 3. Load and start sub-agents from agents.json
         await self._sync_sub_agents()
 
-        # 4. Start shared knowledge sync (SHAREDMEMORY.md → all agents)
-        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
-
-        shared_path = self._main_paths.ductor_home / "SHAREDMEMORY.md"
-        self._shared_knowledge = SharedKnowledgeSync(shared_path, self)
-        await self._shared_knowledge.start()
-
-        # 5. Start FileWatcher for agents.json
+        # 4. Start FileWatcher for agents.json
         await self._watcher.start()
 
         # 6. Wait for main agent to finish — it determines the exit code
@@ -412,6 +428,7 @@ class AgentSupervisor:
         # Register this agent's CLI service and workspace paths for task execution
         hub.set_cli_service(name, orch.cli_service)
         hub.set_agent_paths(name, stack.paths)
+        hub.set_agent_process_registry(name, orch.process_registry)
 
         hub.set_result_handler(name, stack.bot.on_task_result)
         hub.set_question_handler(name, stack.bot.on_task_question)
@@ -481,10 +498,6 @@ class AgentSupervisor:
             self._supervised_run(name, stack),
             name=f"agent:{name}",
         )
-
-        # Sync shared knowledge into the new agent's MAINMEMORY.md
-        if self._shared_knowledge:
-            await self._shared_knowledge.sync_agent(stack.paths.mainmemory_path)
 
         logger.info("Sub-agent '%s' started (home=%s)", name, agent_home)
 
@@ -645,8 +658,6 @@ class AgentSupervisor:
         """Shut down all agents and cleanup."""
         self._running = False
         await self._watcher.stop()
-        if self._shared_knowledge:
-            await self._shared_knowledge.stop()
 
         # Cancel in-flight async tasks before tearing down agents
         if self._bus:
@@ -677,6 +688,10 @@ class AgentSupervisor:
         # Stop task hub
         if self._task_hub:
             await self._task_hub.shutdown()
+
+        if self._shared_knowledge:
+            await self._shared_knowledge.stop()
+            self._shared_knowledge = None
 
         # Stop internal API
         if self._internal_api:

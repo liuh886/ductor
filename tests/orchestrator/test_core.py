@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,6 +33,27 @@ def _mock_response(**kwargs: object) -> AgentResponse:
     return AgentResponse(**defaults)  # type: ignore[arg-type]
 
 
+@pytest.fixture
+async def created_orchestrators() -> AsyncIterator[list[Orchestrator]]:
+    """Track real orchestrators created by async factory tests and shut them down."""
+    created: list[Orchestrator] = []
+    try:
+        yield created
+    finally:
+        for orchestrator in reversed(created):
+            await orchestrator.shutdown()
+
+
+async def _create_with_cleanup(
+    config: AgentConfig,
+    created_orchestrators: list[Orchestrator],
+) -> Orchestrator:
+    """Create an orchestrator and register it for test cleanup."""
+    orchestrator = await Orchestrator.create(config)
+    created_orchestrators.append(orchestrator)
+    return orchestrator
+
+
 # -- command dispatch --
 
 
@@ -40,7 +62,17 @@ async def test_new_command(orch: Orchestrator) -> None:
     object.__setattr__(orch._process_registry, "kill_all", mock_kill)
     result = await orch.handle_message(SessionKey(chat_id=1), "/new")
     assert "session reset" in result.text.lower()
-    mock_kill.assert_called_once_with(1)
+    mock_kill.assert_awaited_once_with(1, topic_id=None)
+
+
+async def test_new_command_in_topic_resets_only_current_topic(orch: Orchestrator) -> None:
+    mock_kill = AsyncMock(return_value=0)
+    object.__setattr__(orch._process_registry, "kill_all", mock_kill)
+
+    result = await orch.handle_message(SessionKey(chat_id=1, topic_id=55), "/new")
+
+    assert "session reset" in result.text.lower()
+    mock_kill.assert_awaited_once_with(1, topic_id=55)
 
 
 async def test_new_command_resets_only_active_provider_bucket(orch: Orchestrator) -> None:
@@ -132,6 +164,30 @@ async def test_abort_returns_count(orch: Orchestrator) -> None:
     assert killed == 0
 
 
+async def test_abort_with_topic_id_delegates_to_scoped_kill(orch: Orchestrator) -> None:
+    kill_all = AsyncMock(return_value=2)
+    cancel_all = AsyncMock(return_value=1)
+    object.__setattr__(orch._process_registry, "kill_all", kill_all)
+    orch._observers.background = MagicMock()
+    orch._observers.background.cancel_all = cancel_all
+
+    killed = await orch.abort(1, topic_id=99)
+
+    assert killed == 3
+    kill_all.assert_awaited_once_with(1, topic_id=99)
+    cancel_all.assert_awaited_once_with(1, topic_id=99)
+
+
+def test_interrupt_with_topic_id_delegates_to_scoped_interrupt(orch: Orchestrator) -> None:
+    interrupt_all = MagicMock(return_value=4)
+    object.__setattr__(orch._process_registry, "interrupt_all", interrupt_all)
+
+    killed = orch.interrupt(1, topic_id=88)
+
+    assert killed == 4
+    interrupt_all.assert_called_once_with(1, topic_id=88)
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator.create() -- async factory
 # ---------------------------------------------------------------------------
@@ -139,6 +195,7 @@ async def test_abort_returns_count(orch: Orchestrator) -> None:
 
 async def test_create_with_authenticated_provider(
     workspace: tuple[DuctorPaths, AgentConfig],
+    created_orchestrators: list[Orchestrator],
 ) -> None:
     paths, config = workspace
     claude_auth = AuthResult("claude", AuthStatus.AUTHENTICATED)
@@ -158,13 +215,14 @@ async def test_create_with_authenticated_provider(
             new_callable=AsyncMock,
         ),
     ):
-        result = await Orchestrator.create(config)
+        result = await _create_with_cleanup(config, created_orchestrators)
 
     assert result.available_providers == frozenset({"claude"})
 
 
 async def test_create_no_authenticated_providers(
     workspace: tuple[DuctorPaths, AgentConfig],
+    created_orchestrators: list[Orchestrator],
 ) -> None:
     paths, config = workspace
     claude_auth = AuthResult("claude", AuthStatus.NOT_FOUND)
@@ -184,13 +242,14 @@ async def test_create_no_authenticated_providers(
             new_callable=AsyncMock,
         ),
     ):
-        result = await Orchestrator.create(config)
+        result = await _create_with_cleanup(config, created_orchestrators)
 
     assert result.available_providers == frozenset()
 
 
 async def test_create_installed_but_not_authenticated(
     workspace: tuple[DuctorPaths, AgentConfig],
+    created_orchestrators: list[Orchestrator],
 ) -> None:
     paths, config = workspace
     claude_auth = AuthResult("claude", AuthStatus.INSTALLED)
@@ -210,13 +269,14 @@ async def test_create_installed_but_not_authenticated(
             new_callable=AsyncMock,
         ),
     ):
-        result = await Orchestrator.create(config)
+        result = await _create_with_cleanup(config, created_orchestrators)
 
     assert result.available_providers == frozenset({"codex"})
 
 
 async def test_create_both_providers_authenticated(
     workspace: tuple[DuctorPaths, AgentConfig],
+    created_orchestrators: list[Orchestrator],
 ) -> None:
     paths, config = workspace
     claude_auth = AuthResult("claude", AuthStatus.AUTHENTICATED)
@@ -236,13 +296,14 @@ async def test_create_both_providers_authenticated(
             new_callable=AsyncMock,
         ),
     ):
-        result = await Orchestrator.create(config)
+        result = await _create_with_cleanup(config, created_orchestrators)
 
     assert result.available_providers == frozenset({"claude", "codex"})
 
 
 async def test_create_starts_cron_and_heartbeat(
     workspace: tuple[DuctorPaths, AgentConfig],
+    created_orchestrators: list[Orchestrator],
 ) -> None:
     paths, config = workspace
     claude_auth = AuthResult("claude", AuthStatus.AUTHENTICATED)
@@ -261,7 +322,7 @@ async def test_create_starts_cron_and_heartbeat(
             new_callable=AsyncMock,
         ),
     ):
-        result = await Orchestrator.create(config)
+        result = await _create_with_cleanup(config, created_orchestrators)
 
     assert result._observers._rule_sync_task is not None
 

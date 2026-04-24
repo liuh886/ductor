@@ -105,6 +105,25 @@ class TestBackgroundDelivery:
         text = mock_send.call_args[0][2]
         assert "[task1] Cancelled" in text
 
+    async def test_named_session_silent_skips_delivery(self) -> None:
+        transport, _bot = _make_transport()
+        env = _env(
+            origin=Origin.BACKGROUND,
+            session_name="memory_synthesis_deadbeef",
+            session_id="sid-1",
+            result_text="Maintenance complete",
+            status="success",
+            elapsed_seconds=3.0,
+            metadata={"silent": True},
+        )
+
+        with patch(
+            "ductor_bot.messenger.matrix.transport.matrix_send_rich", new_callable=AsyncMock
+        ) as mock_send:
+            await transport.deliver(env)
+
+        mock_send.assert_not_awaited()
+
     async def test_stateless_success(self) -> None:
         transport, _ = _make_transport()
         env = _env(

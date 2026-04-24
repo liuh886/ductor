@@ -15,14 +15,14 @@ def test_subprocess_env_merges_secrets(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     env_file = tmp_path / ".env"
-    env_file.write_text("MY_SECRET=hunter2\n")
+    env_file.write_text("OPENAI_API_KEY=hunter2\n")
 
-    config = CLIConfig(working_dir=str(workspace))
+    config = CLIConfig(working_dir=str(workspace), provider="codex")
     clear_cache()
     env = _build_subprocess_env(config)
 
     assert env is not None
-    assert env["MY_SECRET"] == "hunter2"
+    assert env["OPENAI_API_KEY"] == "hunter2"
 
 
 def test_subprocess_env_does_not_override_existing(tmp_path: Path) -> None:
@@ -58,11 +58,12 @@ def test_docker_wrap_injects_secrets(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     env_file = tmp_path / ".env"
-    env_file.write_text("PPLX_API_KEY=sk-test\n")
+    env_file.write_text("GEMINI_API_KEY=sk-test\n")
 
     config = CLIConfig(
         working_dir=str(workspace),
         docker_container="test-container",
+        provider="gemini",
     )
     clear_cache()
     # Explicitly clear the variable from host env mock to ensure it's picked up from .env
@@ -71,7 +72,7 @@ def test_docker_wrap_injects_secrets(tmp_path: Path) -> None:
 
     assert cwd is None  # Docker mode
     assert "-e" in cmd
-    assert "PPLX_API_KEY=sk-test" in cmd
+    assert "GEMINI_API_KEY=sk-test" in cmd
 
 
 def test_docker_wrap_does_not_override_host_env(tmp_path: Path) -> None:
@@ -84,6 +85,7 @@ def test_docker_wrap_does_not_override_host_env(tmp_path: Path) -> None:
     config = CLIConfig(
         working_dir=str(workspace),
         docker_container="test-container",
+        provider="gemini",
     )
     clear_cache()
     with patch.dict("os.environ", {"EXISTING_VAR": "from-host"}, clear=False):
@@ -103,6 +105,7 @@ def test_docker_wrap_provider_extra_env_wins(tmp_path: Path) -> None:
     config = CLIConfig(
         working_dir=str(workspace),
         docker_container="test-container",
+        provider="gemini",
     )
     clear_cache()
     with patch.dict("os.environ", {}, clear=False):

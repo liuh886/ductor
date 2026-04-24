@@ -59,6 +59,14 @@ class AsyncSendOptions:
     summary: str = ""
     chat_id: int = 0
     topic_id: int | None = None
+    # #86: when non-empty, the async result handler is resolved against this
+    # agent name instead of ``sender`` — lets cross-server SSH pipelines
+    # route replies to a specific agent even when ``sender`` is "unknown".
+    reply_to: str = ""
+    # #86: suppress the ``_notify_recipient`` "Async task received from X"
+    # broadcast; useful in automated code-review-style pipelines where the
+    # user only wants to see the final result.
+    silent: bool = False
 
 
 @dataclass(slots=True)
@@ -75,6 +83,8 @@ class AsyncInterAgentTask:
     asyncio_task: asyncio.Task[None] | None = field(default=None, repr=False)
     chat_id: int = 0
     topic_id: int | None = None
+    reply_to: str = ""  # #86
+    silent: bool = False  # #86
 
 
 @dataclass(slots=True)
@@ -94,6 +104,7 @@ class AsyncInterAgentResult:
     original_message: str = ""
     chat_id: int = 0
     topic_id: int | None = None
+    reply_to: str = ""  # #86 — overrides sender for handler lookup when set
 
 
 AsyncResultCallback = Callable[["AsyncInterAgentResult"], Awaitable[None]]
@@ -243,6 +254,8 @@ class InterAgentBus:
             summary=o.summary,
             chat_id=o.chat_id,
             topic_id=o.topic_id,
+            reply_to=o.reply_to,
+            silent=o.silent,
         )
         atask = asyncio.create_task(
             self._run_async(task),
@@ -324,6 +337,7 @@ class InterAgentBus:
                     original_message=task.message,
                     chat_id=task.chat_id,
                     topic_id=task.topic_id,
+                    reply_to=task.reply_to,
                 )
             )
 
@@ -347,6 +361,7 @@ class InterAgentBus:
                     original_message=task.message,
                     chat_id=task.chat_id,
                     topic_id=task.topic_id,
+                    reply_to=task.reply_to,
                 )
             )
 
@@ -365,6 +380,7 @@ class InterAgentBus:
                     original_message=task.message,
                     chat_id=task.chat_id,
                     topic_id=task.topic_id,
+                    reply_to=task.reply_to,
                 )
             )
 
@@ -374,7 +390,13 @@ class InterAgentBus:
         This makes async task delegation visible — the recipient's user sees
         what task was received and from whom before processing begins.
         Best-effort: failures are logged but never block execution.
+
+        #86: skipped entirely when ``task.silent`` is set or when
+        ``task.reply_to`` is set (automated pipelines route replies
+        explicitly and don't want routing-noise notifications).
         """
+        if task.silent or task.reply_to:
+            return
         try:
             target = self._agents.get(task.recipient)
             if target is None:
@@ -410,12 +432,19 @@ class InterAgentBus:
             )
 
     async def _deliver_async_result(self, result: AsyncInterAgentResult) -> None:
-        """Deliver an async result to the sender agent's callback handler."""
-        handler = self._async_result_handlers.get(result.sender)
+        """Deliver an async result to the sender agent's callback handler.
+
+        #86: when ``result.reply_to`` is non-empty we resolve the handler
+        against it instead of ``result.sender`` — SSH / cross-server
+        pipelines can ship replies to an explicit agent even when the
+        original sender field was "unknown".
+        """
+        handler_key = result.reply_to or result.sender
+        handler = self._async_result_handlers.get(handler_key)
         if handler is None:
             logger.warning(
-                "No async result handler for sender '%s' task=%s — result lost",
-                result.sender,
+                "No async result handler for '%s' task=%s — result lost",
+                handler_key,
                 result.task_id,
             )
             return
@@ -425,7 +454,7 @@ class InterAgentBus:
             logger.exception(
                 "Error delivering async result task=%s to '%s' — result lost",
                 result.task_id,
-                result.sender,
+                handler_key,
             )
 
     async def cancel_all_async(self) -> int:

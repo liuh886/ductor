@@ -73,12 +73,15 @@ class TelegramTransport:
     async def _deliver_background(self, env: Envelope) -> None:
         """Deliver background session / stateless task result."""
         elapsed = f"{env.elapsed_seconds:.0f}s"
+        silent = bool(env.metadata.get("silent"))
 
         if env.session_name:
             # Update named session registry
             self._bot._orch.named_sessions.update_after_response(
                 env.chat_id, env.session_name, env.session_id
             )
+            if silent:
+                return
             text = self._format_named_session(env, elapsed)
             from ductor_bot.messenger.telegram.buttons import extract_buttons_for_session
 
@@ -87,6 +90,8 @@ class TelegramTransport:
             opts.reply_markup = markup
             await send_rich(self._bot.bot_instance, env.chat_id, cleaned, opts)
         else:
+            if silent:
+                return
             text = self._format_stateless(env, elapsed)
             await send_rich(self._bot.bot_instance, env.chat_id, text, self._opts(env))
 

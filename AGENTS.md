@@ -79,14 +79,15 @@ Observer / TaskHub / InterAgentBus callback
 | `cron/`, `webhook/`, `heartbeat/`, `cleanup/` | in-process automation observers |
 | `workspace/` | `~/.ductor` path model, seeding, rule deployment/sync, skill sync |
 | `infra/` | PID lock, service backends, Docker manager, restart/update/recovery helpers |
-| `files/`, `security/`, `text/` | shared file/path safety, prompt safety, formatting helpers |
+| `files/` | shared file/path safety, MIME detection, image processing (`image_processor.py`: resize/convert incoming images) |
+| `security/`, `text/` | prompt safety, formatting helpers |
 
 ## Key Runtime Patterns
 
 - `DuctorPaths` in `workspace/paths.py` is the single source of truth for runtime paths.
 - Session identity is `SessionKey(transport, chat_id, topic_id)` across Telegram chats/topics, Matrix rooms (mapped int), and API channel isolation.
 - `/new` resets only the active provider bucket for the active session key.
-- `MessageBus` is the single async delivery path for observers, task callbacks, webhook wake results, and async inter-agent responses.
+- `MessageBus` is the single async delivery path for observers, task callbacks, webhook wake results, and async inter-agent responses. Delivery is transport-aware: UNICAST envelopes route to the matching transport only, with cascading fallback when the target transport is unavailable.
 - Telegram ingress and `MessageBus` share one `LockPool`; `ApiServer` currently uses its own lock pool.
 - Workspace init is zone-based:
   - Zone 2 overwrite: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, framework-managed tool scripts
@@ -102,9 +103,9 @@ Observer / TaskHub / InterAgentBus callback
 All run as in-process asyncio tasks:
 
 - `BackgroundObserver` (named sessions)
-- `CronObserver`
+- `CronObserver` (results route UNICAST when job has `chat_id`, BROADCAST otherwise)
 - `WebhookObserver`
-- `HeartbeatObserver`
+- `HeartbeatObserver` (supports `group_targets` with per-target overrides)
 - `CleanupObserver`
 - `CodexCacheObserver`
 - `GeminiCacheObserver`

@@ -29,6 +29,7 @@ sigkill = "Выполнение было прервано. Пожалуйста,
 not_found = "Сессия '{name}' не найдена."
 ended = "Сессия '{name}' завершена. Начни новую через /session."
 still_running = "Сессия '{name}' ещё работает. Подожди или останови через /stop."
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 
 # -- Остановка/прерывание ------------------------------------------------------
 

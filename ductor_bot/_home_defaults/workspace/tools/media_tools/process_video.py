@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -152,8 +153,47 @@ def _extract_audio(path: Path, out_dir: Path) -> Path | None:
     return audio_path
 
 
+def _transcribe_external(audio_path: Path) -> str | None:
+    """Invoke ``DUCTOR_VIDEO_TRANSCRIBE_COMMAND`` if set (#66).
+
+    Returns the transcript text on success, None on any failure so the
+    caller falls through to the built-in whisper strategy.
+    """
+    raw = os.environ.get("DUCTOR_VIDEO_TRANSCRIBE_COMMAND", "").strip()
+    if not raw:
+        return None
+    try:
+        argv = shlex.split(raw)
+    except ValueError:
+        return None
+    if not argv:
+        return None
+    argv.append(str(audio_path))
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    stdout = result.stdout.strip()
+    if not stdout:
+        return None
+    # JSON-shaped output matching transcribe_audio.py is unwrapped; else raw text.
+    try:
+        data = json.loads(stdout)
+        if isinstance(data, dict) and isinstance(data.get("transcript"), str):
+            text = data["transcript"].strip()
+            return text or None
+    except json.JSONDecodeError:
+        pass
+    return stdout
+
+
 def _transcribe(audio_path: Path) -> str | None:
     """Transcribe audio using whisper CLI. Returns text or None."""
+    external = _transcribe_external(audio_path)
+    if external:
+        return external
     whisper_bin = shutil.which("whisper")
     if not whisper_bin:
         return None

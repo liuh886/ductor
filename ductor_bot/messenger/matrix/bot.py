@@ -175,6 +175,58 @@ class MatrixBot:
     def register_startup_hook(self, hook: Callable[[], Awaitable[None]]) -> None:
         self._startup_hooks.append(hook)
 
+    async def notify_startup(self, text: str) -> None:
+        """Route Matrix startup-lifecycle notifications (#64).
+
+        ``topic_id`` is ignored — Matrix rooms have no topic-thread concept.
+        Fallback policy:
+          * ``startup_targets`` empty (default) -> ``notify_all``.
+          * ``startup_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback).
+        """
+        configured = self._config.notifications.startup_targets
+        if not configured:
+            await self._notification_service.notify_all(text)
+            return
+        targets = [tgt for tgt in configured if tgt.enabled and tgt.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                await self._notification_service.notify(target.chat_id, text)
+            except Exception:
+                logger.warning(
+                    "notify_startup: delivery failed for chat_id=%s",
+                    target.chat_id,
+                    exc_info=True,
+                )
+
+    async def notify_upgrade(self, text: str) -> None:
+        """Route Matrix upgrade-available notifications (#64).
+
+        ``topic_id`` is ignored — Matrix rooms have no topic-thread concept.
+        Mirrors ``notify_startup`` but reads ``notifications.upgrade_targets``
+        so users can silence/route upgrade events independently. Fallback
+        policy:
+          * ``upgrade_targets`` empty (default) -> ``broadcast``.
+          * ``upgrade_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback).
+        """
+        configured = self._config.notifications.upgrade_targets
+        if not configured:
+            await self.broadcast(text)
+            return
+        targets = [tgt for tgt in configured if tgt.enabled and tgt.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                await self._notification_service.notify(target.chat_id, text)
+            except Exception:
+                logger.warning(
+                    "notify_upgrade: delivery failed for chat_id=%s",
+                    target.chat_id,
+                    exc_info=True,
+                )
+
     def set_abort_all_callback(self, callback: Callable[[], Awaitable[int]]) -> None:
         self._abort_all_callback = callback
 
@@ -435,7 +487,7 @@ class MatrixBot:
         """Stop running processes for this chat."""
         orch = self._orchestrator
         if orch:
-            killed = await orch.abort(key.chat_id)
+            killed = await orch.abort(key.chat_id, topic_id=key.topic_id)
             msg = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
         else:
             msg = t("abort_all.nothing")
@@ -447,7 +499,7 @@ class MatrixBot:
         """Send soft interrupt (SIGINT) to active CLI processes."""
         orch = self._orchestrator
         if orch:
-            interrupted = orch.interrupt(key.chat_id)
+            interrupted = orch.interrupt(key.chat_id, topic_id=key.topic_id)
             msg = t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
             await self._send_rich(room_id, msg)
 

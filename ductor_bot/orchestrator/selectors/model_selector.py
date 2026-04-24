@@ -240,7 +240,7 @@ async def switch_model(
     )
 
     if not same_model:
-        await orch._process_registry.kill_all(key.chat_id)
+        await orch._process_registry.kill_all(key.chat_id, topic_id=key.topic_id)
         if active_session is not None:
             await orch._sessions.sync_session_target(
                 active_session,

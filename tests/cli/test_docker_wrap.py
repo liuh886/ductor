@@ -78,6 +78,17 @@ def test_docker_wrap_interactive() -> None:
     assert cwd is None
 
 
+def test_docker_wrap_injects_internal_api_token() -> None:
+    cfg = CLIConfig(
+        docker_container="my-sandbox",
+        chat_id=42,
+        working_dir="/workspace",
+        interagent_token="secret-token",
+    )
+    result_cmd, _ = docker_wrap(["claude"], cfg)
+    assert "DUCTOR_INTERAGENT_TOKEN=secret-token" in result_cmd
+
+
 def test_docker_wrap_preserves_full_command() -> None:
     cmd = ["claude", "-p", "test", "--model", "opus", "--verbose"]
     cfg = CLIConfig(docker_container="sandbox", chat_id=1, working_dir="/w")

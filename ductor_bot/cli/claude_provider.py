@@ -14,6 +14,7 @@ from ductor_bot.cli.base import (
     BaseCLI,
     CLIConfig,
     docker_wrap,
+    redact_command_for_logging,
 )
 from ductor_bot.cli.executor import SubprocessSpec, run_oneshot_subprocess, run_streaming_subprocess
 from ductor_bot.cli.stream_events import (
@@ -170,10 +171,7 @@ def _add_opt(cmd: list[str], flag: str, value: str | None) -> None:
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
     """Log the CLI command with truncated long values."""
-    safe_cmd = [
-        (c[:80] + "...") if len(c) > 80 and i > 0 and cmd[i - 1].startswith("--") else c
-        for i, c in enumerate(cmd)
-    ]
+    safe_cmd = redact_command_for_logging(cmd)
     prefix = "CLI stream cmd" if streaming else "CLI cmd"
     logger.info("%s: %s", prefix, " ".join(safe_cmd))
 

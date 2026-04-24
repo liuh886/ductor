@@ -81,7 +81,6 @@ class TestEditStreamEditor:
         await editor.append_tool("Bash")
         await editor.append_tool("Bash")
         await editor.append_tool("Bash")
-        await editor.finalize("")
         # Find the last call that contains the tool indicator
         last_text = self._get_last_message_text(bot)
         assert "[TOOL: Shell] x3" in last_text
@@ -91,7 +90,6 @@ class TestEditStreamEditor:
         await editor.append_tool("Bash")
         await editor.append_tool("Bash")
         await editor.append_tool("Write")
-        await editor.finalize("")
         last_text = self._get_last_message_text(bot)
         assert "[TOOL: Shell] x2" in last_text
         assert "[TOOL: Write]" in last_text
@@ -121,6 +119,16 @@ class TestEditStreamEditor:
         bot.send_message.assert_not_called()
         bot.edit_message_text.assert_not_called()
         assert editor.has_content is False
+
+    async def test_tool_only_empty_final_response_replaces_indicator(self) -> None:
+        bot, editor = _make_editor()
+        await editor.append_tool("read_file")
+        await editor.append_tool("list_directory")
+        await editor.finalize("")
+
+        last_text = self._get_last_message_text(bot)
+        assert "TOOL" not in last_text
+        assert "No final text response was returned" in last_text
 
     async def test_finalize_forces_edit(self) -> None:
         _bot, editor = _make_editor()
@@ -184,7 +192,6 @@ class TestEditStreamEditor:
     async def test_single_tool_no_count_suffix(self) -> None:
         bot, editor = _make_editor()
         await editor.append_tool("Read")
-        await editor.finalize("")
         last_text = self._get_last_message_text(bot)
         assert "[TOOL: Read]" in last_text
         assert "x1" not in last_text

@@ -145,11 +145,22 @@ class DuctorPaths:
         return self.memory_system_dir / "MAINMEMORY.md"
 
     @property
+    def shared_tasks_path(self) -> Path:
+        """The shared TASKS.md file, located in the workspace root."""
+        return self.workspace / "TASKS.md"
+
+    @property
     def soul_path(self) -> Path:
         return self.workspace / "SOUL.md"
 
     @property
     def sharedmemory_path(self) -> Path:
+        """The global SHAREDMEMORY.md file. 
+        
+        Sub-agents resolve this by looking at their parent's parent (ductor_home/agents/NAME -> ductor_home).
+        """
+        if self.ductor_home.parent.name == "agents":
+            return self.ductor_home.parent.parent / "SHAREDMEMORY.md"
         return self.ductor_home / "SHAREDMEMORY.md"
 
     @property

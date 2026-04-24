@@ -26,6 +26,27 @@ from ductor_bot.infra.process_tree import force_kill_process_tree
 
 logger = logging.getLogger(__name__)
 
+_SCOPED_SECRET_KEYS: dict[str, frozenset[str]] = {
+    "gemini": frozenset(
+        {
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_GCA",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+        }
+    ),
+    "codex": frozenset({"OPENAI_API_KEY"}),
+    "claude": frozenset(),
+}
+
+
+def _provider_secret_env(provider: str, secret_env: dict[str, str]) -> dict[str, str]:
+    """Return the subset of secrets needed by one provider process."""
+    allowed = _SCOPED_SECRET_KEYS.get(provider, frozenset())
+    return {key: value for key, value in secret_env.items() if key in allowed}
+
 
 def _build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
     """Build environment dict with agent identification vars.
@@ -46,18 +67,25 @@ def _build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
     working_dir = Path(config.working_dir)
     ductor_home = working_dir.parent if working_dir.name == "workspace" else working_dir
     env_file = ductor_home / ".env"
-    for key, value in load_env_secrets(env_file).items():
+    secret_env = load_env_secrets(env_file)
+    for key, value in _provider_secret_env(config.provider, secret_env).items():
         if key not in env:
             env[key] = value
 
     env["DUCTOR_AGENT_NAME"] = config.agent_name
     env["DUCTOR_AGENT_ROLE"] = "main" if config.agent_name == "main" else "sub"
     env["DUCTOR_INTERAGENT_PORT"] = str(config.interagent_port)
+    if config.interagent_token:
+        env["DUCTOR_INTERAGENT_TOKEN"] = config.interagent_token
     if config.chat_id:
         env["DUCTOR_CHAT_ID"] = str(config.chat_id)
     if config.topic_id:
         env["DUCTOR_TOPIC_ID"] = str(config.topic_id)
     env["DUCTOR_TRANSPORT"] = config.transport
+    if config.transcribe_command:
+        env["DUCTOR_TRANSCRIBE_COMMAND"] = config.transcribe_command
+    if config.video_transcribe_command:
+        env["DUCTOR_VIDEO_TRANSCRIBE_COMMAND"] = config.video_transcribe_command
     working_dir = Path(config.working_dir)
     ductor_home = working_dir.parent if working_dir.name == "workspace" else working_dir
     env["DUCTOR_HOME"] = str(ductor_home)

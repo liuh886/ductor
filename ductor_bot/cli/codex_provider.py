@@ -13,6 +13,7 @@ from ductor_bot.cli.base import (
     BaseCLI,
     CLIConfig,
     docker_wrap,
+    redact_command_for_logging,
 )
 from ductor_bot.cli.codex_events import (
     CodexThinkingFilter,
@@ -98,13 +99,18 @@ class CodexCLI(BaseCLI):
     def _build_resume_command(
         self, final_prompt: str, session_id: str, *, json_output: bool
     ) -> list[str]:
-        """Build command to resume an existing Codex session."""
+        """Build command to resume an existing Codex session.
+
+        Codex 0.107.0 rejects sandbox flags on ``exec resume``. Keep the
+        command to the minimal supported shape and rely on stdin for the prompt
+        on Windows to avoid command-line length limits.
+        """
         cmd = [self._cli, "exec", "resume"]
         if json_output:
             cmd.append("--json")
-        cmd += self._sandbox_flags()
-        cmd += ["--", session_id]
-        cmd.append(final_prompt)
+        cmd.append(session_id)
+        if not _IS_WINDOWS:
+            cmd.append(final_prompt)
         return cmd
 
     def _build_command(
@@ -140,9 +146,16 @@ class CodexCLI(BaseCLI):
         if cfg.cli_parameters:
             cmd.extend(cfg.cli_parameters)
 
-        cmd.append("--")
-        cmd.append(final_prompt)
+        if not _IS_WINDOWS:
+            cmd.append("--")
+            cmd.append(final_prompt)
         return cmd
+
+    def _stdin_prompt(self, prompt: str) -> str:
+        """Return the stdin payload used for Windows Codex invocations."""
+        if not _IS_WINDOWS:
+            return ""
+        return self._compose_prompt(prompt)
 
     def _docker_wrap(self, cmd: list[str]) -> tuple[list[str], str | None]:
         """Keep stdin open for Dockerized Codex on Windows so prompts reach the CLI."""
@@ -171,7 +184,7 @@ class CodexCLI(BaseCLI):
             spec=SubprocessSpec(
                 exec_cmd,
                 use_cwd,
-                "" if _IS_WINDOWS else prompt,
+                self._stdin_prompt(prompt),
                 timeout_seconds,
                 timeout_controller,
             ),
@@ -202,11 +215,11 @@ class CodexCLI(BaseCLI):
                 for event in thinking_filter.process(raw_event):
                     state.track(event)
                     yield event
+
+        async def post_handler(result: SubprocessResult) -> AsyncGenerator[StreamEvent, None]:
             for event in thinking_filter.flush():
                 state.track(event)
                 yield event
-
-        async def post_handler(result: SubprocessResult) -> AsyncGenerator[StreamEvent, None]:
             yield _codex_final_result(result, state.accumulated_text, state.thread_id)
 
         async for event in run_streaming_subprocess(
@@ -214,7 +227,7 @@ class CodexCLI(BaseCLI):
             spec=SubprocessSpec(
                 exec_cmd,
                 use_cwd,
-                "" if _IS_WINDOWS else prompt,
+                self._stdin_prompt(prompt),
                 timeout_seconds,
                 timeout_controller,
             ),
@@ -296,6 +309,6 @@ def _codex_final_result(
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
     """Log the CLI command with truncated long values."""
-    safe_cmd = [(c[:80] + "...") if len(c) > 80 else c for c in cmd]
+    safe_cmd = redact_command_for_logging(cmd, truncate_long_options=False)
     prefix = "Codex stream cmd" if streaming else "Codex cmd"
     logger.info("%s: %s", prefix, " ".join(safe_cmd))

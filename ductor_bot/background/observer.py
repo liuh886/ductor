@@ -73,6 +73,7 @@ class BackgroundObserver:
             submitted_at=time.monotonic(),
             session_name=sub.session_name,
             resume_session_id=sub.resume_session_id,
+            silent=sub.silent,
         )
         atask = asyncio.create_task(self._run(bg_task, exec_config))
         bg_task.asyncio_task = atask
@@ -93,11 +94,13 @@ class BackgroundObserver:
             tasks = [t for t in tasks if t.chat_id == chat_id]
         return tasks
 
-    async def cancel_all(self, chat_id: int) -> int:
+    async def cancel_all(self, chat_id: int, topic_id: int | None = None) -> int:
         count = 0
         cancelled: list[asyncio.Task[None]] = []
         for task in list(self._tasks.values()):
-            if task.chat_id == chat_id and task.asyncio_task and not task.asyncio_task.done():
+            matches_chat = task.chat_id == chat_id
+            matches_topic = topic_id is None or task.thread_id == topic_id
+            if matches_chat and matches_topic and task.asyncio_task and not task.asyncio_task.done():
                 task.asyncio_task.cancel()
                 cancelled.append(task.asyncio_task)
                 count += 1
@@ -146,6 +149,7 @@ class BackgroundObserver:
                     elapsed_seconds=elapsed,
                     provider=bg_task.provider,
                     model=bg_task.model,
+                    silent=bg_task.silent,
                 )
             )
         except asyncio.CancelledError:
@@ -163,6 +167,7 @@ class BackgroundObserver:
                         elapsed_seconds=elapsed,
                         provider=bg_task.provider,
                         model=bg_task.model,
+                        silent=bg_task.silent,
                     )
                 )
             raise
@@ -182,6 +187,7 @@ class BackgroundObserver:
                         elapsed_seconds=elapsed,
                         provider=bg_task.provider,
                         model=bg_task.model,
+                        silent=bg_task.silent,
                     )
                 )
 
@@ -226,6 +232,7 @@ class BackgroundObserver:
                     model=bg_task.model,
                     session_name=bg_task.session_name,
                     session_id=response.session_id or "",
+                    silent=bg_task.silent,
                 )
             )
         except asyncio.CancelledError:
@@ -244,6 +251,7 @@ class BackgroundObserver:
                         provider=bg_task.provider,
                         model=bg_task.model,
                         session_name=bg_task.session_name,
+                        silent=bg_task.silent,
                     )
                 )
             raise
@@ -266,6 +274,7 @@ class BackgroundObserver:
                         provider=bg_task.provider,
                         model=bg_task.model,
                         session_name=bg_task.session_name,
+                        silent=bg_task.silent,
                     )
                 )
 

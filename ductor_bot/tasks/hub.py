@@ -22,11 +22,13 @@ from ductor_bot.tasks.models import TaskEntry, TaskInFlight, TaskResult, TaskSub
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ductor_bot.cli.process_registry import ProcessRegistry
     from ductor_bot.cli.service import CLIService
     from ductor_bot.config import TasksConfig
     from ductor_bot.runtime.state import MessageRepository, ProcessRepository
     from ductor_bot.tasks.registry import TaskRegistry
     from ductor_bot.workspace.paths import DuctorPaths
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,7 @@ class TaskHub:
         process_repo: ProcessRepository | None = None,
         message_repo: MessageRepository | None = None,
         config: TasksConfig,
+        process_registry: ProcessRegistry | None = None,
     ) -> None:
         self._registry = registry
         self._paths = paths
@@ -99,6 +102,14 @@ class TaskHub:
         self._resume_context_compressor: ContextCompressor | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._summary_repo: SessionSummaryRepository | None = None
+        # #92: registry used to kill task subprocess trees on cancel. A single
+        # shared registry works when all task subprocesses register into it
+        # (supervisor wires this — see ``AgentSupervisor._wire_task_hub``).
+        # For multi-agent setups where each agent owns its own ProcessRegistry,
+        # per-agent lookups take precedence via ``_agent_process_registries``.
+        self._process_registry = process_registry
+        self._agent_process_registries: dict[str, ProcessRegistry] = {}
+
         if self._message_repo:
             db = getattr(self._message_repo, "_db", None)
             if db:
@@ -126,6 +137,26 @@ class TaskHub:
     def set_cli_service(self, agent_name: str, cli: CLIService) -> None:
         """Register a per-agent CLI service for task execution."""
         self._cli_services[agent_name] = cli
+
+    def set_agent_process_registry(
+        self, agent_name: str, process_registry: ProcessRegistry
+    ) -> None:
+        """Register a per-agent ProcessRegistry for subprocess-aware cancel.
+
+        Each agent's orchestrator owns its own ``ProcessRegistry`` (see
+        ``Orchestrator.__init__``), and task subprocesses register under the
+        label ``task:<id>`` in THAT registry. When cancel() fires for a task
+        we therefore need the registry tied to the task's parent agent; this
+        map provides that lookup. Falls back to the shared ``_process_registry``
+        when no per-agent entry exists.
+        """
+        self._agent_process_registries[agent_name] = process_registry
+
+    def _resolve_process_registry(self, parent_agent: str | None) -> ProcessRegistry | None:
+        """Pick the ProcessRegistry for *parent_agent*, or the shared default."""
+        if parent_agent and parent_agent in self._agent_process_registries:
+            return self._agent_process_registries[parent_agent]
+        return self._process_registry
 
     def set_agent_paths(self, agent_name: str, paths: DuctorPaths) -> None:
         """Register per-agent paths for task folder isolation."""
@@ -353,31 +384,52 @@ class TaskHub:
             logger.exception("Question delivery failed for task %s", entry.task_id)
 
     async def cancel(self, task_id: str) -> bool:
-        """Cancel a running task. Returns True if cancelled."""
+        """Cancel a running task. Returns True if cancelled.
+
+        Kill order (per issue #92 / Pitfall 2): subprocess tree first so the
+        CLI's streaming ``await`` unblocks, THEN asyncio task. Inverting this
+        order hangs — ``cli.execute`` is blocked on the subprocess pipe, and
+        a pending ``CancelledError`` cannot propagate until the pipe closes.
+        """
         inflight = self._in_flight.get(task_id)
         if inflight is None or inflight.asyncio_task is None or inflight.asyncio_task.done():
             return False
+        registry = self._resolve_process_registry(inflight.entry.parent_agent)
+        if registry is not None:
+            await registry.kill_for_task(task_id)
         inflight.asyncio_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await inflight.asyncio_task
         return True
 
     async def cancel_all(self, chat_id: int) -> int:
-        """Cancel all running tasks for a chat."""
-        count = 0
-        cancelled: list[asyncio.Task[None]] = []
-        for inflight in list(self._in_flight.values()):
+        """Cancel all running tasks for a chat.
+
+        Kill order mirrors :meth:`cancel`: every task's subprocess tree is
+        killed first (one ``kill_for_task`` per task) before any asyncio
+        ``Task.cancel`` fires. Sequential ``await`` keeps each SIGTERM→SIGKILL
+        ladder independent (see threat T-02-03).
+        """
+        targets: list[tuple[str, str | None, asyncio.Task[None]]] = [
+            (inflight.entry.task_id, inflight.entry.parent_agent, inflight.asyncio_task)
+            for inflight in list(self._in_flight.values())
             if (
                 inflight.entry.chat_id == chat_id
                 and inflight.asyncio_task
                 and not inflight.asyncio_task.done()
-            ):
-                inflight.asyncio_task.cancel()
-                cancelled.append(inflight.asyncio_task)
-                count += 1
-        if cancelled:
-            await asyncio.gather(*cancelled, return_exceptions=True)
-        return count
+            )
+        ]
+        if not targets:
+            return 0
+        for task_id, parent_agent, _ in targets:
+            registry = self._resolve_process_registry(parent_agent)
+            if registry is not None:
+                await registry.kill_for_task(task_id)
+        cancelled: list[asyncio.Task[None]] = [atask for _, _, atask in targets]
+        for atask in cancelled:
+            atask.cancel()
+        await asyncio.gather(*cancelled, return_exceptions=True)
+        return len(cancelled)
 
     def active_tasks(self, chat_id: int | None = None) -> list[TaskEntry]:
         """Return in-flight task entries."""

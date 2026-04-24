@@ -23,6 +23,7 @@ Send a message to continue."""
 age_warning = "[Session is {age} old. Use /new for a fresh start.]"
 
 recovered = "_Previous session could not be restored. A new session was started automatically._"
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 sigkill = "Execution was interrupted. Please send the same request again."
 
 not_found = "Session '{name}' not found."

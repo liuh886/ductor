@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
     _finish_normal,
+    _prepare_normal,
     _strip_ack_token,
     _update_session,
     heartbeat_flow,
@@ -62,6 +63,7 @@ def _make_state_orch(paths: DuctorPaths) -> Orchestrator:
     mock_cli = MagicMock()
     mock_cli.execute = AsyncMock()
     mock_cli.execute_streaming = AsyncMock()
+    mock_cli._config.agent_name = "main"
     object.__setattr__(orch, "_cli_service", mock_cli)
     return orch
 
@@ -104,9 +106,19 @@ async def test_normal_new_session_injects_mainmemory(orch: Orchestrator) -> None
 
     call_args = mock_execute.call_args
     request = call_args[0][0]
-    assert request.append_system_prompt is not None
-    assert "Important Context" in request.append_system_prompt
+    assert request.system_prompt is not None
+    assert "Important Context" in request.system_prompt
     assert request.resume_session is None  # New session
+
+
+async def test_normal_propagates_transport_from_session_key(orch: Orchestrator) -> None:
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await normal(orch, SessionKey(transport="mx", chat_id=1), "Hello")
+
+    request = mock_execute.call_args[0][0]
+    assert request.transport == "mx"
 
 
 async def test_normal_new_session_prefers_fragment_memory(
@@ -137,11 +149,27 @@ async def test_normal_new_session_prefers_fragment_memory(
 
     call_args = mock_execute.call_args
     request = call_args[0][0]
-    assert request.append_system_prompt is not None
-    assert "Fragment Memory" in request.append_system_prompt
-    assert "Use compact memory" in request.append_system_prompt
-    assert "Raw memory that should not be used" not in request.append_system_prompt
+    assert request.system_prompt is not None
+    assert "Fragment Memory" in request.system_prompt
+    assert "Use compact memory" in request.system_prompt
+    assert "Raw memory that should not be used" not in request.system_prompt
     assert request.resume_session is None
+
+
+async def test_prepare_normal_passes_memory_fragment_repo(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _ = workspace
+    state_orch = _make_state_orch(paths)
+    with patch(
+        "ductor_bot.orchestrator.flows.read_mainmemory",
+        return_value="fragment-backed memory",
+    ) as mock_read_mainmemory:
+        await _prepare_normal(state_orch, SessionKey(chat_id=1), "Hello")
+
+    assert mock_read_mainmemory.call_count == 1
+    _, kwargs = mock_read_mainmemory.call_args
+    assert kwargs["fragment_repo"] is state_orch._memory_fragment_repo
 
 
 async def test_normal_resume_session_no_append(orch: Orchestrator) -> None:
@@ -176,7 +204,22 @@ async def test_normal_error_preserves_session(orch: Orchestrator) -> None:
     assert "[opus]" in result.text
     assert "/new" in result.text
     assert mock_execute.call_count == 1
-    mock_kill.assert_called_once_with(1)
+    mock_kill.assert_awaited_once_with(1, topic_id=None)
+
+
+async def test_normal_error_kills_only_current_topic(orch: Orchestrator) -> None:
+    await _establish_session(orch)
+
+    mock_execute = AsyncMock(
+        return_value=_mock_response(is_error=True, result="Rate limited"),
+    )
+    mock_kill = AsyncMock(return_value=0)
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._process_registry, "kill_all", mock_kill)
+
+    await normal(orch, SessionKey(chat_id=1, topic_id=77), "Hello")
+
+    mock_kill.assert_awaited_once_with(1, topic_id=77)
 
 
 async def test_normal_timeout_preserves_session(orch: Orchestrator) -> None:
@@ -193,6 +236,21 @@ async def test_normal_timeout_preserves_session(orch: Orchestrator) -> None:
     assert "Timeout" in result.text
     assert "session has been preserved" in result.text
     assert mock_execute.call_count == 1
+
+
+async def test_normal_timeout_kills_only_current_topic(orch: Orchestrator) -> None:
+    await _establish_session(orch)
+
+    mock_execute = AsyncMock(
+        return_value=_mock_response(is_error=True, timed_out=True, result=""),
+    )
+    mock_kill = AsyncMock(return_value=0)
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._process_registry, "kill_all", mock_kill)
+
+    await normal(orch, SessionKey(chat_id=1, topic_id=88), "Hello")
+
+    mock_kill.assert_awaited_once_with(1, topic_id=88)
 
 
 async def test_normal_next_message_can_succeed_after_error(orch: Orchestrator) -> None:
@@ -557,7 +615,7 @@ async def test_streaming_error_preserves_session(orch: Orchestrator) -> None:
     result = await normal_streaming(orch, SessionKey(chat_id=1), "Hello")
     assert "Session Error" in result.text
     assert "[opus]" in result.text
-    mock_kill.assert_called_once_with(1)
+    mock_kill.assert_awaited_once_with(1, topic_id=None)
 
 
 async def test_streaming_error_with_model_override(orch: Orchestrator) -> None:
@@ -812,6 +870,42 @@ async def test_update_session_no_session_id_in_response(orch: Orchestrator) -> N
     )
     await _update_session(orch, session, response)
     assert session.session_id == "original"
+
+
+async def test_update_session_triggers_memory_synthesis_with_real_tools(
+    orch: Orchestrator,
+) -> None:
+    """Memory synthesis should resume the current session and use real workspace tools."""
+    session = SessionData(
+        session_id="sess-maint-12345678",
+        chat_id=1,
+        provider="claude",
+        model="opus",
+        message_count=19,
+    )
+    response = AgentResponse(
+        result="ok",
+        session_id="sess-maint-12345678",
+        cost_usd=0.01,
+        total_tokens=100,
+    )
+    bg = MagicMock()
+    bg.submit = MagicMock(return_value="bg-task-1")
+    orch._observers.background = bg
+    orch._observers.codex_cache = None
+
+    await _update_session(orch, session, response)
+
+    bg.submit.assert_called_once()
+    sub = bg.submit.call_args[0][0]
+    assert sub.resume_session_id == "sess-maint-12345678"
+    assert sub.session_name.startswith("memory_synthesis_")
+    assert sub.silent is True
+    assert "python3 tools/agent_tools/search_past_sessions.py" in sub.prompt
+    assert "python3 tools/agent_tools/memory_atomic_op.py" in sub.prompt
+    assert "workspace/memory_system/MAINMEMORY.md" in sub.prompt
+    assert "patch_memory_fragment" not in sub.prompt
+    assert "delete_memory_fragment" not in sub.prompt
 
 
 # ---------------------------------------------------------------------------

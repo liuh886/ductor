@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.service import CLIService, CLIServiceConfig
-from ductor_bot.cli.stream_events import StreamEvent
+from ductor_bot.cli.stream_events import ResultEvent, StreamEvent
 from ductor_bot.cli.types import AgentRequest, CLIResponse
 from ductor_bot.config import ModelRegistry
 
@@ -29,6 +29,7 @@ def _make_service(**overrides: Any) -> CLIService:
         models=models,
         available_providers=frozenset({"claude"}),
         process_registry=ProcessRegistry(),
+        inflight_repo=MagicMock(),
     )
 
 
@@ -117,6 +118,24 @@ async def test_execute_streaming_fallback_on_error() -> None:
 
     assert resp.stream_fallback is True
     assert resp.result == "Fallback result"
+
+
+async def test_execute_streaming_marks_timeout_result() -> None:
+    svc = _make_service()
+
+    async def fake_stream(*_args: Any, **_kwargs: Any) -> AsyncGenerator[StreamEvent, None]:
+        yield ResultEvent(type="result", result="Timeout", is_error=True)
+
+    with patch("ductor_bot.cli.service.create_cli") as mock_create:
+        mock_cli = MagicMock()
+        mock_cli.send_streaming = fake_stream
+        mock_create.return_value = mock_cli
+
+        resp = await svc.execute_streaming(AgentRequest(prompt="hello", chat_id=1))
+
+    assert resp.timed_out is True
+    assert resp.result == ""
+    assert resp.is_error is True
 
 
 def test_update_default_model() -> None:

@@ -38,6 +38,7 @@ def has_media(message: Message) -> bool:
         or message.voice
         or message.video
         or message.audio
+        or getattr(message, "animation", None)
         or message.sticker
         or message.video_note
     )
@@ -184,6 +185,7 @@ def _resolve_media(message: Message) -> _MediaTuple:
         _extract_document,
         _extract_voice,
         _extract_audio,
+        _extract_animation,
         _extract_video,
         _extract_video_note,
         _extract_sticker,
@@ -225,6 +227,17 @@ def _extract_audio(msg: Message) -> _MediaTuple | None:
     ext = mimetypes.guess_extension(mime) or ".mp3"
     name = a.file_name or f"audio_{a.file_unique_id}{ext}"
     return "audio", a, _sanitize_filename(name), mime
+
+
+def _extract_animation(msg: Message) -> _MediaTuple | None:
+    animation = getattr(msg, "animation", None)
+    if not animation:
+        return None
+    a = animation
+    mime = a.mime_type or "video/mp4"
+    ext = mimetypes.guess_extension(mime) or ".mp4"
+    name = a.file_name or f"animation_{a.file_unique_id}{ext}"
+    return "animation", a, _sanitize_filename(name), mime
 
 
 def _extract_video(msg: Message) -> _MediaTuple | None:
