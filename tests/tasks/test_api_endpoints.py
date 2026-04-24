@@ -59,6 +59,27 @@ class TestTaskCreate:
         assert data["success"] is True
         assert data["task_id"] == "abc123"
 
+    async def test_passes_transport_and_topic_to_submit(self, api_client: TestClient) -> None:
+        hub = api_client.app["_test_hub"]
+
+        resp = await api_client.post(
+            "/tasks/create",
+            json={
+                "from": "main",
+                "prompt": "build website",
+                "transport": "mx",
+                "chat_id": 77,
+                "topic_id": 12,
+            },
+            headers=_auth_headers(),
+        )
+
+        assert resp.status == 200
+        submit = hub.submit.call_args.args[0]
+        assert submit.transport == "mx"
+        assert submit.chat_id == 77
+        assert submit.thread_id == 12
+
     async def test_missing_prompt(self, api_client: TestClient) -> None:
         resp = await api_client.post("/tasks/create", json={"from": "main"}, headers=_auth_headers())
         assert resp.status == 400

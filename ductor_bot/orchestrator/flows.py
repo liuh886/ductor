@@ -24,7 +24,7 @@ from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.runtime.state import MessageRepository, ProcessRepository
 from ductor_bot.session import SessionData, SessionKey
 from ductor_bot.text.response_format import session_error_text, timeout_error_text
-from ductor_bot.workspace.loader import load_soul, read_file, read_mainmemory
+from ductor_bot.workspace.loader import load_soul, load_task_state, read_mainmemory
 
 if TYPE_CHECKING:
     from ductor_bot.orchestrator.core import Orchestrator
@@ -70,6 +70,28 @@ async def _fetch_soul(orch: Orchestrator) -> str | None:
     if not soul or not soul.strip():
         return None
     return soul.strip()
+
+
+def _append_prompts(*parts: str | None) -> str | None:
+    """Join optional system-prompt sections into one appended prompt."""
+    rendered = [part.strip() for part in parts if part and part.strip()]
+    if not rendered:
+        return None
+    return "\n\n".join(rendered)
+
+
+def _build_agent_role_prompt(orch: Orchestrator) -> str | None:
+    """Return a short stable prompt describing the current agent's role."""
+    role = orch._config.role.strip()
+    role_description = orch._config.role_description.strip()
+    if not role and not role_description:
+        return None
+    lines = ["## Agent Role"]
+    if role:
+        lines.append(f"Primary role: {role}")
+    if role_description:
+        lines.append(role_description)
+    return "\n".join(lines)
 
 
 async def _apply_runtime_compression(
@@ -222,8 +244,12 @@ async def _prepare_normal(
         agent_name=orch._cli_service._config.agent_name
     )
 
-    # Task State (Temporary L3 from TASKS.md until task_states table is ready)
-    task_state = await asyncio.to_thread(read_file, orch.paths.workspace / "TASKS.md")
+    task_state = await asyncio.to_thread(
+        load_task_state,
+        orch.paths,
+        storage_key=key.storage_key,
+        task_state_repo=getattr(orch, "_task_state_repo", None),
+    )
 
     # 3. Dynamic Hints (Applied directly to prompt via Hooks or Builder)
     hook_ctx = HookContext(
@@ -260,7 +286,7 @@ async def _prepare_normal(
         request,
         timeout_seconds=resolve_timeout(orch._config, "normal"),
         timeout_controller=_make_timeout_controller(orch, "normal"),
-        append_system_prompt=roster, # Roster remains appended for now
+        append_system_prompt=_append_prompts(_build_agent_role_prompt(orch), roster),
     )
 
     return request, session
@@ -445,7 +471,7 @@ class _RecoveryOutcome:
     failed_result: OrchestratorResult | None
 
 
-async def _maybe_recover_session(  # noqa: PLR0913
+async def _maybe_recover_session(
     orch: Orchestrator,
     key: SessionKey,
     text: str,
@@ -984,7 +1010,7 @@ async def named_session_flow(
     exit_code = 1
     request = AgentRequest(
         prompt=prompt,
-        append_system_prompt=soul,
+        append_system_prompt=_append_prompts(_build_agent_role_prompt(orch), soul),
         model_override=ns.model,
         provider_override=ns.provider,
         transport=key.transport,
@@ -1103,7 +1129,7 @@ async def named_session_streaming(
     exit_code = 1
     request = AgentRequest(
         prompt=prompt,
-        append_system_prompt=soul,
+        append_system_prompt=_append_prompts(_build_agent_role_prompt(orch), soul),
         model_override=ns.model,
         provider_override=ns.provider,
         transport=key.transport,

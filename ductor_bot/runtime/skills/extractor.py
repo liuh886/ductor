@@ -83,14 +83,14 @@ class SkillExtractor:
         """Extract a skill from a completed task and save it to the skills directory."""
         try:
             session_key = f"task:{entry.task_id}"
-            
+
             # Use the selector to get a compact version of the history
             selection = self._selector.select(session_key)
-            
+
             history_text = ""
             if selection.summary_text:
                 history_text += f"Summary of earlier steps:\n{selection.summary_text}\n\nRecent Details:\n"
-            
+
             for msg in selection.tail_messages:
                 role = str(msg.get("role", "unknown"))
                 content = str(msg.get("content_text", ""))
@@ -141,37 +141,37 @@ class SkillExtractor:
             # Update Capability Registry
             try:
                 name, desc, phase = safe_name, "Extracted skill", "EXECUTION"
-                
+
                 # Extract frontmatter
                 frontmatter_match = re.search(r"^---\s*\n(.*?)\n---", skill_content, flags=re.DOTALL)
                 if frontmatter_match:
                     frontmatter = frontmatter_match.group(1)
-                    
+
                     name_match = re.search(r"^name:\s*(.*?)$", frontmatter, flags=re.MULTILINE)
                     if name_match:
                         name = name_match.group(1).strip(" '\"")
-                        
+
                     desc_match = re.search(r"^description:\s*(.*?)$", frontmatter, flags=re.MULTILINE)
                     if desc_match:
                         desc = desc_match.group(1).strip(" '\"")
-                        
+
                     phase_match = re.search(r"^phase_trigger:\s*(.*?)$", frontmatter, flags=re.MULTILINE)
                     if phase_match:
                         phase = phase_match.group(1).strip(" '\"")
-                
+
                 registry_path = self._skills_dir.parent.parent / "memory_system" / "CAPABILITY_REGISTRY.md"
                 if registry_path.exists():
                     registry_content = registry_path.read_text(encoding="utf-8")
-                    
+
                     # Ensure we have an Extracted Skills section
                     if "## Extracted Skills" not in registry_content:
                         with registry_path.open("a", encoding="utf-8") as f:
                             f.write("\n## Extracted Skills\n\n")
-                    
+
                     entry_line = f"- **{name}** ({phase}): {desc} [Dir: {skill_dir.name}]\n"
                     with registry_path.open("a", encoding="utf-8") as f:
                         f.write(entry_line)
-                        
+
                     logger.info("Added skill %s to Capability Registry.", name)
             except Exception as e:
                 logger.error("Failed to update Capability Registry: %s", e)

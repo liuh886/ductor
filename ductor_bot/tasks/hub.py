@@ -18,6 +18,7 @@ from ductor_bot.runtime.memory import extract_markdown_fragments
 from ductor_bot.runtime.skills.extractor import SkillExtractor
 from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
 from ductor_bot.tasks.models import TaskEntry, TaskInFlight, TaskResult, TaskSubmit
+from ductor_bot.tasks.registry import task_evaluation_status
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -236,6 +237,7 @@ class TaskHub:
             msg = f"Task '{task_id}' has no provider recorded"
             raise ValueError(msg)
 
+        resumed_from_completed = entry.status in _FINISHED
         # Reset to running — same entry, same folder, same task_id
         self._registry.update_status(
             task_id,
@@ -244,6 +246,14 @@ class TaskHub:
             error="",
             result_preview="",
             last_question="",
+            follow_up_count=entry.follow_up_count + (1 if resumed_from_completed else 0),
+            last_follow_up=follow_up[:200] if resumed_from_completed else entry.last_follow_up,
+            evaluation_status=(
+                "needs_followup"
+                if resumed_from_completed
+                else task_evaluation_status(status="running", follow_up_count=entry.follow_up_count)
+            ),
+            evaluation_notes=follow_up[:200] if resumed_from_completed else entry.evaluation_notes,
         )
 
         # Append a short system reminder so the task agent remembers how to
@@ -564,6 +574,11 @@ class TaskHub:
                 error=error,
                 result_preview=(response.result or "")[:_RESULT_PREVIEW_LEN],
                 num_turns=total_turns,
+                evaluation_status=task_evaluation_status(
+                    status=status,
+                    follow_up_count=entry.follow_up_count,
+                ),
+                evaluation_notes=entry.last_follow_up if entry.follow_up_count > 0 else "",
             )
 
             result_text = response.result or ""
@@ -620,6 +635,11 @@ class TaskHub:
                     task_folder=str(self._registry.task_folder(entry.task_id)),
                     original_prompt=entry.original_prompt,
                     thread_id=entry.thread_id,
+                    follow_up_count=entry.follow_up_count,
+                    evaluation_status=task_evaluation_status(
+                        status=status,
+                        follow_up_count=entry.follow_up_count,
+                    ),
                 )
             )
 
@@ -635,6 +655,10 @@ class TaskHub:
                 "cancelled",
                 completed_at=time.time(),
                 elapsed_seconds=elapsed,
+                evaluation_status=task_evaluation_status(
+                    status="cancelled",
+                    follow_up_count=entry.follow_up_count,
+                ),
             )
             with contextlib.suppress(Exception):
                 await self._deliver(
@@ -651,6 +675,11 @@ class TaskHub:
                         model=entry.model,
                         original_prompt=entry.original_prompt,
                         thread_id=entry.thread_id,
+                        follow_up_count=entry.follow_up_count,
+                        evaluation_status=task_evaluation_status(
+                            status="cancelled",
+                            follow_up_count=entry.follow_up_count,
+                        ),
                     )
                 )
             raise
@@ -666,6 +695,10 @@ class TaskHub:
                 completed_at=time.time(),
                 elapsed_seconds=elapsed,
                 error=error_msg,
+                evaluation_status=task_evaluation_status(
+                    status="failed",
+                    follow_up_count=entry.follow_up_count,
+                ),
             )
             self._record_message(
                 entry,
@@ -698,6 +731,11 @@ class TaskHub:
                         error=error_msg,
                         original_prompt=entry.original_prompt,
                         thread_id=entry.thread_id,
+                        follow_up_count=entry.follow_up_count,
+                        evaluation_status=task_evaluation_status(
+                            status="failed",
+                            follow_up_count=entry.follow_up_count,
+                        ),
                     )
                 )
         finally:

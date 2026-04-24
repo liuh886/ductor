@@ -155,7 +155,7 @@ class DuctorPaths:
 
     @property
     def sharedmemory_path(self) -> Path:
-        """The global SHAREDMEMORY.md file. 
+        """The global SHAREDMEMORY.md file.
         
         Sub-agents resolve this by looking at their parent's parent (ductor_home/agents/NAME -> ductor_home).
         """

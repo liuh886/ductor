@@ -58,7 +58,7 @@ def guess_mime(path: Path | str) -> str:
     kind = _filetype.guess(str(path))
     if kind is not None:
         return str(kind.mime)
-    
+
     # Manual override for common programming languages if mimetypes is too generic (common on Windows)
     suffix = Path(path).suffix.lower()
     overrides = {
@@ -132,7 +132,7 @@ def _normalize_windows_tag_path(value: str) -> str:
         # 1. First, try DUCTOR_HOME environment variable
         h = str(Path.home() / ".ductor")
         dh = os.environ.get("DUCTOR_HOME", h).replace("\\", "/")
-        
+
         # 2. Heuristic: if DUCTOR_HOME doesn't exist, try to infer from package location.
         # This is very robust on Windows host where we run the bot.
         if not Path(dh).exists():

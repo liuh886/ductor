@@ -1,22 +1,24 @@
 """Initialize or update the runtime SQLite database schema."""
 
 import os
-from pathlib import Path
 from contextlib import closing
+from pathlib import Path
+
 from ductor_bot.runtime.state.db import RuntimeStateDB
+
 
 def main():
     db_path = Path(os.path.expanduser("~/.ductor/state.db"))
     print(f"Initializing database at: {db_path}")
-    
+
     db = RuntimeStateDB(db_path)
-    
+
     # Verify tables
     with closing(db.connect()) as conn:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [row[0] for row in cursor.fetchall()]
         print(f"Existing tables: {', '.join(tables)}")
-        
+
         if "task_states" in tables:
             print("[PASS] task_states table successfully created/verified.")
         else:

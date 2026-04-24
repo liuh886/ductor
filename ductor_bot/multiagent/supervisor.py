@@ -9,6 +9,7 @@ import secrets
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.config import AgentConfig, update_config_file_async
 from ductor_bot.infra.file_watcher import FileWatcher
 from ductor_bot.infra.restart import EXIT_RESTART
@@ -16,7 +17,6 @@ from ductor_bot.multiagent.health import AgentHealth
 from ductor_bot.multiagent.models import SubAgentConfig, merge_sub_agent_config
 from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.multiagent.stack import AgentStack
-from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.runtime.state import (
     MessageRepository,
     ProcessRepository,
@@ -151,17 +151,24 @@ class AgentSupervisor:
             from ductor_bot.tasks.registry import TaskRegistry
 
             task_repo: TaskRepository | None = None
+            task_state_repo = None
             message_repo: MessageRepository | None = None
             process_repo: ProcessRepository | None = None
             if self._main_config.state_backend in {"dual", "sqlite"}:
                 runtime_db = RuntimeStateDB(self._main_config.resolved_state_db_path())
                 task_repo = TaskRepository(runtime_db)
+                from ductor_bot.runtime.state.repositories.task_state_repo import (
+                    TaskStateRepository,
+                )
+
+                task_state_repo = TaskStateRepository(runtime_db)
                 message_repo = MessageRepository(runtime_db)
                 process_repo = ProcessRepository(runtime_db)
             registry = TaskRegistry(
                 registry_path=self._main_paths.tasks_registry_path,
                 tasks_dir=self._main_paths.tasks_dir,
                 state_repo=task_repo,
+                task_state_repo=task_state_repo,
                 state_backend=self._main_config.state_backend,
             )
 

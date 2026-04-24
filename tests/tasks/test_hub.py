@@ -154,10 +154,12 @@ class TestRunAndDeliver:
         assert delivered[0].result_text.startswith("task output")
         assert "resume_task.py" in delivered[0].result_text  # resume hint appended
         assert delivered[0].name == "Test Task"
+        assert delivered[0].evaluation_status == "pending_review"
 
         entry = registry.get(task_id)
         assert entry is not None
         assert entry.status == "done"
+        assert entry.evaluation_status == "pending_review"
 
         await hub.shutdown()
 
@@ -536,6 +538,7 @@ class TestWaitingStatus:
         assert entry is not None
         assert entry.status == "waiting"
         assert entry.last_question == "Which framework?"
+        assert entry.follow_up_count == 0
 
     async def test_resume_from_waiting(self, registry: TaskRegistry, tmp_path: Path) -> None:
         """Resuming a 'waiting' task should work and clear the question."""
@@ -565,6 +568,7 @@ class TestWaitingStatus:
         assert entry is not None
         assert entry.status == "done"
         assert entry.last_question == ""
+        assert entry.follow_up_count == 0
 
 
 class TestResume:
@@ -587,6 +591,7 @@ class TestResume:
         assert entry is not None
         assert entry.status == "done"
         assert entry.session_id == "sess-1"
+        assert entry.evaluation_status == "pending_review"
 
         resumed_id = hub.resume(task_id, "now for 2 weeks")
         assert resumed_id == task_id  # Same task, no new entry
@@ -596,6 +601,9 @@ class TestResume:
         assert entry is not None
         assert entry.status == "done"  # Completed again
         assert entry.name == "Test Task"
+        assert entry.follow_up_count == 1
+        assert entry.last_follow_up == "now for 2 weeks"
+        assert entry.evaluation_status == "improved_after_followup"
 
     async def test_resume_uses_original_provider_model(
         self, registry: TaskRegistry, tmp_path: Path

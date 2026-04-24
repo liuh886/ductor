@@ -55,6 +55,7 @@ from ductor_bot.runtime.state.repositories.named_session_repo import NamedSessio
 from ductor_bot.runtime.state.repositories.process_repo import ProcessRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
+from ductor_bot.runtime.state.repositories.task_state_repo import TaskStateRepository
 from ductor_bot.security import detect_suspicious_patterns
 from ductor_bot.session import SessionKey, SessionManager
 from ductor_bot.session.manager import SessionData
@@ -136,6 +137,7 @@ class Orchestrator:
         process_repo: ProcessRepository | None = None
         summary_repo: SessionSummaryRepository | None = None
         memory_fragment_repo: MemoryFragmentRepository | None = None
+        task_state_repo: TaskStateRepository | None = None
         context_compressor: ContextCompressor | None = None
         if config.state_backend in {"dual", "sqlite"}:
             session_repo = SessionRepository(runtime_db)
@@ -143,12 +145,13 @@ class Orchestrator:
             message_repo = MessageRepository(runtime_db)
             process_repo = ProcessRepository(runtime_db)
             summary_repo = SessionSummaryRepository(runtime_db)
-            
+            task_state_repo = TaskStateRepository(runtime_db)
+
             shared_db = None
             if paths.ductor_home.parent.name == "agents":
                 root_db_path = paths.ductor_home.parent.parent / "state.db"
                 shared_db = RuntimeStateDB(root_db_path)
-            
+
             memory_fragment_repo = MemoryFragmentRepository(runtime_db, shared_db=shared_db)
             context_compressor = ContextCompressor(
                 SummarySelector(message_repo, summary_repo)
@@ -159,6 +162,7 @@ class Orchestrator:
         self._inflight_repo = inflight_repo
         self._summary_repo = summary_repo
         self._memory_fragment_repo = memory_fragment_repo
+        self._task_state_repo = task_state_repo
         self._context_compressor = context_compressor
         self._sessions = SessionManager(paths.sessions_path, config, state_repo=session_repo)
         self._named_sessions = NamedSessionRegistry(

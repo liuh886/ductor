@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ductor_bot.runtime.state import RuntimeStateDB, TaskRepository
+from ductor_bot.runtime.state import RuntimeStateDB, TaskRepository, TaskStateRepository
 from ductor_bot.tasks.models import TaskSubmit
 from ductor_bot.tasks.registry import TaskRegistry
 
@@ -91,6 +91,40 @@ class TestUpdateStatus:
 
     def test_ignores_unknown_task(self, registry: TaskRegistry) -> None:
         registry.update_status("bogus", "done")  # Should not raise
+
+    def test_syncs_task_state_repo(self, tmp_path: Path) -> None:
+        db = RuntimeStateDB(tmp_path / "state.db")
+        registry = TaskRegistry(
+            registry_path=tmp_path / "tasks.json",
+            tasks_dir=tmp_path / "tasks",
+            task_state_repo=TaskStateRepository(db),
+        )
+
+        entry = registry.create(_submit(name="TaskState"), "claude", "opus")
+        registry.update_status(entry.task_id, "waiting", last_question="Need approval?", num_turns=2)
+
+        rows = TaskStateRepository(db).list_by_storage_key("tg:42")
+        assert len(rows) == 1
+        assert rows[0]["task_id"] == entry.task_id
+        assert rows[0]["status"] == "WAITING"
+        assert rows[0]["current_step"] == 2
+        assert "Need approval?" in rows[0]["step_label"]
+        assert rows[0]["context_snapshot_json"]["evaluation_status"] == "blocked_on_question"
+
+    def test_cleanup_finished_deletes_task_state(self, tmp_path: Path) -> None:
+        db = RuntimeStateDB(tmp_path / "state.db")
+        registry = TaskRegistry(
+            registry_path=tmp_path / "tasks.json",
+            tasks_dir=tmp_path / "tasks",
+            task_state_repo=TaskStateRepository(db),
+        )
+
+        entry = registry.create(_submit(name="TaskState"), "claude", "opus")
+        registry.update_status(entry.task_id, "done")
+        registry.cleanup_finished(chat_id=42)
+
+        rows = TaskStateRepository(db).list_by_storage_key("tg:42")
+        assert rows == []
 
 
 class TestListActive:

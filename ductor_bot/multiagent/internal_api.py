@@ -296,6 +296,7 @@ class InternalAgentAPI:
             message_id=0,
             thread_id=data.get("topic_id") or None,
             parent_agent=sender,
+            transport=str(data.get("transport") or "tg"),
             name=data.get("name", ""),
             provider_override=data.get("provider") or "",
             model_override=data.get("model") or "",

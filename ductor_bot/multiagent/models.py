@@ -44,6 +44,8 @@ class SubAgentConfig(BaseModel):
     # Optional overrides — inherit from main agent if None
     provider: str | None = None
     model: str | None = None
+    role: str | None = None
+    role_description: str | None = None
     log_level: str | None = None
     idle_timeout_minutes: int | None = None
     session_age_warning_hours: int | None = None

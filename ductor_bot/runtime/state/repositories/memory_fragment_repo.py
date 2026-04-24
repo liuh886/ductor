@@ -7,6 +7,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ductor_bot.runtime.memory import MemoryConflict, govern_fragments
 from ductor_bot.runtime.memory.extractor import MemoryFragment
 from ductor_bot.runtime.state.db import RuntimeStateDB
 
@@ -58,9 +59,10 @@ class MemoryFragmentRepository:
 
     def replace_all(self, fragments: list[MemoryFragment]) -> None:
         """Replace the fragment table contents with a new fragment set."""
+        governed, _conflicts = govern_fragments(fragments)
         with self._db.connect() as conn:
             conn.execute("DELETE FROM memory_fragments")
-            for fragment in fragments:
+            for fragment in governed:
                 self._insert_fragment(conn, fragment)
 
     def replace_for_scope(
@@ -71,6 +73,7 @@ class MemoryFragmentRepository:
         agent_name: str = "",
     ) -> None:
         """Replace fragments for a single scope, optionally scoped to one agent."""
+        governed, _conflicts = govern_fragments(fragments)
         query = "DELETE FROM memory_fragments WHERE scope = ?"
         params: list[object] = [scope]
         if agent_name:
@@ -78,8 +81,30 @@ class MemoryFragmentRepository:
             params.append(agent_name)
         with self._db.connect() as conn:
             conn.execute(query, tuple(params))
-            for fragment in fragments:
+            for fragment in governed:
                 self._insert_fragment(conn, fragment)
+
+    def list_conflicts(self, scope: str, *, agent_name: str = "") -> list[MemoryConflict]:
+        """Analyze persisted fragments for likely semantic conflicts."""
+        rows = self.list_by_scope(scope, agent_name=agent_name)
+        fragments = [
+            MemoryFragment(
+                title=str(row["title"]),
+                body=str(row["body"]),
+                ulid=str(row.get("ulid", "")),
+                source_kind=str(row.get("source_kind", "")),
+                source_path=str(row.get("source_path", "")),
+                scope=str(row.get("scope", "")),
+                agent_name=str(row.get("agent_name", "")),
+                tags=list(row.get("tags_json", [])),
+                importance=float(row.get("importance", 0.0)),
+                created_at=float(row.get("created_at", 0.0)),
+                updated_at=float(row.get("updated_at", 0.0)),
+            )
+            for row in rows
+        ]
+        _governed, conflicts = govern_fragments(fragments)
+        return conflicts
 
     def update_by_ulid(self, ulid: str, body: str) -> bool:
         """Update a fragment body by its ULID. Returns True if found."""

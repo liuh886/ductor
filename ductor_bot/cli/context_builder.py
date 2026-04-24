@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -57,8 +57,7 @@ class ContextBuilder:
         model: str,
         provider: str,
     ) -> AgentRequest:
-        """
-        Constructs an AgentRequest while respecting the budget for each component.
+        """Constructs an AgentRequest while respecting the budget for each component.
         
         Note: Current implementation uses character-count estimation (1 token ~ 4 chars).
         Future versions will plug in real tiktoken/provider-specific counters.
@@ -69,7 +68,7 @@ class ContextBuilder:
         system_parts = []
         if soul:
             system_parts.append(soul)
-        
+
         if main_memory:
             # Apply Index Budget
             limited_mem = self._truncate_to_budget(main_memory, self.budget.index_tokens)
@@ -93,7 +92,7 @@ class ContextBuilder:
         final_prompt = user_prompt
         if state_parts:
             final_prompt = "\n\n".join(state_parts) + "\n\n" + final_prompt
-        
+
         if rag_text:
             final_prompt = f"[RELEVANT_CONTEXT]\n{rag_text}\n\n" + final_prompt
 

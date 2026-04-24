@@ -7,7 +7,8 @@ from pathlib import Path
 from ductor_bot.runtime.memory import MemoryFragment
 from ductor_bot.runtime.state import RuntimeStateDB
 from ductor_bot.runtime.state.repositories.memory_fragment_repo import MemoryFragmentRepository
-from ductor_bot.workspace.loader import read_file, read_mainmemory
+from ductor_bot.runtime.state.repositories.task_state_repo import TaskStateRepository
+from ductor_bot.workspace.loader import load_task_state, read_file, read_mainmemory
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -156,3 +157,54 @@ def test_read_mainmemory_includes_sharedmemory_fragments(tmp_path: Path) -> None
     shared = repo.list_by_scope("sharedmemory")
     assert len(shared) == 1
     assert shared[0]["title"] == "Team Defaults"
+
+
+def test_load_task_state_prefers_runtime_task_states(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    paths.shared_tasks_path.write_text("- [ ] legacy task from TASKS", encoding="utf-8")
+    repo = TaskStateRepository(RuntimeStateDB(tmp_path / "state.db"))
+    repo.upsert(
+        task_id="task-42",
+        storage_key="tg:7:9",
+        status="RUNNING",
+        current_step=1,
+        total_steps=3,
+        step_label="implement repo",
+        context_snapshot_json={"owner": "main"},
+    )
+
+    rendered = load_task_state(paths, storage_key="tg:7:9", task_state_repo=repo)
+
+    assert "# Active Task State" in rendered
+    assert "task-42: RUNNING" in rendered
+    assert "implement repo" in rendered
+    assert "legacy task from TASKS" not in rendered
+
+
+def test_load_task_state_falls_back_to_tasks_md(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    paths.shared_tasks_path.write_text("- [ ] fallback task", encoding="utf-8")
+
+    rendered = load_task_state(paths, storage_key="tg:1")
+
+    assert "fallback task" in rendered
+
+
+def test_load_task_state_ignores_finished_rows(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    paths.shared_tasks_path.write_text("- [ ] fallback task", encoding="utf-8")
+    repo = TaskStateRepository(RuntimeStateDB(tmp_path / "state.db"))
+    repo.upsert(
+        task_id="task-done",
+        storage_key="tg:7:9",
+        status="DONE",
+        current_step=2,
+        step_label="finished",
+    )
+
+    rendered = load_task_state(paths, storage_key="tg:7:9", task_state_repo=repo)
+
+    assert "fallback task" in rendered

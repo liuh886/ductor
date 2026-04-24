@@ -14,6 +14,7 @@ from ductor_bot.config import (
     StreamingConfig,
     deep_merge_config,
     reset_gemini_models,
+    update_config_file,
 )
 
 # -- AgentConfig defaults --
@@ -37,6 +38,8 @@ def test_agent_config_defaults() -> None:
     assert cfg.permission_mode == "normal"
     assert cfg.file_access == "workspace"
     assert cfg.gemini_api_key is None
+    assert cfg.role == ""
+    assert cfg.role_description == ""
     assert cfg.telegram_token == ""
     assert cfg.allowed_user_ids == []
 
@@ -118,6 +121,13 @@ def test_deep_merge_no_change() -> None:
     defaults: dict[str, object] = {"a": 99, "b": 99}
     _, changed = deep_merge_config(data, defaults)
     assert changed is False
+
+
+def test_update_config_file_creates_missing_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config" / "config.json"
+    update_config_file(config_path, role="writer")
+    assert config_path.is_file()
+    assert '"role": "writer"' in config_path.read_text(encoding="utf-8")
 
 
 # -- ModelRegistry --

@@ -19,6 +19,7 @@ class TestSubAgentConfig:
         assert cfg.allowed_group_ids is None
         assert cfg.provider is None
         assert cfg.model is None
+        assert cfg.role is None
 
     def test_with_overrides(self) -> None:
         cfg = SubAgentConfig(
@@ -72,12 +73,16 @@ class TestMergeSubAgentConfig:
             provider="codex",
             model="gpt-4",
             cli_timeout=300,
+            role="writer",
+            role_description="Draft polished writing outputs.",
         )
         result = merge_sub_agent_config(main, sub, Path("/agents/sub1"))
 
         assert result.provider == "codex"
         assert result.model == "gpt-4"
         assert result.cli_timeout == 300
+        assert result.role == "writer"
+        assert result.role_description == "Draft polished writing outputs."
 
     def test_ductor_home_always_set_to_agent_home(self) -> None:
         """ductor_home is always the agent's home dir, not main's."""

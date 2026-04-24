@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from ductor_bot.infra.json_store import atomic_json_save, load_json
-from ductor_bot.runtime.state import TaskRepository
+from ductor_bot.runtime.state import TaskRepository, TaskStateRepository
+from ductor_bot.session import SessionKey
 from ductor_bot.tasks.models import TaskEntry, TaskSubmit
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,9 @@ logger = logging.getLogger(__name__)
 _PROMPT_PREVIEW_LEN = 80
 _RESULT_PREVIEW_LEN = 200
 _FINISHED_STATUSES = frozenset({"done", "failed", "cancelled"})
+_PENDING_REVIEW = "pending_review"
+_NEEDS_FOLLOWUP = "needs_followup"
+_IMPROVED_AFTER_FOLLOWUP = "improved_after_followup"
 
 
 class TaskRegistry:
@@ -32,6 +36,7 @@ class TaskRegistry:
         registry_path: Path,
         tasks_dir: Path,
         state_repo: TaskRepository | None = None,
+        task_state_repo: TaskStateRepository | None = None,
         *,
         state_backend: str = "json",
     ) -> None:
@@ -39,6 +44,7 @@ class TaskRegistry:
         self._tasks_dir = tasks_dir
         self._entries: dict[str, TaskEntry] = {}
         self._state_repo = state_repo
+        self._task_state_repo = task_state_repo
         self._state_backend = state_backend
         self._load()
         self._cleanup_orphans()
@@ -180,11 +186,13 @@ class TaskRegistry:
             task_id=task_id,
             chat_id=submit.chat_id,
             parent_agent=submit.parent_agent,
+            transport=submit.transport,
             name=submit.name or task_id,
             prompt_preview=submit.prompt[:_PROMPT_PREVIEW_LEN],
             provider=provider,
             model=model,
             status="running",
+            evaluation_status="in_progress",
             original_prompt=submit.prompt,
             thinking=thinking,
             tasks_dir=str(resolved_dir),
@@ -198,6 +206,7 @@ class TaskRegistry:
         _seed_task_folder(folder, entry, submit.prompt, provider, model)
 
         self._persist()
+        self._sync_task_state(entry)
         logger.info("Task created id=%s name='%s' provider=%s", task_id, entry.name, provider)
         return entry
 
@@ -241,7 +250,13 @@ class TaskRegistry:
         for key, value in kwargs.items():
             if hasattr(entry, key):
                 setattr(entry, key, value)
+        if "evaluation_status" not in kwargs:
+            entry.evaluation_status = task_evaluation_status(
+                status=status,
+                follow_up_count=entry.follow_up_count,
+            )
         self._persist()
+        self._sync_task_state(entry)
 
     def task_folder(self, task_id: str) -> Path:
         """Return the task's metadata folder.
@@ -296,6 +311,7 @@ class TaskRegistry:
         # tasks_dir overrides that task_folder() needs).
         folders = {tid: self.task_folder(tid) for tid in task_ids}
         for task_id in task_ids:
+            self._delete_task_state(task_id)
             del self._entries[task_id]
             folder = folders[task_id]
             if folder.is_dir():
@@ -304,6 +320,40 @@ class TaskRegistry:
             self._persist()
             logger.info("%s removed %d task(s)", label, len(task_ids))
         return len(task_ids)
+
+    def _sync_task_state(self, entry: TaskEntry) -> None:
+        """Mirror task runtime status into ``task_states`` when configured."""
+        if self._task_state_repo is None:
+            return
+        self._task_state_repo.upsert(
+            task_id=entry.task_id,
+            storage_key=_task_storage_key(entry),
+            status=entry.status.upper(),
+            current_step=max(entry.num_turns, 0),
+            total_steps=None,
+            step_label=_task_step_label(entry),
+            context_snapshot_json={
+                "task_name": entry.name,
+                "prompt_preview": entry.prompt_preview,
+                "provider": entry.provider,
+                "model": entry.model,
+                "session_id": entry.session_id,
+                "question_count": entry.question_count,
+                "follow_up_count": entry.follow_up_count,
+                "last_question": entry.last_question,
+                "last_follow_up": entry.last_follow_up,
+                "parent_agent": entry.parent_agent,
+                "evaluation_status": entry.evaluation_status,
+                "evaluation_notes": entry.evaluation_notes,
+            },
+            error_log=entry.error,
+        )
+
+    def _delete_task_state(self, task_id: str) -> None:
+        """Drop the mirrored task-state row when a task is fully purged."""
+        if self._task_state_repo is None:
+            return
+        self._task_state_repo.delete(task_id)
 
 
 # -- Task folder seeding -------------------------------------------------------
@@ -377,6 +427,7 @@ def _sanitized_task_entry(entry: TaskEntry) -> TaskEntry:
         task_id=entry.task_id,
         chat_id=entry.chat_id,
         parent_agent=entry.parent_agent,
+        transport=entry.transport,
         name=entry.name,
         prompt_preview=entry.prompt_preview,
         provider=entry.provider,
@@ -389,10 +440,49 @@ def _sanitized_task_entry(entry: TaskEntry) -> TaskEntry:
         error=entry.error,
         result_preview=entry.result_preview,
         question_count=entry.question_count,
+        follow_up_count=entry.follow_up_count,
         num_turns=entry.num_turns,
         last_question="",
+        last_follow_up="",
+        evaluation_status=entry.evaluation_status,
+        evaluation_notes=entry.evaluation_notes,
         original_prompt="",
         thinking="",
         tasks_dir=entry.tasks_dir,
         thread_id=entry.thread_id,
     )
+
+
+def _task_storage_key(entry: TaskEntry) -> str:
+    """Return the session storage key that should own this task state."""
+    return SessionKey(
+        transport=entry.transport,
+        chat_id=entry.chat_id,
+        topic_id=entry.thread_id,
+    ).storage_key
+
+
+def _task_step_label(entry: TaskEntry) -> str:
+    """Return a short task-step label for prompt injection."""
+    if entry.status == "waiting" and entry.last_question:
+        return f"waiting_for_parent: {entry.last_question[:120]}"
+    if entry.evaluation_status == _NEEDS_FOLLOWUP and entry.last_follow_up:
+        return f"needs_followup: {entry.last_follow_up[:120]}"
+    if entry.status in _FINISHED_STATUSES and entry.result_preview:
+        return entry.result_preview[:120]
+    return entry.name[:120]
+
+
+def task_evaluation_status(*, status: str, follow_up_count: int) -> str:
+    """Return a lightweight quality signal for a task lifecycle state."""
+    if status == "running":
+        return "in_progress"
+    if status == "waiting":
+        return "blocked_on_question"
+    if status == "done":
+        return _IMPROVED_AFTER_FOLLOWUP if follow_up_count > 0 else _PENDING_REVIEW
+    if status == "failed":
+        return "failed"
+    if status == "cancelled":
+        return "cancelled"
+    return ""

@@ -92,7 +92,6 @@ def _best_error_detail_line(cli_detail: str) -> str:
         "session not found",
         "invalid session",
         "permission denied",
-        "operation not permitted",
         "timed out",
         "no such file",
     )
@@ -215,4 +214,7 @@ def recovery_notification_text(
             t("recovery.named_body", session=session_name, preview=preview),
         )
     return fmt(
-        t("reco
+        t("recovery.interrupted_header"),
+        SEP,
+        t("recovery.interrupted_body", preview=preview),
+    )

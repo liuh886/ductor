@@ -9,6 +9,7 @@ from ductor_bot.runtime.state.repositories.process_repo import ProcessRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
 from ductor_bot.runtime.state.repositories.task_repo import TaskRepository
+from ductor_bot.runtime.state.repositories.task_state_repo import TaskStateRepository
 from ductor_bot.runtime.state.repositories.tool_call_repo import ToolCallRepository
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "SessionRepository",
     "SessionSummaryRepository",
     "TaskRepository",
+    "TaskStateRepository",
     "ToolCallRepository",
 ]

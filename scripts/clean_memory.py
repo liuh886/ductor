@@ -1,10 +1,11 @@
 """Cleansing Script: Migrates operational state from MAINMEMORY to task_states table."""
 
+import json
 import os
 import re
-import json
-from pathlib import Path
 from contextlib import closing
+from pathlib import Path
+
 from ductor_bot.runtime.state.db import RuntimeStateDB
 
 # Keywords that indicate operational state rather than long-term facts
@@ -22,24 +23,24 @@ STATE_KEYWORDS = [
 def main():
     db_path = Path(os.path.expanduser("~/.ductor/state.db"))
     main_mem_path = Path(os.path.expanduser("~/.ductor/workspace/memory_system/MAINMEMORY.md"))
-    
+
     if not main_mem_path.exists():
         print(f"MAINMEMORY.md not found at {main_mem_path}. Skipping.")
         return
 
     print(f"Scanning {main_mem_path} for operational state clutter...")
-    
+
     content = main_mem_path.read_text(encoding="utf-8")
     lines = content.splitlines()
-    
+
     new_memory_lines = []
     migrated_states = []
-    
+
     # Simple block-based heuristic: scan for sections or bullet points
     # In this implementation, we look for bullet points or paragraphs containing keywords
     for line in lines:
         is_state = any(re.search(kw, line, re.IGNORECASE) for kw in STATE_KEYWORDS)
-        
+
         if is_state:
             print(f"Found state clutter: {line.strip()}")
             migrated_states.append(line.strip())
@@ -66,7 +67,7 @@ def main():
                 (task_id, "global", "MIGRATED", state_text[:50], json.dumps({"full_text": state_text}))
             )
         conn.commit()
-    
+
     print(f"[SUCCESS] Cleaned {len(migrated_states)} items. Migrated to state.db audit log.")
 
 if __name__ == "__main__":

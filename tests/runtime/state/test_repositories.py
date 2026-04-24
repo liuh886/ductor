@@ -15,6 +15,7 @@ from ductor_bot.runtime.state import (
     RuntimeStateDB,
     SessionRepository,
     TaskRepository,
+    TaskStateRepository,
     ToolCallRepository,
 )
 from ductor_bot.session.manager import ProviderSessionData, SessionData
@@ -84,6 +85,7 @@ def test_task_repository_round_trip(tmp_path: Path) -> None:
         task_id="deadbeef",
         chat_id=9,
         parent_agent="main",
+        transport="tg",
         name="Task",
         prompt_preview="preview",
         provider="claude",
@@ -101,6 +103,30 @@ def test_task_repository_round_trip(tmp_path: Path) -> None:
     assert loaded[0].task_id == "deadbeef"
     assert loaded[0].thread_id == 7
     assert loaded[0].original_prompt == "full prompt"
+
+
+def test_task_state_repository_round_trip(tmp_path: Path) -> None:
+    repo = TaskStateRepository(RuntimeStateDB(tmp_path / "state.db"))
+
+    repo.upsert(
+        task_id="task-1",
+        storage_key="tg:1:5",
+        status="RUNNING",
+        current_step=2,
+        total_steps=4,
+        step_label="write tests",
+        context_snapshot_json={"owner": "main", "priority": "high"},
+    )
+
+    loaded = repo.list_by_storage_key("tg:1:5")
+
+    assert len(loaded) == 1
+    assert loaded[0]["task_id"] == "task-1"
+    assert loaded[0]["status"] == "RUNNING"
+    assert loaded[0]["current_step"] == 2
+    assert loaded[0]["total_steps"] == 4
+    assert loaded[0]["step_label"] == "write tests"
+    assert loaded[0]["context_snapshot_json"] == {"owner": "main", "priority": "high"}
 
 
 def test_message_repository_append_and_list(tmp_path: Path) -> None:
@@ -241,3 +267,41 @@ def test_memory_fragment_repository_replace_for_scope(tmp_path: Path) -> None:
     assert float(scoped[0]["updated_at"]) > 0
     assert float(shared[0]["created_at"]) > 0
     assert float(shared[0]["updated_at"]) > 0
+
+
+def test_memory_fragment_repository_deduplicates_and_reports_conflicts(tmp_path: Path) -> None:
+    repo = MemoryFragmentRepository(RuntimeStateDB(tmp_path / "state.db"))
+    repo.replace_for_scope(
+        "mainmemory",
+        [
+            MemoryFragment(
+                title="Preferences",
+                body="- Keep answers short",
+                scope="mainmemory",
+                agent_name="main",
+                ulid="mf_1",
+            ),
+            MemoryFragment(
+                title="Preferences",
+                body="- Keep answers short",
+                scope="mainmemory",
+                agent_name="main",
+                ulid="mf_2",
+            ),
+            MemoryFragment(
+                title="Preferences",
+                body="- Prefer exhaustive replies",
+                scope="mainmemory",
+                agent_name="main",
+                ulid="mf_3",
+            ),
+        ],
+        agent_name="main",
+    )
+
+    stored = repo.list_by_scope("mainmemory", agent_name="main")
+    conflicts = repo.list_conflicts("mainmemory", agent_name="main")
+
+    assert len(stored) == 2
+    assert len(conflicts) == 1
+    assert conflicts[0].title == "Preferences"

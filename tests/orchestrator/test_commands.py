@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, patch
 from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.config import AgentConfig
 from ductor_bot.orchestrator.commands import (
-    cmd_reset,
     cmd_cron,
     cmd_diagnose,
     cmd_memory,
     cmd_model,
+    cmd_reset,
     cmd_status,
 )
 from ductor_bot.orchestrator.core import Orchestrator
@@ -143,7 +143,7 @@ async def test_memory_prefers_fragment_backed_content(orch: Orchestrator) -> Non
         MemoryFragment(
             title="Shared Policy",
             body="- Prefer fragment-backed memory",
-            source_kind="mainmemory",            
+            source_kind="mainmemory",
             source_path=str(state_orch.paths.mainmemory_path),
             scope="mainmemory",
             agent_name="main",

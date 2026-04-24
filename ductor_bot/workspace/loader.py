@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable
 from pathlib import Path
@@ -79,6 +80,27 @@ def load_tasks(paths: DuctorPaths) -> str:
     return read_file(paths.shared_tasks_path) or ""
 
 
+def load_task_state(
+    paths: DuctorPaths,
+    *,
+    storage_key: str,
+    task_state_repo: object | None = None,
+) -> str:
+    """Return task context, preferring persisted ``task_states`` over ``TASKS.md``."""
+    if task_state_repo is not None:
+        list_by_storage_key = getattr(task_state_repo, "list_by_storage_key", None)
+        if callable(list_by_storage_key):
+            try:
+                rows = list_by_storage_key(storage_key)
+            except Exception:
+                logger.debug("Failed to load task_states for %s", storage_key, exc_info=True)
+            else:
+                rendered = _render_task_states(rows)
+                if rendered.strip():
+                    return rendered
+    return load_tasks(paths)
+
+
 def _sync_memory_fragments(
     paths: DuctorPaths,
     fragment_repo: object | None,
@@ -149,6 +171,55 @@ def _sync_memory_fragments(
             replace_for_scope("sharedmemory", shared_fragments)
     except Exception:
         logger.debug("Failed to sync memory fragments", exc_info=True)
+
+
+def _render_task_states(rows: list[dict[str, object]]) -> str:
+    """Render task-state rows into a compact prompt-friendly summary."""
+    active_rows = [
+        row
+        for row in rows
+        if str(row.get("status", "")).strip().upper() not in {"DONE", "FAILED", "CANCELLED"}
+    ]
+    if not active_rows:
+        return ""
+    lines = ["# Active Task State"]
+    for row in active_rows:
+        task_id = str(row.get("task_id", "")).strip() or "<unknown>"
+        status = str(row.get("status", "PENDING")).strip() or "PENDING"
+        step_label = str(row.get("step_label", "")).strip()
+        current_step = row.get("current_step")
+        total_steps = row.get("total_steps")
+        line = f"- {task_id}: {status}"
+        if step_label:
+            line += f" | {step_label}"
+        if isinstance(current_step, int):
+            if isinstance(total_steps, int) and total_steps > 0:
+                line += f" | step {current_step}/{total_steps}"
+            else:
+                line += f" | step {current_step}"
+        lines.append(line)
+
+        snapshot = row.get("context_snapshot_json", {})
+        rendered_snapshot = _render_task_snapshot(snapshot)
+        if rendered_snapshot:
+            lines.extend(f"  {part}" for part in rendered_snapshot.splitlines())
+    return "\n".join(lines)
+
+
+def _render_task_snapshot(snapshot: object) -> str:
+    """Render a task-state context snapshot into concise bullet lines."""
+    if isinstance(snapshot, dict):
+        parts: list[str] = []
+        for key, value in snapshot.items():
+            if value in ("", None, [], {}):
+                continue
+            if isinstance(value, (dict, list)):
+                encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                parts.append(f"- {key}: {encoded}")
+            else:
+                parts.append(f"- {key}: {value}")
+        return "\n".join(parts[:8])
+    return ""
 
 
 def _should_refresh_scope(path: Path, existing_rows: list[dict[str, object]]) -> bool:

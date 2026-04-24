@@ -16,7 +16,8 @@ from rich.panel import Panel
 
 from ductor_bot.i18n import t_rich
 from ductor_bot.infra.fs import robust_rmtree
-from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS, is_windows
+from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
+from ductor_bot.infra.platform import is_windows
 from ductor_bot.infra.restart import EXIT_RESTART
 from ductor_bot.workspace.paths import resolve_paths
 

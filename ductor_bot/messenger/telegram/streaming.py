@@ -154,9 +154,8 @@ class StreamEditor:
                 logger.warning("HTML send failed, falling back to plain text")
                 fallback = (raw_fallback or text)[:TELEGRAM_MSG_LIMIT]
                 return await self._send(fallback, parse_mode=None)
-            else:
-                logger.exception("Failed to send stream chunk even as plain text")
-                return False
+            logger.exception("Failed to send stream chunk even as plain text")
+            return False
 
 
 def create_stream_editor(
