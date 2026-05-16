@@ -129,3 +129,32 @@ def test_update_available_providers() -> None:
     svc = _make_service()
     svc.update_available_providers(frozenset({"claude", "codex"}))
     assert svc._available_providers == frozenset({"claude", "codex"})
+
+
+async def test_stream_callbacks_dispatches_compact_boundary() -> None:
+    """CompactBoundaryEvent fires on_compact_boundary and on_status(None), in order."""
+    from ductor_bot.cli.service import _StreamCallbacks
+    from ductor_bot.cli.stream_events import CompactBoundaryEvent
+
+    order: list[str] = []
+
+    async def on_boundary() -> None:
+        order.append("boundary")
+
+    async def on_status(status: str | None) -> None:
+        order.append(f"status:{status}")
+
+    cbs = _StreamCallbacks(
+        on_text=None,
+        on_tool=None,
+        on_status=on_status,
+        on_compact_boundary=on_boundary,
+    )
+    event = CompactBoundaryEvent(
+        type="system", subtype="compact_boundary", trigger="auto", pre_tokens=12345
+    )
+    text, result = await cbs.dispatch(event)
+
+    assert text == ""
+    assert result is None
+    assert order == ["boundary", "status:None"]

@@ -13,6 +13,10 @@ Options:
     --provider PROV    Override provider (claude, codex, gemini)
     --model MODEL      Override model (opus, sonnet, flash, etc.)
     --thinking LEVEL   Reasoning effort for codex (low, medium, high)
+    --priority LEVEL   Scheduling priority (interactive|background|batch)
+                       interactive bypasses the concurrency cap so user
+                       follow-ups stay responsive; background (default)
+                       and batch respect it.
 
 Environment variables DUCTOR_AGENT_NAME and DUCTOR_INTERAGENT_PORT are
 automatically set by the Ductor framework.
@@ -33,6 +37,9 @@ def _load_shared() -> tuple[object, object, object]:
     return get_api_url, post_json, detect_agent_name
 
 
+_VALID_PRIORITIES = ("interactive", "background", "batch")
+
+
 def main() -> None:
     get_api_url, post_json, detect_agent_name = _load_shared()
     args = sys.argv[1:]
@@ -40,6 +47,7 @@ def main() -> None:
     provider = ""
     model = ""
     thinking = ""
+    priority = ""
 
     # Parse named options
     while args:
@@ -55,13 +63,23 @@ def main() -> None:
         elif args[0] == "--thinking" and len(args) >= 2:
             thinking = args[1]
             args = args[2:]
+        elif args[0] == "--priority" and len(args) >= 2:
+            priority = args[1]
+            if priority not in _VALID_PRIORITIES:
+                print(
+                    f"Error: unknown priority '{priority}'. "
+                    f"Choose one of: {', '.join(_VALID_PRIORITIES)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            args = args[2:]
         else:
             break
 
     if not args:
         print(
             'Usage: python3 create_task.py [--name NAME] [--provider P] '
-            '[--model M] [--thinking L] "prompt"',
+            '[--model M] [--thinking L] [--priority LEVEL] "prompt"',
             file=sys.stderr,
         )
         sys.exit(1)
@@ -79,6 +97,8 @@ def main() -> None:
         body["model"] = model
     if thinking:
         body["thinking"] = thinking
+    if priority:
+        body["priority"] = priority
 
     # Propagate sender context so task results route back to the originating chat/topic
     chat_id = os.environ.get("DUCTOR_CHAT_ID", "")

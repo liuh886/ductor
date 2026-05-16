@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_TRANSPORT_ALIASES = {"telegram": "tg", "matrix": "mx"}
+
+
+def _normalise_transport(value: str) -> str:
+    """Return the short transport id used by envelopes/session keys."""
+    stripped = value.strip().lower()
+    return _TRANSPORT_ALIASES.get(stripped, stripped)
+
+
 _DEFAULT_PORT = 8799
 _BIND_ALL_HOST = ".".join(["0"] * 4)
 
@@ -169,6 +178,9 @@ class InternalAgentAPI:
         summary = str(data.get("summary", ""))
         chat_id = int(data["chat_id"]) if data.get("chat_id") else 0
         topic_id = int(data["topic_id"]) if data.get("topic_id") else None
+        transport = _normalise_transport(str(data.get("transport", "")))
+        reply_to = str(data.get("reply_to", ""))  # #86
+        silent = bool(data.get("silent", False))  # #86
 
         if not recipient or not message:
             return web.json_response(
@@ -191,6 +203,9 @@ class InternalAgentAPI:
             summary=summary,
             chat_id=chat_id,
             topic_id=topic_id,
+            transport=transport,
+            reply_to=reply_to,
+            silent=silent,
         )
         task_id = self._bus.send_async(
             sender=sender,
@@ -255,7 +270,7 @@ class InternalAgentAPI:
                 status=400,
             )
 
-        from ductor_bot.tasks.models import TaskSubmit
+        from ductor_bot.tasks.models import TaskSubmit, normalise_priority
 
         submit = TaskSubmit(
             chat_id=data.get("chat_id", 0),
@@ -267,6 +282,7 @@ class InternalAgentAPI:
             provider_override=data.get("provider") or "",
             model_override=data.get("model") or "",
             thinking_override=data.get("thinking") or "",
+            priority=normalise_priority(data.get("priority")),
         )
 
         try:

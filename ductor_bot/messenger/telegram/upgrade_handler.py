@@ -48,7 +48,7 @@ async def on_update_available(bot: TelegramBot, info: VersionInfo) -> None:
         SEP,
         f"Installed: `{info.current}`\nNew:       `{info.latest}`",
     )
-    await bot.broadcast(text, SendRichOpts(reply_markup=keyboard))
+    await bot.notify_upgrade(text, SendRichOpts(reply_markup=keyboard))
 
 
 async def handle_upgrade_callback(

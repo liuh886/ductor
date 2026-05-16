@@ -6,7 +6,16 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from ductor_bot.cli.init_wizard import _WizardConfig, _write_config, run_onboarding
+import pytest
+from rich.console import Console
+
+from ductor_bot.cli.auth import AuthResult, AuthStatus
+from ductor_bot.cli.init_wizard import (
+    _check_clis,
+    _WizardConfig,
+    _write_config,
+    run_onboarding,
+)
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -108,3 +117,76 @@ def test_run_onboarding_returns_true_when_service_install_succeeds(tmp_path: Pat
         patch("ductor_bot.infra.service.install_service", return_value=True),
     ):
         assert run_onboarding() is True
+
+
+# --- Regression tests for non-fatal CLI auth-check failures (#109 / P1-BUG-01) ---
+
+
+def test_check_clis_survives_codex_exception() -> None:
+    """An exception in one probe (codex) must not abort the wizard when
+    another provider (claude) is authenticated."""
+
+    def _boom() -> AuthResult:
+        raise RuntimeError("boom")
+
+    console = Console(record=True, width=120)
+    with (
+        patch(
+            "ductor_bot.cli.init_wizard.check_claude_auth",
+            return_value=AuthResult("claude", AuthStatus.AUTHENTICATED),
+        ),
+        patch("ductor_bot.cli.init_wizard.check_codex_auth", side_effect=_boom),
+        patch(
+            "ductor_bot.cli.init_wizard.check_gemini_auth",
+            return_value=AuthResult("gemini", AuthStatus.NOT_FOUND),
+        ),
+    ):
+        # Must NOT raise SystemExit.
+        _check_clis(console)
+
+    output = console.export_text()
+    lowered = output.lower()
+    assert "codex" in lowered
+    assert "boom" in lowered
+
+
+def test_check_clis_aborts_when_all_fail_or_unauthenticated() -> None:
+    """When no provider is authenticated, the wizard must still abort."""
+    console = Console(record=True, width=120)
+    with (
+        patch(
+            "ductor_bot.cli.init_wizard.check_claude_auth",
+            return_value=AuthResult("claude", AuthStatus.NOT_FOUND),
+        ),
+        patch(
+            "ductor_bot.cli.init_wizard.check_codex_auth",
+            return_value=AuthResult("codex", AuthStatus.NOT_FOUND),
+        ),
+        patch(
+            "ductor_bot.cli.init_wizard.check_gemini_auth",
+            return_value=AuthResult("gemini", AuthStatus.NOT_FOUND),
+        ),
+        pytest.raises(SystemExit),
+    ):
+        _check_clis(console)
+
+
+def test_check_clis_continues_when_only_claude_authed() -> None:
+    """When Claude is authenticated and codex/gemini are NOT_FOUND, wizard continues."""
+    console = Console(record=True, width=120)
+    with (
+        patch(
+            "ductor_bot.cli.init_wizard.check_claude_auth",
+            return_value=AuthResult("claude", AuthStatus.AUTHENTICATED),
+        ),
+        patch(
+            "ductor_bot.cli.init_wizard.check_codex_auth",
+            return_value=AuthResult("codex", AuthStatus.NOT_FOUND),
+        ),
+        patch(
+            "ductor_bot.cli.init_wizard.check_gemini_auth",
+            return_value=AuthResult("gemini", AuthStatus.NOT_FOUND),
+        ),
+    ):
+        # Returns None; does not raise SystemExit.
+        assert _check_clis(console) is None

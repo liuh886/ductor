@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ductor_bot.config import MemoryReflectionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -129,3 +133,24 @@ DELEGATION_REMINDER = MessageHook(
         "instead of creating new ones (keeps context). Docs: tools/task_tools/CLAUDE/GEMINI/AGENTS.md."
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Built-in hook factories (cadence is user-configurable)
+# ---------------------------------------------------------------------------
+
+
+def build_memory_reflection_hook(
+    config: MemoryReflectionConfig,
+) -> MessageHook:
+    """Build the periodic memory reflection hook (#65).
+
+    Cadence and prompt come from the supplied config so operators can tune
+    both without patching source. Registered conditionally by the
+    Orchestrator when ``config.memory_reflection.enabled`` is True.
+    """
+    return MessageHook(
+        name="memory_reflection",
+        condition=every_n_messages(config.every_n_messages),
+        suffix=config.prompt,
+    )

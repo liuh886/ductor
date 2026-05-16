@@ -91,6 +91,36 @@ def _build_switch_summary(ctx: _SwitchSummaryContext) -> str:
     return "\n".join(parts)
 
 
+def _validate_codex_reasoning_effort(
+    orch: Orchestrator,
+    model_id: str,
+    reasoning_effort: str | None,
+) -> str | None:
+    """Return a user-facing error when Codex effort is unsupported."""
+    if not reasoning_effort or orch.models.provider_for(model_id) != "codex":
+        return None
+
+    codex_cache = (
+        orch._observers.codex_cache_obs.get_cache() if orch._observers.codex_cache_obs else None
+    )
+    if codex_cache is None:
+        return None
+
+    model_info = codex_cache.get_model(model_id)
+    if model_info is None:
+        return None
+
+    supported = tuple(model_info.supported_efforts)
+    if reasoning_effort in supported:
+        return None
+
+    supported_display = ", ".join(supported) if supported else "none"
+    return (
+        f"Invalid reasoning effort `{reasoning_effort}` for `{model_id}`. "
+        f"Supported: {supported_display}."
+    )
+
+
 def _gemini_models_for_selector() -> list[str]:
     """Return Gemini models discovered from local Gemini CLI files."""
     models = sorted(get_gemini_models())
@@ -210,7 +240,7 @@ async def handle_model_callback(
     return SelectorResponse(text=t("model.unknown_action"))
 
 
-async def switch_model(
+async def switch_model(  # noqa: C901
     orch: Orchestrator,
     key: SessionKey,
     model_id: str,
@@ -234,6 +264,11 @@ async def switch_model(
     old_provider = orch.models.provider_for(old)
     new_provider = orch.models.provider_for(model_id)
     provider_changed = old_provider != new_provider
+
+    validation_error = _validate_codex_reasoning_effort(orch, model_id, reasoning_effort)
+    if validation_error is not None:
+        return validation_error
+
     resume_session_id, resume_message_count = _resume_state_for_provider(
         active_session,
         new_provider,

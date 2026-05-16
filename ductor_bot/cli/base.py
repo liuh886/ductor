@@ -103,6 +103,9 @@ class CLIConfig:
     # Multi-agent identification:
     agent_name: str = "main"
     interagent_port: int = 8799
+    # External transcription hooks (#66) — empty strings keep built-in strategies.
+    transcribe_command: str = ""
+    video_transcribe_command: str = ""
 
 
 _CONTAINER_DUCTOR_MOUNT = "/ductor"
@@ -117,6 +120,40 @@ def _to_container_path(host_path: Path, main_home: Path) -> str:
     if str(rel) == ".":
         return _CONTAINER_DUCTOR_MOUNT
     return f"{_CONTAINER_DUCTOR_MOUNT}/{rel.as_posix()}"
+
+
+def _docker_env_flags(
+    config: CLIConfig,
+    container_home: str,
+    container_shared: str,
+) -> list[str]:
+    """Build the ``-e KEY=VAL`` argv flags for ``docker exec``."""
+    env_flags: list[str] = [
+        "-e",
+        f"DUCTOR_CHAT_ID={config.chat_id}",
+        "-e",
+        f"DUCTOR_TRANSPORT={config.transport}",
+        "-e",
+        f"DUCTOR_AGENT_NAME={config.agent_name}",
+        "-e",
+        f"DUCTOR_INTERAGENT_PORT={config.interagent_port}",
+        "-e",
+        f"DUCTOR_HOME={container_home}",
+        "-e",
+        f"DUCTOR_SHARED_MEMORY_PATH={container_shared}",
+        "-e",
+        "DUCTOR_INTERAGENT_HOST=host.docker.internal",
+    ]
+    if config.topic_id:
+        env_flags += ["-e", f"DUCTOR_TOPIC_ID={config.topic_id}"]
+    if config.transcribe_command:
+        env_flags += ["-e", f"DUCTOR_TRANSCRIBE_COMMAND={config.transcribe_command}"]
+    if config.video_transcribe_command:
+        env_flags += [
+            "-e",
+            f"DUCTOR_VIDEO_TRANSCRIBE_COMMAND={config.video_transcribe_command}",
+        ]
+    return env_flags
 
 
 def docker_wrap(
@@ -164,24 +201,7 @@ def docker_wrap(
             merged_extra.update(extra_env)  # Provider-specific overrides win.
         extra_env = merged_extra or None
 
-        env_flags: list[str] = [
-            "-e",
-            f"DUCTOR_CHAT_ID={config.chat_id}",
-            "-e",
-            f"DUCTOR_TRANSPORT={config.transport}",
-            "-e",
-            f"DUCTOR_AGENT_NAME={config.agent_name}",
-            "-e",
-            f"DUCTOR_INTERAGENT_PORT={config.interagent_port}",
-            "-e",
-            f"DUCTOR_HOME={container_home}",
-            "-e",
-            f"DUCTOR_SHARED_MEMORY_PATH={container_shared}",
-            "-e",
-            "DUCTOR_INTERAGENT_HOST=host.docker.internal",
-        ]
-        if config.topic_id:
-            env_flags += ["-e", f"DUCTOR_TOPIC_ID={config.topic_id}"]
+        env_flags = _docker_env_flags(config, container_home, container_shared)
         if extra_env:
             for key, value in extra_env.items():
                 env_flags += ["-e", f"{key}={value}"]

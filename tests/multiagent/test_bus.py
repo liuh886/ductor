@@ -440,7 +440,28 @@ class TestBusChatTopicPropagation:
         result = delivered[0]
         assert result.chat_id == 12345
         assert result.topic_id == 678
+        assert result.transport == ""
         assert result.success is True
+
+    async def test_async_result_carries_transport(self) -> None:
+        """transport from send_async appears in the result for multi-transport routing."""
+        bus = InterAgentBus()
+        bus.register("target", _make_stack("response"))
+
+        delivered: list[object] = []
+        bus.set_async_result_handler("sender", AsyncMock(side_effect=delivered.append))
+
+        bus.send_async(
+            "sender",
+            "target",
+            "Hello",
+            opts=AsyncSendOptions(chat_id=12345, topic_id=678, transport="mx"),
+        )
+        await asyncio.sleep(0.1)
+
+        assert len(delivered) == 1
+        result = delivered[0]
+        assert result.transport == "mx"
 
     async def test_async_result_defaults_without_context(self) -> None:
         """When no chat_id/topic_id are provided, defaults are 0/None."""

@@ -40,7 +40,9 @@ from ductor_bot.orchestrator.hooks import (
     DELEGATION_REMINDER,
     MAINMEMORY_REMINDER,
     MessageHookRegistry,
+    build_memory_reflection_hook,
 )
+from ductor_bot.orchestrator.memory_flush import MemoryFlusher
 from ductor_bot.orchestrator.observers import ObserverManager
 from ductor_bot.orchestrator.providers import ProviderManager
 from ductor_bot.orchestrator.registry import CommandRegistry, OrchestratorResult
@@ -63,6 +65,7 @@ from ductor_bot.workspace.paths import DuctorPaths
 if TYPE_CHECKING:
     from ductor_bot.background import BackgroundObserver
     from ductor_bot.bus.bus import MessageBus
+    from ductor_bot.bus.lock_pool import LockPool
     from ductor_bot.config import ModelRegistry
     from ductor_bot.multiagent.bus import AsyncInterAgentResult
     from ductor_bot.multiagent.supervisor import AgentSupervisor
@@ -74,6 +77,7 @@ logger = logging.getLogger(__name__)
 
 _TextCallback = Callable[[str], Awaitable[None]]
 _SystemStatusCallback = Callable[[str | None], Awaitable[None]]
+_ReasoningCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -97,6 +101,7 @@ class _MessageDispatch:
     on_text_delta: _TextCallback | None = None
     on_tool_activity: _TextCallback | None = None
     on_system_status: _SystemStatusCallback | None = None
+    on_reasoning_delta: _ReasoningCallback | None = None
 
     def streaming_callbacks(self) -> StreamingCallbacks:
         """Bundle the streaming callbacks into a StreamingCallbacks instance."""
@@ -104,13 +109,14 @@ class _MessageDispatch:
             on_text_delta=self.on_text_delta,
             on_tool_activity=self.on_tool_activity,
             on_system_status=self.on_system_status,
+            on_reasoning_delta=self.on_reasoning_delta,
         )
 
 
 class Orchestrator:
     """Routes messages through command dispatch and conversation flows."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         config: AgentConfig,
         paths: DuctorPaths,
@@ -156,6 +162,7 @@ class Orchestrator:
             state_backend=config.state_backend,
         )
         self._process_registry = ProcessRegistry()
+        self._lock_pool: LockPool | None = None
         self._cli_service = CLIService(
             config=CLIServiceConfig(
                 working_dir=str(paths.workspace),
@@ -172,6 +179,8 @@ class Orchestrator:
                 gemini_cli_parameters=tuple(config.cli_parameters.gemini),
                 agent_name=agent_name,
                 interagent_port=interagent_port,
+                transcribe_command=config.transcription.audio_command,
+                video_transcribe_command=config.transcription.video_command,
             ),
             models=self._providers.models,
             available_providers=frozenset(),
@@ -194,17 +203,29 @@ class Orchestrator:
             )
 
         self._observers.heartbeat.set_heartbeat_handler(_heartbeat_handler)
-        self._observers.heartbeat.set_busy_check(self._process_registry.has_active)
+        self._observers.heartbeat.set_busy_check(self.is_chat_busy)
         stale_max = config.cli_timeout * 2
         self._observers.heartbeat.set_stale_cleanup(
             lambda: self._process_registry.kill_stale(stale_max)
         )
         self._api_stop: Callable[[], Awaitable[None]] | None = None
         self._inflight_tracker = InflightTracker(paths.inflight_turns_path, state_db=runtime_db)
+        self._memory_flusher: MemoryFlusher | None = (
+            MemoryFlusher(
+                config.memory_flush,
+                self._cli_service,
+                config.memory_compaction,
+                paths,
+            )
+            if config.memory_flush.enabled
+            else None
+        )
         self._hook_registry = MessageHookRegistry()
         self._hook_registry.register(MAINMEMORY_REMINDER)
         self._hook_registry.register(DELEGATION_BRIEF)
         self._hook_registry.register(DELEGATION_REMINDER)
+        if config.memory_reflection.enabled:
+            self._hook_registry.register(build_memory_reflection_hook(config.memory_reflection))
         self._supervisor: AgentSupervisor | None = None  # Set by AgentSupervisor after creation
         self._task_hub: TaskHub | None = None  # Set by supervisor or __main__.py
         self._command_registry = CommandRegistry()
@@ -294,6 +315,10 @@ class Orchestrator:
         """Return cached Gemini API-key mode status."""
         return self._providers.gemini_api_key_mode
 
+    def refresh_gemini_api_key_mode(self) -> bool:
+        """Force a fresh read of Gemini auth settings (bypasses the cache)."""
+        return self._providers.refresh_gemini_api_key_mode()
+
     @property
     def active_provider_name(self) -> str:
         """Human-readable name for the active CLI provider."""
@@ -304,7 +329,7 @@ class Orchestrator:
         dispatch = _MessageDispatch(key=key, text=text, cmd=text.strip().lower())
         return await self._handle_message_impl(dispatch)
 
-    async def handle_message_streaming(
+    async def handle_message_streaming(  # noqa: PLR0913
         self,
         key: SessionKey,
         text: str,
@@ -312,6 +337,7 @@ class Orchestrator:
         on_text_delta: _TextCallback | None = None,
         on_tool_activity: _TextCallback | None = None,
         on_system_status: _SystemStatusCallback | None = None,
+        on_reasoning_delta: _ReasoningCallback | None = None,
     ) -> OrchestratorResult:
         """Main entry point with streaming support."""
         dispatch = _MessageDispatch(
@@ -322,6 +348,7 @@ class Orchestrator:
             on_text_delta=on_text_delta,
             on_tool_activity=on_tool_activity,
             on_system_status=on_system_status,
+            on_reasoning_delta=on_reasoning_delta,
         )
         return await self._handle_message_impl(dispatch)
 
@@ -356,7 +383,15 @@ class Orchestrator:
 
         await self._ensure_docker()
 
-        directives = parse_directives(dispatch.text, self._providers._known_model_ids)
+        # _known_model_ids only covers Claude + Gemini IDs (refreshed on Gemini
+        # cache updates).  Codex model IDs live in a separate dynamic cache, so
+        # merge them in here before parsing so that directives like @gpt-5.4
+        # route to the Codex provider instead of falling through to the default.
+        known_ids = self._providers._known_model_ids
+        codex_cache = self._providers._codex_cache_fn() if self._providers._codex_cache_fn else None
+        if codex_cache is not None:
+            known_ids = known_ids | frozenset(m.id for m in codex_cache.models)
+        directives = parse_directives(dispatch.text, known_ids)
 
         # Check if a leading @directive matches a named session
         if directives.raw_directives:
@@ -453,20 +488,20 @@ class Orchestrator:
         logger.info("Session reset")
 
     async def reset_active_provider_session(self, key: SessionKey) -> str:
-        """Reset only the active provider session bucket for a given key."""
-        active = await self._sessions.get_active(key)
-        if active is not None:
-            provider = active.provider
-            model = active.model
-        else:
-            model, provider = self.resolve_runtime_target(self._config.model)
+        """Reset the active provider bucket to the config-default model.
 
+        ``/new`` acts as a "factory reset" -- the bucket cleared is the one
+        tied to ``config.model`` (resolved via provider mapping), not the
+        bucket the user last switched to via ``/model``. This matches the
+        behaviour users expect from a reset command (issue #82).
+        """
+        model, provider = self.resolve_runtime_target(self._config.model)
         await self._sessions.reset_provider_session(
             key,
             provider=provider,
             model=model,
         )
-        logger.info("Active provider session reset provider=%s", provider)
+        logger.info("Active provider session reset provider=%s model=%s", provider, model)
         return provider
 
     async def abort(self, chat_id: int) -> int:
@@ -503,6 +538,11 @@ class Orchestrator:
         """Wire all observer result callbacks to the message bus."""
         self._observers.wire_to_bus(bus, wake_handler=wake_handler)
         bus.set_injector(self)
+        self._lock_pool = bus.lock_pool
+        # Share the bus lock pool with MemoryFlusher so silent flush / compact
+        # turns serialize against concurrent user turns on the same SessionKey.
+        if self._memory_flusher is not None:
+            self._memory_flusher.set_lock_pool(bus.lock_pool)
 
     async def handle_heartbeat(
         self,
@@ -513,6 +553,10 @@ class Orchestrator:
     ) -> str | None:
         """Run a heartbeat turn in the main session. Returns alert text or None."""
         logger.debug("Heartbeat flow starting")
+        if self._lock_pool is not None:
+            lock = self._lock_pool.get(key.lock_key)
+            async with lock:
+                return await heartbeat_flow(self, key, prompt=prompt, ack_token=ack_token)
         return await heartbeat_flow(self, key, prompt=prompt, ack_token=ack_token)
 
     def submit_named_session(
@@ -631,7 +675,13 @@ class Orchestrator:
 
     def is_chat_busy(self, chat_id: int, topic_id: int | None = None) -> bool:
         """Check if a chat has active CLI processes."""
-        return self._process_registry.has_active(chat_id, topic_id)
+        if self._process_registry.has_active(chat_id, topic_id):
+            return True
+        if self._lock_pool is None:
+            return False
+        if topic_id is not None:
+            return self._lock_pool.is_locked((chat_id, topic_id))
+        return self._lock_pool.any_locked_for_chat(chat_id)
 
     async def _ensure_docker(self) -> None:
         """Health-check Docker before CLI calls; auto-recover or fall back."""
@@ -674,6 +724,8 @@ class Orchestrator:
                     claude_cli_parameters=tuple(config.cli_parameters.claude),
                     codex_cli_parameters=tuple(config.cli_parameters.codex),
                     gemini_cli_parameters=tuple(config.cli_parameters.gemini),
+                    transcribe_command=config.transcription.audio_command,
+                    video_transcribe_command=config.transcription.video_command,
                 )
             )
 

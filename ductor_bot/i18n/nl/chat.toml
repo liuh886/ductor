@@ -23,7 +23,10 @@ Stuur een bericht om verder te gaan."""
 
 age_warning = "[Sessie is {age} oud. Gebruik /new voor een frisse start.]"
 
+empty_turn = "_(Agent heeft het geheugen stilletjes bijgewerkt — stuur nog een bericht om verder te gaan.)_"
+
 recovered = "_De vorige sessie kon niet worden hersteld. Er is automatisch een nieuwe gestart._"
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 sigkill = "De uitvoering werd onderbroken. Stuur hetzelfde verzoek opnieuw."
 
 not_found = "Sessie '{name}' niet gevonden."
@@ -369,6 +372,7 @@ topic_reset = "Nieuwe sessie voor **{name}** ({provider})."
 
 [telegram]
 group_rejected = "Deze bot is niet geautoriseerd voor deze groep."
+channel_not_whitelisted = "Dit kanaal staat niet op de whitelist, ik vertrek."
 where_header = "**Waar**"
 where_no_tracker = "Chat-tracker niet beschikbaar."
 where_empty = "Nog geen chatactiviteit vastgelegd."

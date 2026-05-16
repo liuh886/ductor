@@ -58,6 +58,10 @@ def _build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
     if config.topic_id:
         env["DUCTOR_TOPIC_ID"] = str(config.topic_id)
     env["DUCTOR_TRANSPORT"] = config.transport
+    if config.transcribe_command:
+        env["DUCTOR_TRANSCRIBE_COMMAND"] = config.transcribe_command
+    if config.video_transcribe_command:
+        env["DUCTOR_VIDEO_TRANSCRIBE_COMMAND"] = config.video_transcribe_command
     working_dir = Path(config.working_dir)
     ductor_home = working_dir.parent if working_dir.name == "workspace" else working_dir
     env["DUCTOR_HOME"] = str(ductor_home)

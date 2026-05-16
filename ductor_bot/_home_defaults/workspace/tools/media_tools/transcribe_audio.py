@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,57 @@ from pathlib import Path
 _TELEGRAM_FILES = Path(
     os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor"))
 ).expanduser() / "workspace" / "telegram_files"
+
+
+def _transcribe_external(path: Path) -> dict:
+    """Transcribe via the ``DUCTOR_TRANSCRIBE_COMMAND`` external hook (#66).
+
+    The env var holds a shell-style command (split with ``shlex``); the
+    audio path is appended as the final argv element. Stdout is tried as
+    JSON first (to match the built-in output shape), otherwise treated as
+    plain transcript text.
+
+    Returns a result dict with ``transcript`` on success, or ``error`` on
+    any failure so the caller can fall through to the built-in strategies.
+    """
+    raw = os.environ.get("DUCTOR_TRANSCRIBE_COMMAND", "").strip()
+    if not raw:
+        return {"error": "DUCTOR_TRANSCRIBE_COMMAND unset"}
+
+    try:
+        argv = shlex.split(raw)
+    except ValueError as exc:
+        return {"error": f"Invalid DUCTOR_TRANSCRIBE_COMMAND: {exc}"}
+    if not argv:
+        return {"error": "DUCTOR_TRANSCRIBE_COMMAND empty after split"}
+    argv.append(str(path))
+
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=300, check=False)
+    except FileNotFoundError as exc:
+        return {"error": f"External transcribe binary not found: {exc}"}
+    except subprocess.TimeoutExpired:
+        return {"error": "External transcribe timed out after 300s"}
+    except OSError as exc:
+        return {"error": f"External transcribe failed to spawn: {exc}"}
+
+    if result.returncode != 0:
+        return {"error": f"External transcribe exit={result.returncode}: {result.stderr[:500]}"}
+
+    stdout = result.stdout.strip()
+    if not stdout:
+        return {"error": "External transcribe produced empty output"}
+
+    # Try JSON first so scripts that already emit the built-in shape pass through.
+    try:
+        data = json.loads(stdout)
+        if isinstance(data, dict) and isinstance(data.get("transcript"), str):
+            if "method" not in data:
+                data["method"] = "external"
+            return data
+    except json.JSONDecodeError:
+        pass
+    return {"transcript": stdout, "method": "external"}
 
 
 def _transcribe_openai(path: Path) -> dict:
@@ -128,7 +180,12 @@ def main() -> None:
         print(json.dumps({"error": f"File not found: {path}"}))
         sys.exit(1)
 
-    strategies = [_transcribe_openai, _transcribe_local_whisper, _transcribe_whisper_cpp]
+    strategies = [
+        _transcribe_external,
+        _transcribe_openai,
+        _transcribe_local_whisper,
+        _transcribe_whisper_cpp,
+    ]
     errors: list[str] = []
 
     for strategy in strategies:

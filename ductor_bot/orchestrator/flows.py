@@ -38,6 +38,32 @@ class StreamingCallbacks:
     on_text_delta: Callable[[str], Awaitable[None]] | None = field(default=None)
     on_tool_activity: Callable[[str], Awaitable[None]] | None = field(default=None)
     on_system_status: Callable[[str | None], Awaitable[None]] | None = field(default=None)
+    on_reasoning_delta: Callable[[str], Awaitable[None]] | None = field(default=None)
+
+
+def _consume_background_result(task: asyncio.Task[None]) -> None:
+    """Consume task cancellation so fire-and-forget tasks stay quiet."""
+    with contextlib.suppress(asyncio.CancelledError):
+        task.result()
+
+
+def _schedule_memory_flush(orch: Orchestrator, key: SessionKey, session: SessionData) -> None:
+    """Run memory maintenance after the current locked user turn can release."""
+    flusher = orch._memory_flusher
+    if flusher is None:
+        return
+
+    async def _run() -> None:
+        try:
+            await flusher.maybe_flush(key, session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Memory flush task failed chat=%d", key.chat_id)
+
+    topic = "main" if key.topic_id is None else str(key.topic_id)
+    task = asyncio.create_task(_run(), name=f"memory-flush:{key.chat_id}:{topic}")
+    task.add_done_callback(_consume_background_result)
 
 
 def _make_timeout_controller(orch: Orchestrator, kind: str) -> TimeoutController | None:
@@ -245,6 +271,7 @@ async def _prepare_normal(
         provider_override=req_provider,
         chat_id=key.chat_id,
         topic_id=key.topic_id,
+        transport=key.transport,
         resume_session=None if is_new else session.session_id,
         timeout_seconds=timeout_secs,
         timeout_controller=_make_timeout_controller(orch, "normal"),
@@ -323,12 +350,25 @@ def _session_recovered_msg() -> str:
     return t("session.recovered")
 
 
+def _session_recovery_failed_msg() -> str:
+    return t("session.recovery_failed")
+
+
 def _is_sigkill(response: AgentResponse) -> bool:
     """Return True when the response indicates SIGKILL termination."""
     return response.is_error and response.returncode == -getattr(signal, "SIGKILL", 9)
 
 
-_INVALID_SESSION_MARKERS = ("invalid session", "session not found")
+_INVALID_SESSION_MARKERS = (
+    "invalid session",
+    "session not found",
+    # #81: Claude CLI after a version bump / cache clear emits this phrasing
+    # for resumed sessions whose cached session_id has expired. Keeping all
+    # known phrasings here lets foreground + inter-agent paths share detection.
+    "no conversation found",
+    "no rollout found",
+    "thread/resume failed",
+)
 
 
 def _is_invalid_session(response: AgentResponse) -> bool:
@@ -356,6 +396,82 @@ class _RecoveryContext:
     model_override: str | None
     streaming: bool = False
     cbs: StreamingCallbacks = field(default_factory=StreamingCallbacks)
+
+
+@dataclass(slots=True)
+class _RecoveryOutcome:
+    """Result of the one-shot session-recovery gate.
+
+    ``retry_performed`` is True when a fresh-session retry actually ran.
+    ``session_recovered`` is True only when that retry succeeded after an
+    invalid-session rejection (used to prepend the user-facing notice).
+    ``failed_result`` is non-None when the retry still returned stale-session
+    and callers must short-circuit with it (MED #8 circuit breaker).
+    """
+
+    request: AgentRequest
+    session: SessionData
+    response: AgentResponse
+    retry_performed: bool
+    session_recovered: bool
+    failed_result: OrchestratorResult | None
+
+
+async def _maybe_recover_session(
+    orch: Orchestrator,
+    key: SessionKey,
+    text: str,
+    request: AgentRequest,
+    session: SessionData,
+    response: AgentResponse,
+    *,
+    model_override: str | None,
+    streaming: bool = False,
+    cbs: StreamingCallbacks | None = None,
+) -> _RecoveryOutcome:
+    """Run the one-shot recovery gate shared by normal() and normal_streaming().
+
+    If the CLI reported a recoverable failure (SIGKILL or stale session) AND
+    the user did not abort/interrupt, retry exactly once with a fresh session.
+    If the retry ALSO returns stale-session, emit a clear error and surface
+    ``failed_result`` so callers can short-circuit (MED #8 hard cap).
+    """
+    _reg = orch._process_registry
+    if (
+        _reg.was_aborted(key.chat_id)
+        or _reg.was_interrupted(key.chat_id)
+        or not _needs_session_recovery(response)
+    ):
+        return _RecoveryOutcome(
+            request=request,
+            session=session,
+            response=response,
+            retry_performed=False,
+            session_recovered=False,
+            failed_result=None,
+        )
+
+    session_recovered = _is_invalid_session(response)
+    reason = "invalid_session" if session_recovered else "sigkill"
+    ctx = _RecoveryContext(
+        reason=reason,
+        model_override=model_override,
+        streaming=streaming,
+        cbs=cbs or StreamingCallbacks(),
+    )
+    request, session, response = await _recover_session(orch, key, text, ctx)
+    failed_result: OrchestratorResult | None = None
+    if _is_invalid_session(response):
+        logger.error("Session recovery failed on retry for chat_id=%s", key.chat_id)
+        failed_result = OrchestratorResult(text=_session_recovery_failed_msg())
+    return _RecoveryOutcome(
+        request=request,
+        session=session,
+        response=response,
+        retry_performed=True,
+        session_recovered=session_recovered,
+        failed_result=failed_result,
+    )
 
 
 async def _recover_session(
@@ -441,10 +557,16 @@ async def _gemini_missing_config_key_warning(
     if key and key.lower() not in NULLISH_TEXT_VALUES:
         return None
 
+    # Before emitting the warning, re-read settings.json: the user may have
+    # flipped auth mode (e.g. to oauth-personal) since the cache was seeded at
+    # startup. This avoids forcing a ductor restart for a simple auth flip.
+    if not orch.refresh_gemini_api_key_mode():
+        return None
+
     return OrchestratorResult(text=t("gemini.missing_key"))
 
 
-async def normal(
+async def normal(  # noqa: PLR0911
     orch: Orchestrator,
     key: SessionKey,
     text: str,
@@ -485,17 +607,14 @@ async def normal(
     exit_code = 1
     try:
         response = await orch._cli_service.execute(request)
-        session_recovered = False
+        outcome = await _maybe_recover_session(
+            orch, key, text, request, session, response, model_override=model_override
+        )
+        if outcome.failed_result is not None:
+            return outcome.failed_result
+        request, session, response = outcome.request, outcome.session, outcome.response
+        session_recovered = outcome.session_recovered
         _reg = orch._process_registry
-        if (
-            not _reg.was_aborted(key.chat_id)
-            and not _reg.was_interrupted(key.chat_id)
-            and _needs_session_recovery(response)
-        ):
-            session_recovered = _is_invalid_session(response)
-            reason = "invalid_session" if session_recovered else "sigkill"
-            ctx = _RecoveryContext(reason=reason, model_override=model_override)
-            request, session, response = await _recover_session(orch, key, text, ctx)
         if _reg.was_aborted(key.chat_id) or _reg.was_interrupted(key.chat_id):
             _reg.clear_interrupt(key.chat_id)
             logger.info("Normal flow aborted/interrupted by user")
@@ -549,7 +668,7 @@ async def normal(
         orch._inflight_tracker.complete(key.chat_id)
 
 
-async def normal_streaming(
+async def normal_streaming(  # noqa: PLR0911
     orch: Orchestrator,
     key: SessionKey,
     text: str,
@@ -590,23 +709,34 @@ async def normal_streaming(
     exit_code = 1
     try:
         cb = cbs or StreamingCallbacks()
+
+        async def _on_compact() -> None:
+            if orch._memory_flusher is not None:
+                orch._memory_flusher.mark_boundary(key)
+
         response = await orch._cli_service.execute_streaming(
             request,
             on_text_delta=cb.on_text_delta,
             on_tool_activity=cb.on_tool_activity,
             on_system_status=cb.on_system_status,
+            on_reasoning_delta=cb.on_reasoning_delta,
+            on_compact_boundary=_on_compact if orch._memory_flusher is not None else None,
         )
+        outcome = await _maybe_recover_session(
+            orch,
+            key,
+            text,
+            request,
+            session,
+            response,
+            model_override=model_override,
+            streaming=True,
+            cbs=cb,
+        )
+        if outcome.failed_result is not None:
+            return outcome.failed_result
+        request, session, response = outcome.request, outcome.session, outcome.response
         _reg = orch._process_registry
-        if (
-            not _reg.was_aborted(key.chat_id)
-            and not _reg.was_interrupted(key.chat_id)
-            and _needs_session_recovery(response)
-        ):
-            reason = "invalid_session" if _is_invalid_session(response) else "sigkill"
-            ctx = _RecoveryContext(
-                reason=reason, model_override=model_override, streaming=True, cbs=cb
-            )
-            request, session, response = await _recover_session(orch, key, text, ctx)
         if _reg.was_aborted(key.chat_id) or _reg.was_interrupted(key.chat_id):
             _reg.clear_interrupt(key.chat_id)
             logger.info("Streaming flow aborted/interrupted by user")
@@ -646,6 +776,7 @@ async def normal_streaming(
                 cli_detail=response.result,
             )
         await _update_session(orch, session, response)
+        _schedule_memory_flush(orch, key, session)
         logger.info("Streaming flow completed")
         req_model, _prov = _request_target(orch, request)
         exit_code = _response_exit_code(response)
@@ -690,7 +821,12 @@ def _finish_normal(
             return OrchestratorResult(text=t("error.generic", detail=response.result[:500]))
         return OrchestratorResult(text=t("error.check_logs"))
 
-    text = response.result
+    # #84: tool-only turns (agent silently updates memory/files without
+    # generating text) used to return an empty string here -- Telegram's
+    # send_rich then silently dropped the empty message so the user saw
+    # nothing. Substitute a neutral status line so every successful turn
+    # produces visible output. Strategic memory redesign lives in Phase 4.
+    text = response.result if response.result.strip() else t("session.empty_turn")
     if session:
         text += _session_age_note(session, warning_hours)
 
@@ -810,6 +946,7 @@ async def named_session_flow(
         provider_override=ns.provider,
         chat_id=key.chat_id,
         topic_id=key.topic_id,
+        transport=key.transport,
         process_label=f"ns:{session_name}",
         resume_session=ns.session_id or None,
         timeout_seconds=resolve_timeout(orch._config, "normal"),
@@ -924,6 +1061,7 @@ async def named_session_streaming(
         provider_override=ns.provider,
         chat_id=key.chat_id,
         topic_id=key.topic_id,
+        transport=key.transport,
         process_label=f"ns:{session_name}",
         resume_session=ns.session_id or None,
         timeout_seconds=resolve_timeout(orch._config, "normal"),
@@ -945,6 +1083,7 @@ async def named_session_streaming(
             on_text_delta=_tagged_text_delta,
             on_tool_activity=cb.on_tool_activity,
             on_system_status=cb.on_system_status,
+            on_reasoning_delta=cb.on_reasoning_delta,
         )
 
         _reg2 = orch._process_registry
@@ -1058,6 +1197,7 @@ async def heartbeat_flow(
         provider_override=req_provider,
         chat_id=key.chat_id,
         topic_id=key.topic_id,
+        transport=key.transport,
         resume_session=session.session_id,
         timeout_seconds=resolve_timeout(orch._config, "normal"),
         timeout_controller=_make_timeout_controller(orch, "normal"),

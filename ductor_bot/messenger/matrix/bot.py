@@ -136,6 +136,11 @@ class MatrixBot:
         # Keep references to fire-and-forget tasks so they aren't GC'd
         self._background_tasks: set[asyncio.Task[None]] = set()
 
+        # Message queue: dedup, pending task tracking, drain-on-stop
+        from ductor_bot.messenger.matrix.message_queue import MatrixMessageQueue
+
+        self._message_queue = MatrixMessageQueue()
+
         # Block message processing until initial sync completes
         self._ready = False
 
@@ -174,6 +179,58 @@ class MatrixBot:
 
     def register_startup_hook(self, hook: Callable[[], Awaitable[None]]) -> None:
         self._startup_hooks.append(hook)
+
+    async def notify_startup(self, text: str) -> None:
+        """Route Matrix startup-lifecycle notifications (#64).
+
+        ``topic_id`` is ignored — Matrix rooms have no topic-thread concept.
+        Fallback policy:
+          * ``startup_targets`` empty (default) -> ``notify_all``.
+          * ``startup_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback).
+        """
+        configured = self._config.notifications.startup_targets
+        if not configured:
+            await self._notification_service.notify_all(text)
+            return
+        targets = [tgt for tgt in configured if tgt.enabled and tgt.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                await self._notification_service.notify(target.chat_id, text)
+            except Exception:
+                logger.warning(
+                    "notify_startup: delivery failed for chat_id=%s",
+                    target.chat_id,
+                    exc_info=True,
+                )
+
+    async def notify_upgrade(self, text: str) -> None:
+        """Route Matrix upgrade-available notifications (#64).
+
+        ``topic_id`` is ignored — Matrix rooms have no topic-thread concept.
+        Mirrors ``notify_startup`` but reads ``notifications.upgrade_targets``
+        so users can silence/route upgrade events independently. Fallback
+        policy:
+          * ``upgrade_targets`` empty (default) -> ``broadcast``.
+          * ``upgrade_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback).
+        """
+        configured = self._config.notifications.upgrade_targets
+        if not configured:
+            await self.broadcast(text)
+            return
+        targets = [tgt for tgt in configured if tgt.enabled and tgt.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                await self._notification_service.notify(target.chat_id, text)
+            except Exception:
+                logger.warning(
+                    "notify_upgrade: delivery failed for chat_id=%s",
+                    target.chat_id,
+                    exc_info=True,
+                )
 
     def set_abort_all_callback(self, callback: Callable[[], Awaitable[int]]) -> None:
         self._abort_all_callback = callback
@@ -260,11 +317,14 @@ class MatrixBot:
 
     # --- Task management ---
 
-    def _spawn_task(self, coro: Coroutine[object, object, None], *, name: str) -> None:
+    def _spawn_task(
+        self, coro: Coroutine[object, object, None], *, name: str
+    ) -> asyncio.Task[None]:
         """Create a tracked background task (prevents GC of fire-and-forget tasks)."""
         task: asyncio.Task[None] = asyncio.create_task(coro, name=name)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        return task
 
     # --- Message handling ---
 
@@ -284,8 +344,18 @@ class MatrixBot:
             return False
         return self._is_authorized(room, event)
 
-    async def _on_message(self, room: MatrixRoom | object, event: RoomMessageText | object) -> None:
-        """Handle incoming room messages."""
+    def _preprocess_matrix_text(
+        self,
+        room: MatrixRoom | object,
+        event: RoomMessageText | object,
+    ) -> tuple[str, str, str, int] | None:
+        """Validate + dedupe + filter an incoming Matrix text event.
+
+        Returns ``(text, room_id, event_id, chat_id)`` when the event should
+        be dispatched, or ``None`` to skip (not ready, wrong type,
+        unauthorized, duplicate sync replay, empty body, or mention-only
+        filter rejected).
+        """
         from nio import MatrixRoom, RoomMessageText
 
         if (
@@ -293,29 +363,38 @@ class MatrixBot:
             or not isinstance(room, MatrixRoom)
             or not isinstance(event, RoomMessageText)
         ):
-            return
-
+            return None
         if not self._should_process_event(room, event, event.sender):
-            return
+            return None
+        if self._message_queue.is_duplicate(event.event_id):
+            return None
 
         text = event.body.strip()
         if not text:
-            return
+            return None
 
         # Group mention-only filter: in multi-user rooms, ignore
         # messages not addressed to the bot via @mention or reply.
         is_group_room = not self._is_dm_room(room)
         if is_group_room and self._config.group_mention_only:
             if not self._is_message_addressed(event):
-                return
+                return None
             text = self._strip_mention(text)
 
         room_id = room.room_id
+        return text, room_id, event.event_id, self._id_map.room_to_int(room_id)
+
+    async def _on_message(self, room: MatrixRoom | object, event: RoomMessageText | object) -> None:
+        """Handle incoming room messages."""
+        pre = self._preprocess_matrix_text(room, event)
+        if pre is None:
+            return
+        text, room_id, event_id, chat_id = pre
+
         self._last_active_room = room_id
-        chat_id = self._id_map.room_to_int(room_id)
 
         if self._config.scene.seen_reaction:
-            await self._set_seen_read_receipt(room_id, event.event_id)
+            await self._set_seen_read_receipt(room_id, event_id)
 
         # Check button match (text-input fallback for reactions)
         button_match = self._button_tracker.match_input(room_id, text)
@@ -329,10 +408,12 @@ class MatrixBot:
             return
 
         key = SessionKey.matrix(chat_id)
-        self._spawn_task(
+        task = self._spawn_task(
             self._dispatch_with_lock(key, text, room_id, event),
             name=f"mx-msg-{room_id[:8]}",
         )
+        if task is not None:
+            self._message_queue.track(chat_id=chat_id, task=task)
 
     async def _on_media(self, room: MatrixRoom | object, event: RoomMessageMedia | object) -> None:
         """Handle incoming media messages (images, audio, video, files)."""
@@ -345,6 +426,10 @@ class MatrixBot:
             return
 
         if not self._should_process_event(room, event, event.sender):
+            return
+
+        # Dedup: skip if this event was already processed (sync replay)
+        if self._message_queue.is_duplicate(event.event_id):
             return
 
         # Group mention-only filter: in group rooms, only process if addressed
@@ -383,10 +468,12 @@ class MatrixBot:
             return
 
         key = SessionKey.matrix(chat_id)
-        self._spawn_task(
+        task = self._spawn_task(
             self._dispatch_with_lock(key, text, room_id, event),
             name=f"mx-media-{room_id[:8]}",
         )
+        if task is not None:
+            self._message_queue.track(chat_id=chat_id, task=task)
 
     async def _handle_command(self, text: str, room_id: str, chat_id: int, event: object) -> None:
         """Handle commands in Matrix. Supports both !cmd and /cmd prefixes."""
@@ -432,13 +519,16 @@ class MatrixBot:
     # -- Individual command handlers ----------------------------------------
 
     async def _cmd_stop(self, *, text: str, room_id: str, key: SessionKey, event: object) -> None:
-        """Stop running processes for this chat."""
+        """Stop running processes for this chat and drain queued messages."""
+        # Drain queued message tasks first so they don't re-trigger after abort
+        drained = self._message_queue.drain(chat_id=key.chat_id)
         orch = self._orchestrator
         if orch:
             killed = await orch.abort(key.chat_id)
+            killed += drained
             msg = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
         else:
-            msg = t("abort_all.nothing")
+            msg = t("abort_all.done", count=drained) if drained else t("abort_all.nothing")
         await self._send_rich(room_id, msg)
 
     async def _cmd_interrupt(
@@ -455,10 +545,12 @@ class MatrixBot:
         self, *, text: str, room_id: str, key: SessionKey, event: object
     ) -> None:
         """Stop all running processes across all chats and agents."""
+        # Drain all queued message tasks
+        drained = self._message_queue.drain(chat_id=key.chat_id)
         orch = self._orchestrator
-        killed = 0
+        killed = drained
         if orch:
-            killed = await orch.abort_all()
+            killed += await orch.abort_all()
         if self._abort_all_callback:
             killed += await self._abort_all_callback()
         msg = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
@@ -1103,7 +1195,17 @@ class MatrixBot:
     # --- Inter-agent & task handlers (BotProtocol) ---
 
     async def on_async_interagent_result(self, result: AsyncInterAgentResult) -> None:
-        from ductor_bot.bus.adapters import from_interagent_result
+        from ductor_bot.bus.adapters import (
+            build_interagent_injection_prompt,
+            from_interagent_result,
+        )
+
+        if result.transport and result.transport != "mx":
+            logger.debug(
+                "Skipping async interagent result for transport=%s in Matrix handler",
+                result.transport,
+            )
+            return
 
         chat_id = self._default_chat_id()
         if not chat_id:
@@ -1114,7 +1216,21 @@ class MatrixBot:
             text = result.result_text or f"Inter-agent result from {result.recipient}"
             await self._notification_service.notify_all(text)
             return
-        await self._bus.submit(from_interagent_result(result, chat_id))
+
+        injection_prompt = build_interagent_injection_prompt(
+            result,
+            agent_name=self._agent_name,
+            transport_label="Matrix room",
+        )
+
+        await self._bus.submit(
+            from_interagent_result(
+                result,
+                chat_id,
+                injection_prompt=injection_prompt,
+                transport="mx",
+            )
+        )
 
     async def on_task_result(self, result: TaskResult) -> None:
         from ductor_bot.bus.adapters import from_task_result

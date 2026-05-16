@@ -137,7 +137,12 @@ def _claude_cli_logged_in() -> bool:
 
 def check_codex_auth() -> AuthResult:
     """Check Codex CLI auth via ``$CODEX_HOME/auth.json``, env var, or install markers."""
-    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    try:
+        default_home = str(Path.home() / ".codex")
+    except (RuntimeError, OSError):
+        logger.debug("Codex auth: home directory unresolvable; treating as NOT_FOUND")
+        return AuthResult("codex", AuthStatus.NOT_FOUND)
+    codex_home = Path(os.environ.get("CODEX_HOME", default_home))
     auth_file = codex_home / "auth.json"
 
     # Fast path: auth.json credential file.

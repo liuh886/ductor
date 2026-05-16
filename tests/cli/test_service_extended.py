@@ -105,6 +105,16 @@ def test_make_cli_passes_process_label(tmp_path: Path) -> None:
     assert call_args.process_label == "worker"
 
 
+def test_make_cli_passes_transport(tmp_path: Path) -> None:
+    svc = _make_service(tmp_path)
+    with patch("ductor_bot.cli.service.create_cli") as mock_create:
+        mock_create.return_value = MagicMock()
+        svc._make_cli(AgentRequest(prompt="test", chat_id=42, transport="mx"))
+
+    call_args = mock_create.call_args[0][0]
+    assert call_args.transport == "mx"
+
+
 def test_make_cli_passes_gemini_api_key(tmp_path: Path) -> None:
     svc = _make_service(tmp_path, gemini_api_key="cfg-key-123")
     with patch("ductor_bot.cli.service.create_cli") as mock_create:

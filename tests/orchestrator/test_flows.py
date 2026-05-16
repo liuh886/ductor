@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -256,6 +257,35 @@ async def test_normal_sigkill_recovers_once_then_asks_user_retry(orch: Orchestra
     )
 
 
+async def test_normal_stale_session_recovery_failed_circuit_breaker(orch: Orchestrator) -> None:
+    """If the fresh-session retry is ALSO stale, stop cascading and surface
+    a clear user-facing error instead of the misleading 'recovered' notice.
+
+    Regression for v0.16.1 MED #8: cap recovery at one retry, log error,
+    and return session.recovery_failed rather than prepending recovery
+    notice onto another stale-session response.
+    """
+    stale_resp = _mock_response(
+        is_error=True, result="Invalid session ID: session not found", returncode=1
+    )
+    mock_execute = AsyncMock(side_effect=[stale_resp, stale_resp])
+    mock_reset_provider = AsyncMock()
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._process_registry, "kill_all", AsyncMock(return_value=0))
+    object.__setattr__(orch._sessions, "reset_provider_session", mock_reset_provider)
+
+    result = await normal(orch, SessionKey(chat_id=1), "Hello")
+    assert result.text == (
+        "Could not recover your session after a fresh start. "
+        "Please try again or use /new to start over."
+    )
+    # Hard cap: one retry. Must be exactly two calls, never cascade further.
+    assert mock_execute.call_count == 2
+    mock_reset_provider.assert_called_once_with(
+        SessionKey(chat_id=1), provider="claude", model="opus"
+    )
+
+
 async def test_normal_does_not_auto_fallback_provider(orch: Orchestrator) -> None:
     mock_execute = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute", mock_execute)
@@ -302,12 +332,14 @@ async def test_normal_preserves_existing_session_target_on_restart(orch: Orchest
 
 async def test_normal_warns_for_gemini_api_key_mode_without_ductor_key(
     orch: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mock_execute = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute", mock_execute)
     orch._config.gemini_api_key = "null"
 
     orch._providers._gemini_api_key_mode = True
+    monkeypatch.setattr("ductor_bot.cli.auth.gemini_uses_api_key_mode", lambda: True)
     result = await normal(
         orch, SessionKey(chat_id=1), "Hello", model_override="gemini-3-pro-preview"
     )
@@ -319,12 +351,14 @@ async def test_normal_warns_for_gemini_api_key_mode_without_ductor_key(
 
 async def test_streaming_warns_for_gemini_api_key_mode_without_ductor_key(
     orch: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mock_streaming = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
     orch._config.gemini_api_key = "null"
 
     orch._providers._gemini_api_key_mode = True
+    monkeypatch.setattr("ductor_bot.cli.auth.gemini_uses_api_key_mode", lambda: True)
     result = await normal_streaming(
         orch, SessionKey(chat_id=1), "Hello", model_override="gemini-3-pro-preview"
     )
@@ -501,6 +535,32 @@ async def test_heartbeat_records_runtime_state(workspace: tuple[DuctorPaths, Age
     assert messages[1]["source"] == "heartbeat_alert"
 
 
+async def test_normal_recovers_when_gemini_auth_flipped_mid_session(
+    orch: Orchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """User switches Gemini CLI to oauth-personal without restarting ductor.
+
+    The cached api_key_mode is stale (True). When the warning path would fire,
+    we re-read settings.json; if the live value is False now, skip the warning
+    and let the provider call proceed — no restart required.
+    """
+    mock_execute = AsyncMock(return_value=_mock_response(result="Gemini OK"))
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    orch._config.gemini_api_key = "null"
+
+    orch._providers._gemini_api_key_mode = True  # stale cache
+    monkeypatch.setattr("ductor_bot.cli.auth.gemini_uses_api_key_mode", lambda: False)
+
+    result = await normal(
+        orch, SessionKey(chat_id=1), "Hello", model_override="gemini-3-pro-preview"
+    )
+
+    assert result.text == "Gemini OK"
+    mock_execute.assert_awaited_once()
+    assert orch._providers._gemini_api_key_mode is False  # cache refreshed
+
+
 # -- streaming flow --
 
 
@@ -524,6 +584,37 @@ async def test_streaming_fallback_flag(orch: Orchestrator) -> None:
     )
     result = await normal_streaming(orch, SessionKey(chat_id=1), "Hello")
     assert result.stream_fallback is True
+
+
+async def test_streaming_schedules_memory_flush_without_blocking_reply(
+    orch: Orchestrator,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _maybe_flush(_key: SessionKey, _session: SessionData) -> None:
+        started.set()
+        await release.wait()
+
+    memory_flusher = AsyncMock()
+    memory_flusher.maybe_flush = AsyncMock(side_effect=_maybe_flush)
+    object.__setattr__(orch, "_memory_flusher", memory_flusher)
+    object.__setattr__(
+        orch._cli_service,
+        "execute_streaming",
+        AsyncMock(return_value=_mock_response()),
+    )
+
+    result = await asyncio.wait_for(
+        normal_streaming(orch, SessionKey(chat_id=1), "Hello"),
+        timeout=0.5,
+    )
+
+    assert result.text == "Hello from agent"
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    release.set()
+    await asyncio.sleep(0)
+    memory_flusher.maybe_flush.assert_awaited_once()
 
 
 async def test_streaming_sigkill_recovers_once_then_succeeds(orch: Orchestrator) -> None:
@@ -887,3 +978,71 @@ async def test_normal_abort_on_new_session_returns_empty(orch: Orchestrator) -> 
 
     result = await normal(orch, SessionKey(chat_id=1), "Hello")
     assert result.text == ""
+
+
+def test_is_invalid_session_matches_no_conversation_found() -> None:
+    """#81: Claude CLI post-update error 'No conversation found with session ID'
+    must be detected as a stale session so recovery/retry can kick in.
+
+    Regression for the marker extension in ``_INVALID_SESSION_MARKERS``."""
+    from ductor_bot.orchestrator.flows import _is_invalid_session
+
+    response = AgentResponse(
+        result="No conversation found with session ID: abc123",
+        is_error=True,
+    )
+    assert _is_invalid_session(response) is True
+
+
+def test_is_invalid_session_case_insensitive() -> None:
+    """#81 defensive: marker match is lowercase-normalized."""
+    from ductor_bot.orchestrator.flows import _is_invalid_session
+
+    response = AgentResponse(
+        result="NO CONVERSATION FOUND with session ID: XYZ",
+        is_error=True,
+    )
+    assert _is_invalid_session(response) is True
+
+
+def test_is_invalid_session_matches_codex_resume_rollout_error() -> None:
+    """Codex can report stale resume state as a missing rollout/thread resume failure."""
+    from ductor_bot.orchestrator.flows import _is_invalid_session
+
+    response = AgentResponse(
+        result="Error: thread/resume failed: no rollout found for thread id abc",
+        is_error=True,
+    )
+    assert _is_invalid_session(response) is True
+
+
+def test_finish_normal_substitutes_empty_success_with_fallback() -> None:
+    """#84: successful turn with empty result -- e.g. agent spent the turn
+    writing to memory -- must yield a non-empty visible status message so
+    Telegram's send_rich doesn't silently drop the message."""
+    from ductor_bot.i18n import t
+    from ductor_bot.orchestrator.flows import _finish_normal
+
+    response = AgentResponse(result="", is_error=False)
+    result = _finish_normal(response)
+    assert result.text == t("session.empty_turn")
+    assert result.text  # non-empty
+
+
+def test_finish_normal_whitespace_only_substitutes_fallback() -> None:
+    """#84 defensive: whitespace-only result is also treated as empty."""
+    from ductor_bot.i18n import t
+    from ductor_bot.orchestrator.flows import _finish_normal
+
+    response = AgentResponse(result="   \n  \t", is_error=False)
+    result = _finish_normal(response)
+    assert result.text == t("session.empty_turn")
+
+
+def test_finish_normal_non_empty_success_unchanged() -> None:
+    """#84 non-regression: non-empty successful response passes through."""
+    from ductor_bot.orchestrator.flows import _finish_normal
+
+    response = AgentResponse(result="Hello world", is_error=False)
+    result = _finish_normal(response)
+    assert result.text == "Hello world"

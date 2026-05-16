@@ -42,6 +42,10 @@ class TestTaskEntry:
         assert entry.question_count == 0
 
     def test_to_dict_includes_original_prompt(self) -> None:
+        """#90: original_prompt MUST be persisted so it survives bot restarts.
+
+        Without this, only prompt_preview (80 chars) survives and the parent
+        agent's injected-prompt ends with 'Original task:' and nothing after."""
         entry = TaskEntry(
             task_id="x",
             chat_id=1,
@@ -51,12 +55,32 @@ class TestTaskEntry:
             provider="claude",
             model="opus",
             status="done",
-            original_prompt="very long prompt...",
+            original_prompt="very long prompt with all the context...",
         )
         d = entry.to_dict()
-        assert d["original_prompt"] == "very long prompt..."
-        restored = TaskEntry.from_dict(d)
-        assert restored.original_prompt == "very long prompt..."
+        assert d["original_prompt"] == "very long prompt with all the context..."
+
+    def test_from_dict_original_prompt_roundtrip(self) -> None:
+        """#90: to_dict -> from_dict preserves original_prompt across JSON."""
+        entry = TaskEntry(
+            task_id="r",
+            chat_id=2,
+            parent_agent="main",
+            name="roundtrip",
+            prompt_preview="preview",
+            provider="claude",
+            model="opus",
+            status="done",
+            original_prompt="THE FULL ORIGINAL PROMPT",
+        )
+        restored = TaskEntry.from_dict(entry.to_dict())
+        assert restored.original_prompt == "THE FULL ORIGINAL PROMPT"
+
+    def test_from_dict_original_prompt_defaults_empty(self) -> None:
+        """#90 backward-compat: old tasks.json without original_prompt loads cleanly."""
+        d = {"task_id": "old", "chat_id": 1}
+        entry = TaskEntry.from_dict(d)
+        assert entry.original_prompt == ""
 
     def test_thread_id_roundtrip(self) -> None:
         entry = TaskEntry(

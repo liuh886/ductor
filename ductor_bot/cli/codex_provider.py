@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -38,15 +39,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CODEX_STDIN_NOTICE_PREFIXES = (
+    "Reading prompt from stdin",
+    "Reading additional input from stdin",
+)
+
 
 class _StreamState:
     """Mutable accumulator for streaming session data."""
 
-    __slots__ = ("accumulated_text", "thread_id")
+    __slots__ = ("accumulated_text", "last_error_message", "thread_id")
 
     def __init__(self) -> None:
         self.accumulated_text: list[str] = []
         self.thread_id: str | None = None
+        # Captures the message from any ResultEvent(is_error=True) seen in
+        # the stream (e.g. Codex `turn.failed`), so _codex_final_result can
+        # surface the real cause instead of downstream stderr artefacts.
+        self.last_error_message: str | None = None
 
     def track(self, event: StreamEvent) -> None:
         """Update state from a single stream event."""
@@ -54,6 +64,8 @@ class _StreamState:
             self.thread_id = event.session_id
         elif isinstance(event, AssistantTextDelta) and event.text:
             self.accumulated_text.append(event.text)
+        elif isinstance(event, ResultEvent) and event.is_error and event.result:
+            self.last_error_message = event.result
 
 
 class CodexCLI(BaseCLI):
@@ -104,7 +116,7 @@ class CodexCLI(BaseCLI):
             cmd.append("--json")
         cmd += self._sandbox_flags()
         cmd += ["--", session_id]
-        cmd.append(final_prompt)
+        cmd.append("-" if _IS_WINDOWS else final_prompt)
         return cmd
 
     def _build_command(
@@ -141,7 +153,10 @@ class CodexCLI(BaseCLI):
             cmd.extend(cfg.cli_parameters)
 
         cmd.append("--")
-        cmd.append(final_prompt)
+        # On Windows, .CMD wrappers mangle arguments with special characters.
+        # Use "-" so Codex reads stdin without emitting the "Reading prompt..."
+        # notice as a stdout prelude before JSONL.
+        cmd.append("-" if _IS_WINDOWS else final_prompt)
         return cmd
 
     def _docker_wrap(self, cmd: list[str]) -> tuple[list[str], str | None]:
@@ -166,12 +181,13 @@ class CodexCLI(BaseCLI):
         cmd = self._build_command(prompt, resume_session, json_output=True)
         exec_cmd, use_cwd = self._docker_wrap(cmd)
         _log_cmd(exec_cmd)
+        stdin_prompt = self._compose_prompt(prompt) if _IS_WINDOWS else prompt
         return await run_oneshot_subprocess(
             config=self._config,
             spec=SubprocessSpec(
                 exec_cmd,
                 use_cwd,
-                "" if _IS_WINDOWS else prompt,
+                stdin_prompt,
                 timeout_seconds,
                 timeout_controller,
             ),
@@ -207,14 +223,19 @@ class CodexCLI(BaseCLI):
                 yield event
 
         async def post_handler(result: SubprocessResult) -> AsyncGenerator[StreamEvent, None]:
-            yield _codex_final_result(result, state.accumulated_text, state.thread_id)
+            yield _codex_final_result(
+                result,
+                state.accumulated_text,
+                state.thread_id,
+                state.last_error_message,
+            )
 
         async for event in run_streaming_subprocess(
             config=self._config,
             spec=SubprocessSpec(
                 exec_cmd,
                 use_cwd,
-                "" if _IS_WINDOWS else prompt,
+                self._compose_prompt(prompt) if _IS_WINDOWS else prompt,
                 timeout_seconds,
                 timeout_controller,
             ),
@@ -238,13 +259,27 @@ class CodexCLI(BaseCLI):
         raw = stdout.decode(errors="replace").strip()
         if not raw:
             logger.error("Codex returned empty output (exit=%s)", returncode)
-            return CLIResponse(result="", is_error=True, returncode=returncode, stderr=stderr_text)
+            return CLIResponse(
+                result=_strip_codex_stdin_notices(stderr_text),
+                is_error=True,
+                returncode=returncode,
+                stderr=stderr_text,
+            )
 
         is_error = returncode != 0
         result_text, thread_id, usage = parse_codex_jsonl(raw)
+        cleaned_stdout = _strip_codex_stdin_notices(raw)
+        cleaned_stderr = _strip_codex_stdin_notices(stderr_text)
+        parsed_error = _extract_codex_error_detail(raw)
+        if result_text:
+            result = result_text
+        elif is_error:
+            result = parsed_error or cleaned_stderr or cleaned_stdout
+        else:
+            result = raw
         response = CLIResponse(
             session_id=thread_id,
-            result=result_text or raw,
+            result=result,
             is_error=is_error or not result_text,
             returncode=returncode,
             stderr=stderr_text,
@@ -267,12 +302,27 @@ def _codex_final_result(
     result: SubprocessResult,
     accumulated_text: list[str],
     thread_id: str | None,
+    last_error_message: str | None = None,
 ) -> ResultEvent:
-    """Build the final ResultEvent after the stream loop completes."""
+    """Build the final ResultEvent after the stream loop completes.
+
+    On non-zero exit the user-facing detail is chosen in this order:
+
+    1. ``last_error_message`` — captured from in-stream ResultEvent(is_error=True),
+       e.g. Codex ``turn.failed`` (the real cause).
+    2. Joined ``accumulated_text`` — partial assistant output that arrived
+       before the failure.
+    3. ``stderr_text`` — raw stderr (often a downstream artefact such as
+       ``thread … not found`` after a failed Codex turn).
+    4. ``"(no output)"`` — fallback.
+    """
     stderr_text = result.stderr_bytes.decode(errors="replace")[:2000] if result.stderr_bytes else ""
+    stderr_detail = _strip_codex_stdin_notices(stderr_text)
 
     if result.process.returncode != 0:
-        error_detail = stderr_text or "\n".join(accumulated_text) or "(no output)"
+        error_detail = (
+            last_error_message or "\n".join(accumulated_text) or stderr_detail or "(no output)"
+        )
         logger.error(
             "Codex stream exited with code %d: %s",
             result.process.returncode,
@@ -292,6 +342,44 @@ def _codex_final_result(
         is_error=False,
         returncode=result.process.returncode,
     )
+
+
+def _is_codex_stdin_notice(line: str) -> bool:
+    """Return True for Codex's informational stdin prelude lines."""
+    stripped = line.strip()
+    return any(stripped.startswith(prefix) for prefix in _CODEX_STDIN_NOTICE_PREFIXES)
+
+
+def _strip_codex_stdin_notices(text: str) -> str:
+    """Remove stdin notice lines from Codex stdout/stderr text."""
+    return "\n".join(line for line in text.splitlines() if not _is_codex_stdin_notice(line)).strip()
+
+
+def _extract_codex_error_detail(raw: str) -> str:
+    """Extract a structured Codex error message from JSONL stdout."""
+    detail = ""
+    for raw_line in raw.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or _is_codex_stdin_notice(stripped):
+            continue
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if data.get("type") == "turn.failed":
+            error = data.get("error", {})
+            if isinstance(error, dict):
+                message = error.get("message")
+                if isinstance(message, str):
+                    detail = message.strip()
+        item = data.get("item")
+        if isinstance(item, dict) and item.get("type") == "error":
+            message = item.get("message")
+            if isinstance(message, str) and message.strip():
+                detail = message.strip()
+    return detail
 
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:

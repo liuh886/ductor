@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -15,6 +16,7 @@ from ductor_bot.cli.stream_events import (
     ResultEvent,
     StreamEvent,
     SystemInitEvent,
+    ThinkingEvent,
     ToolResultEvent,
     ToolUseEvent,
 )
@@ -22,6 +24,13 @@ from ductor_bot.cli.stream_events import (
 logger = logging.getLogger(__name__)
 
 _StreamParser = Callable[[dict[str, Any]], list[StreamEvent]]
+
+# Gemini CLI wraps any part with ``thought: true`` as ``[Thought: <value>]``
+# optionally followed by ``\n<real content>`` (evidence: ``@google/gemini-cli``
+# bundle ``chunk-EA775AOR.js::toPart2``). Without filtering the marker leaks
+# verbatim into Telegram. We route it through ThinkingEvent so transports
+# that don't render thinking simply skip it.
+_THOUGHT_MARKER_RE = re.compile(r"^\[Thought:\s*[^\]]+\]")
 
 
 def parse_gemini_stream_line(line: str) -> list[StreamEvent]:
@@ -168,7 +177,7 @@ def _parse_message_content_block(block: Any) -> list[StreamEvent]:
 
     block_type = block.get("type")
     if block_type == "text":
-        return [AssistantTextDelta(type="assistant", text=str(block.get("text", "")))]
+        return _split_thought_and_text(str(block.get("text", "")))
     if block_type == "tool_use":
         return [
             ToolUseEvent(
@@ -192,6 +201,27 @@ def extract_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
             continue
         return value if isinstance(value, str) else str(value)
     return ""
+
+
+def _split_thought_and_text(text: str) -> list[StreamEvent]:
+    r"""Split a Gemini text block into ThinkingEvent + AssistantTextDelta.
+
+    Gemini CLI wraps thought parts as ``[Thought: <value>]`` optionally
+    followed by ``\n<real content>``. We emit the marker as a
+    ThinkingEvent so transports that skip thinking (Telegram by default)
+    don't leak ``[Thought: true]`` into the chat, while preserving any
+    non-thought content after the marker.
+    """
+    match = _THOUGHT_MARKER_RE.match(text)
+    if match is None:
+        return [AssistantTextDelta(type="assistant", text=text)]
+
+    marker = match.group(0)
+    remainder = text[match.end() :].lstrip("\n")
+    events: list[StreamEvent] = [ThinkingEvent(type="assistant", text=marker)]
+    if remainder:
+        events.append(AssistantTextDelta(type="assistant", text=remainder))
+    return events
 
 
 def _as_dict(value: Any) -> dict[str, Any] | None:

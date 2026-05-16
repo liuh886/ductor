@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from cronsim import CronSim, CronSimError
@@ -216,6 +216,10 @@ class CronObserver(BaseTaskObserver):
                 task_folder=task_folder,
                 timezone=job_timezone,
             )
+            existing = self._scheduled.get(job_id)
+            if existing is not None and not existing.done() and job_id not in self._executing:
+                existing.cancel()
+                logger.debug("Cancelled prior idle task for %s", job_id)
             task = asyncio.create_task(
                 self._run_at(delay, scheduled_job),
             )
@@ -236,6 +240,10 @@ class CronObserver(BaseTaskObserver):
         """Wait for delay, execute the job, then reschedule for next occurrence."""
         try:
             await asyncio.sleep(delay)
+            # Clock-skew guard: verify wall clock reached the cron slot.
+            # Protects against asyncio.sleep waking early after a clock jump
+            # (WSL2/VM suspend/resume, NTP corrections, etc.).
+            await self._ensure_cron_slot_reached(scheduled_job)
             await self._execute_job(
                 scheduled_job.id,
                 scheduled_job.instruction,
@@ -256,6 +264,41 @@ class CronObserver(BaseTaskObserver):
                     scheduled_job.task_folder,
                     scheduled_job.timezone,
                 )
+
+    async def _ensure_cron_slot_reached(self, scheduled_job: _ScheduledJob) -> None:
+        """Re-sleep if wall clock shows we woke before the cron slot.
+
+        ``asyncio.sleep`` relies on the event-loop monotonic clock, which can
+        jump forward (relative to wall time) when the host suspends and
+        resumes (WSL2, VMs, hibernation) or after NTP corrections. When that
+        happens the sleep completes before the intended cron slot and the job
+        fires early.  This helper re-checks wall clock against the next cron
+        match and sleeps the deficit.  Iterations are bounded to avoid an
+        infinite loop on misconfigured expressions.
+        """
+        tz = resolve_user_timezone(
+            scheduled_job.timezone or self._config.user_timezone,
+        )
+        for _ in range(5):
+            now_aware = datetime.now(tz)
+            try:
+                it = CronSim(
+                    scheduled_job.schedule,
+                    now_aware.replace(tzinfo=None) - timedelta(minutes=1),
+                )
+                next_naive = next(it)
+            except (CronSimError, StopIteration):
+                return
+            next_aware = next_naive.replace(tzinfo=tz)
+            deficit = (next_aware - now_aware).total_seconds()
+            if deficit <= 30:
+                return
+            logger.warning(
+                "Cron job %s woke %.0fs early (wall clock), re-sleeping",
+                scheduled_job.id,
+                deficit,
+            )
+            await asyncio.sleep(deficit)
 
     # -- Execution --
 

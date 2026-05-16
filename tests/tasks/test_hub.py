@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.runtime.state import MessageRepository, ProcessRepository, RuntimeStateDB
 from ductor_bot.tasks.hub import TaskHub
 from ductor_bot.tasks.models import TaskResult, TaskSubmit
@@ -402,6 +403,68 @@ class TestRuntimeStatePersistence:
 
         await hub.shutdown()
 
+    @pytest.mark.parametrize("returncode", [143, 137, -15, -9])
+    async def test_sigterm_exit_is_classified_as_cancelled_not_failed(
+        self, registry: TaskRegistry, tmp_path: Path, returncode: int
+    ) -> None:
+        """Exit 143/137 (= 128 + SIGTERM/SIGKILL) is user /stop, not a CLI error."""
+        cli = _make_cli_service()
+        cli.execute.return_value.is_error = True
+        cli.execute.return_value.result = ""
+        cli.execute.return_value.returncode = returncode
+
+        delivered: list[TaskResult] = []
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock(side_effect=delivered.append))
+
+        hub.submit(_submit())
+        await asyncio.sleep(0.1)
+
+        assert len(delivered) == 1
+        assert delivered[0].status == "cancelled"
+        assert delivered[0].error == ""
+
+        await hub.shutdown()
+
+    async def test_cancelled_task_delivers_partial_taskmemory(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """MED #1: partial TASKMEMORY.md written before SIGTERM must reach the parent."""
+        cli = _make_cli_service()
+        cli.execute.return_value.is_error = True
+        cli.execute.return_value.result = ""
+        cli.execute.return_value.returncode = 143  # SIGTERM -> status=cancelled
+
+        delivered: list[TaskResult] = []
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock(side_effect=delivered.append))
+
+        task_id = hub.submit(_submit())
+        # Write partial memory BEFORE the task's execute mock returns — the
+        # task folder is seeded synchronously on submit, so this is safe.
+        memory = registry.taskmemory_path(task_id)
+        memory.parent.mkdir(parents=True, exist_ok=True)
+        memory.write_text("partial research findings\nline 2", encoding="utf-8")
+
+        await asyncio.sleep(0.1)
+
+        assert len(delivered) == 1
+        assert delivered[0].status == "cancelled"
+        assert "partial research findings" in delivered[0].result_text
+        assert "CONTENT FROM TASKMEMORY.MD" in delivered[0].result_text
+
+        await hub.shutdown()
+
 
 class TestCancel:
     async def test_cancel_running_task(self, registry: TaskRegistry, tmp_path: Path) -> None:
@@ -443,6 +506,125 @@ class TestCancel:
             config=_make_config(),
         )
         assert not await hub.cancel("nonexistent")
+
+
+class TestCancelWithProcessRegistry:
+    """#92: cancel/cancel_all must kill the subprocess BEFORE the asyncio task
+    (otherwise cli.execute's pipe stays open and CancelledError cannot propagate).
+    """
+
+    async def test_cancel_kills_subprocess_before_asyncio_cancel(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """cancel() must invoke process_registry.kill_for_task BEFORE asyncio_task.cancel()."""
+        order: list[str] = []
+
+        process_registry = AsyncMock(spec=ProcessRegistry)
+
+        async def _record_kill(_task_id: str) -> int:
+            order.append("kill_for_task")
+            return 1
+
+        process_registry.kill_for_task.side_effect = _record_kill
+
+        # cli.execute hangs so the task stays in-flight until cancelled.
+        async def _hang(_: object) -> MagicMock:
+            try:
+                await asyncio.sleep(999)
+            except asyncio.CancelledError:
+                order.append("asyncio_cancel")
+                raise
+            return MagicMock()  # never reached
+
+        cli = _make_cli_service()
+        cli.execute = AsyncMock(side_effect=_hang)
+
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+            process_registry=process_registry,
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        task_id = hub.submit(_submit())
+        await asyncio.sleep(0.05)  # let the task actually start awaiting the pipe
+
+        success = await hub.cancel(task_id)
+        assert success
+
+        process_registry.kill_for_task.assert_awaited_once_with(task_id)
+        # Kill-order invariant: subprocess kill strictly precedes asyncio cancel.
+        assert order == ["kill_for_task", "asyncio_cancel"], (
+            f"expected kill-before-cancel, got {order!r}"
+        )
+
+    async def test_cancel_all_kills_each_tasks_subprocess(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """cancel_all() must call kill_for_task once per in-flight task for the chat."""
+        process_registry = AsyncMock(spec=ProcessRegistry)
+        process_registry.kill_for_task.return_value = 1
+
+        async def _hang(_: object) -> MagicMock:
+            await asyncio.sleep(999)
+            return MagicMock()
+
+        cli = _make_cli_service()
+        cli.execute = AsyncMock(side_effect=_hang)
+
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+            process_registry=process_registry,
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        task_id_a = hub.submit(_submit(name="A"))
+        task_id_b = hub.submit(_submit(name="B"))
+        await asyncio.sleep(0.05)
+
+        count = await hub.cancel_all(42)
+        assert count == 2
+        assert process_registry.kill_for_task.await_count == 2
+        awaited_ids = {c.args[0] for c in process_registry.kill_for_task.await_args_list}
+        assert awaited_ids == {task_id_a, task_id_b}
+
+    async def test_cancel_is_noop_when_process_registry_is_none(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """Without a process_registry the old behavior is preserved (asyncio cancel only)."""
+        cancel_recorded = asyncio.Event()
+
+        async def _hang(_: object) -> MagicMock:
+            try:
+                await asyncio.sleep(999)
+            except asyncio.CancelledError:
+                cancel_recorded.set()
+                raise
+            return MagicMock()
+
+        cli = _make_cli_service()
+        cli.execute = AsyncMock(side_effect=_hang)
+
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+            # NOTE: no process_registry kwarg — backward compat path.
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        task_id = hub.submit(_submit())
+        await asyncio.sleep(0.05)
+
+        success = await hub.cancel(task_id)
+        assert success
+        assert cancel_recorded.is_set(), "asyncio_task.cancel() must still fire with no registry"
 
 
 class TestForwardQuestion:
@@ -956,3 +1138,151 @@ class TestPerAgentCLI:
         assert len(delivered) == 1
 
         await hub.shutdown()
+
+
+class TestTopicIdPlumbing:
+    """#74: TaskEntry.thread_id must flow into AgentRequest.topic_id so that
+    DUCTOR_TOPIC_ID is set in the task subprocess env. Without this, sub-tasks
+    created from within a running task lose the originating topic context and
+    route their results to the base/General topic."""
+
+    async def test_run_passes_topic_id_to_agent_request(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """AgentRequest.topic_id equals TaskEntry.thread_id when the latter is set."""
+        cli = _make_cli_service()
+
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        submit = TaskSubmit(
+            chat_id=42,
+            prompt="do stuff in a topic",
+            message_id=1,
+            thread_id=5150,
+            parent_agent="main",
+            name="Topic Task",
+        )
+        hub.submit(submit)
+        await asyncio.sleep(0.1)
+
+        # Capture the AgentRequest passed to cli.execute.
+        cli.execute.assert_called_once()
+        agent_request = cli.execute.call_args[0][0]
+        assert agent_request.topic_id == 5150
+        assert agent_request.chat_id == 42
+
+        await hub.shutdown()
+
+    async def test_run_passes_none_topic_id_when_thread_id_missing(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """Backward-compat: thread_id=None yields topic_id=None on AgentRequest."""
+        cli = _make_cli_service()
+
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        hub.submit(_submit())  # thread_id=None via helper
+        await asyncio.sleep(0.1)
+
+        cli.execute.assert_called_once()
+        agent_request = cli.execute.call_args[0][0]
+        assert agent_request.topic_id is None
+
+        await hub.shutdown()
+
+
+class TestPerAgentDeliveryIsolation:
+    """#73: TaskResult delivery must route through the parent_agent's registered
+    handler only -- sibling agents' handlers MUST NOT see results that weren't
+    addressed to them. Locks in the architectural per-agent routing so a future
+    refactor cannot silently regress it into delivering everything to main."""
+
+    async def test_result_isolation_between_agents(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        """A task with parent_agent='sub1' invokes only sub1's handler."""
+        main_handler = AsyncMock()
+        sub1_handler = AsyncMock()
+        sub2_handler = AsyncMock()
+
+        sub_cli = _make_cli_service("sub1-output")
+
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=_make_cli_service("main-output"),
+            config=_make_config(),
+        )
+        hub.set_cli_service("sub1", sub_cli)
+        hub.set_result_handler("main", main_handler)
+        hub.set_result_handler("sub1", sub1_handler)
+        hub.set_result_handler("sub2", sub2_handler)
+
+        submit = TaskSubmit(
+            chat_id=55,
+            prompt="sub-agent task",
+            message_id=1,
+            thread_id=None,
+            parent_agent="sub1",
+            name="Sub1 Task",
+        )
+        hub.submit(submit)
+        await asyncio.sleep(0.1)
+
+        sub1_handler.assert_called_once()
+        main_handler.assert_not_called()
+        sub2_handler.assert_not_called()
+
+        delivered_result = sub1_handler.call_args[0][0]
+        assert delivered_result.parent_agent == "sub1"
+
+        await hub.shutdown()
+
+
+class TestAppendTaskmemory:
+    """#91: _append_taskmemory must emit a WARNING log and include the original
+    length + full file path in the suffix when truncation occurs. Without this,
+    parent agents receive silently-truncated memory content."""
+
+    def test_warns_on_truncation(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        from ductor_bot.tasks.hub import _TASKMEMORY_MAX_LEN, _append_taskmemory
+
+        memory_file = tmp_path / "TASKMEMORY.md"
+        original_len = _TASKMEMORY_MAX_LEN + 1000
+        memory_file.write_text("X" * original_len, encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="ductor_bot.tasks.hub"):
+            result = _append_taskmemory("result_text", memory_file)
+
+        # WARNING log fired
+        assert any("TASKMEMORY truncated" in rec.message for rec in caplog.records)
+        # Suffix shows original length so the parent agent knows how much was cut
+        assert str(original_len) in result
+        # Suffix points to the full file path so the parent agent can read it
+        assert str(memory_file) in result
+        assert "truncated" in result.lower()
+
+    def test_no_warning_under_limit(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        from ductor_bot.tasks.hub import _append_taskmemory
+
+        memory_file = tmp_path / "TASKMEMORY.md"
+        memory_file.write_text("short content", encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="ductor_bot.tasks.hub"):
+            result = _append_taskmemory("result_text", memory_file)
+
+        assert not any("TASKMEMORY truncated" in rec.message for rec in caplog.records)
+        assert "truncated" not in result.lower()
+        assert "short content" in result

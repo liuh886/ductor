@@ -9,6 +9,7 @@ from ductor_bot.cli.stream_events import (
     AssistantTextDelta,
     ResultEvent,
     SystemInitEvent,
+    ThinkingEvent,
     ToolResultEvent,
     ToolUseEvent,
 )
@@ -118,6 +119,47 @@ def test_parse_gemini_nested_message_list() -> None:
     assert events[1].tool_name == "bash"
     assert events[1].tool_id == "b1"
     assert events[1].parameters == {"cmd": "ls"}
+
+
+def test_parse_gemini_message_strips_thought_marker() -> None:
+    """Marker-only text block should become a single ThinkingEvent (#110)."""
+    data = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "[Thought: true]"}],
+    }
+    events = parse_gemini_stream_line(json.dumps(data))
+    assert len(events) == 1
+    assert isinstance(events[0], ThinkingEvent)
+    assert events[0].text == "[Thought: true]"
+
+
+def test_parse_gemini_message_thought_marker_with_content_splits_events() -> None:
+    """Marker+content text block should split into ThinkingEvent + AssistantTextDelta (#110)."""
+    data = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "[Thought: true]\nHello user"}],
+    }
+    events = parse_gemini_stream_line(json.dumps(data))
+    assert len(events) == 2
+    assert isinstance(events[0], ThinkingEvent)
+    assert events[0].text == "[Thought: true]"
+    assert isinstance(events[1], AssistantTextDelta)
+    assert events[1].text == "Hello user"
+
+
+def test_parse_gemini_message_plain_text_unchanged() -> None:
+    """Non-marker text must not be rerouted through ThinkingEvent (regression guard)."""
+    data = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "plain content"}],
+    }
+    events = parse_gemini_stream_line(json.dumps(data))
+    assert len(events) == 1
+    assert isinstance(events[0], AssistantTextDelta)
+    assert events[0].text == "plain content"
 
 
 def test_parse_gemini_result_error_with_details() -> None:

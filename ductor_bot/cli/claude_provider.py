@@ -187,7 +187,12 @@ def _parse_response(stdout: bytes, stderr: bytes, returncode: int | None) -> CLI
     raw = stdout.decode().strip()
     if not raw:
         logger.error("CLI returned empty output (exit=%s)", returncode)
-        return CLIResponse(result="", is_error=True, returncode=returncode, stderr=stderr_text)
+        return CLIResponse(
+            result=stderr_text.strip(),
+            is_error=True,
+            returncode=returncode,
+            stderr=stderr_text,
+        )
 
     try:
         data = json.loads(raw)

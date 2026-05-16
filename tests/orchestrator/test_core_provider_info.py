@@ -43,7 +43,13 @@ class TestBuildProviderInfo:
         assert info[0]["id"] == "claude"
         assert info[0]["name"] == "Claude Code"
         assert info[0]["color"] == "#F97316"
-        assert sorted(info[0]["models"]) == ["haiku", "opus", "sonnet"]
+        assert sorted(info[0]["models"]) == [
+            "haiku",
+            "opus",
+            "opus[1m]",
+            "sonnet",
+            "sonnet[1m]",
+        ]
 
     def test_multiple_providers_sorted(self) -> None:
         pm, obs = _make_provider_manager(frozenset({"gemini", "claude"}))

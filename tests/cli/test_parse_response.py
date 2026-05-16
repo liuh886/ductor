@@ -17,6 +17,16 @@ def test_parse_empty_stdout() -> None:
     assert resp.result == ""
 
 
+def test_parse_empty_stdout_uses_stderr_detail() -> None:
+    resp = _parse_response(
+        b"",
+        b"No conversation found with session ID: stale-id\n",
+        1,
+    )
+    assert resp.is_error is True
+    assert resp.result == "No conversation found with session ID: stale-id"
+
+
 def test_parse_valid_json_response() -> None:
     data = {
         "session_id": "sess-abc",

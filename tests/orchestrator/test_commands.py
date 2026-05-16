@@ -106,6 +106,19 @@ async def test_status_prefers_session_model_over_config(orch: Orchestrator) -> N
     assert "Model: gpt-5.2-codex (configured: opus)" in result.text
 
 
+async def test_status_shows_streaming_visibility_flags(orch: Orchestrator) -> None:
+    orch._config.streaming.show_reasoning_stream = True
+    orch._config.streaming.show_tool_progress = False
+    orch._config.streaming.show_thinking_indicator = False
+
+    with patch("ductor_bot.orchestrator.commands.check_all_auth", return_value={}):
+        result = await cmd_status(orch, SessionKey(chat_id=1), "/status")
+
+    assert "Reasoning stream: on" in result.text
+    assert "Tool progress: off" in result.text
+    assert "Thinking indicator: off" in result.text
+
+
 # -- cmd_memory --
 
 

@@ -23,7 +23,10 @@ Las sesiones de otros proveedores se han conservado.
 
 age_warning = "[La sesión tiene {age}. Usa /new para empezar de cero.]"
 
+empty_turn = "_(El agente actualizó su memoria en silencio — envía otro mensaje para continuar.)_"
+
 recovered = "_No se pudo restaurar la sesión anterior. Se inició una nueva automáticamente._"
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 sigkill = "La ejecución fue interrumpida. Por favor, envía la misma solicitud de nuevo."
 
 not_found = "Sesión '{name}' no encontrada."
@@ -369,6 +372,7 @@ topic_reset = "Nueva sesión para **{name}** ({provider})."
 
 [telegram]
 group_rejected = "Este bot no está autorizado para este grupo."
+channel_not_whitelisted = "Este canal no está en la lista blanca, me voy."
 where_header = "**Dónde**"
 where_no_tracker = "Rastreador de chats no disponible."
 where_empty = "Aún no se ha registrado actividad de chat."

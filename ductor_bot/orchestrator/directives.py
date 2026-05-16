@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-_DIRECTIVE_RE = re.compile(r"@([a-zA-Z][a-zA-Z0-9_-]*)(?:=(\S+))?")
+_DIRECTIVE_RE = re.compile(r"@([a-zA-Z][a-zA-Z0-9_.-]*)(?:=(\S+))?")
 
 
 @dataclass(frozen=True, slots=True)

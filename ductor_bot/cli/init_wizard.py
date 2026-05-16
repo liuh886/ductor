@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn, TypedDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -17,7 +18,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from ductor_bot.cli.auth import AuthStatus, check_claude_auth, check_codex_auth, check_gemini_auth
+from ductor_bot.cli.auth import (
+    AuthResult,
+    AuthStatus,
+    check_claude_auth,
+    check_codex_auth,
+    check_gemini_auth,
+)
 from ductor_bot.config import DEFAULT_EMPTY_GEMINI_API_KEY, AgentConfig, deep_merge_config
 from ductor_bot.i18n import t_rich
 from ductor_bot.workspace.init import init_workspace
@@ -97,10 +104,27 @@ _STATUS_ICON = {
 
 
 def _check_clis(console: Console) -> None:
-    """Detect CLI availability and require at least one authenticated provider."""
-    claude = check_claude_auth()
-    codex = check_codex_auth()
-    gemini = check_gemini_auth()
+    """Detect CLI availability; warn but continue when any individual check raises."""
+    results: dict[str, AuthResult] = {}
+    probes: tuple[tuple[str, Callable[[], AuthResult]], ...] = (
+        ("claude", check_claude_auth),
+        ("codex", check_codex_auth),
+        ("gemini", check_gemini_auth),
+    )
+    for name, fn in probes:
+        try:
+            results[name] = fn()
+        except Exception as exc:
+            # Wizard must stay alive on probe errors — see P1-BUG-01 (#109).
+            logger.warning("Auth check for %s failed: %s", name, exc)
+            results[name] = AuthResult(name, AuthStatus.NOT_FOUND)
+            console.print(
+                t_rich(f"wizard.cli_backends.{name}_check_failed", error=str(exc)),
+            )
+
+    claude = results["claude"]
+    codex = results["codex"]
+    gemini = results["gemini"]
 
     lines = [
         t_rich("wizard.cli_backends.header"),

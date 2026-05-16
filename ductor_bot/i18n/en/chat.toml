@@ -22,7 +22,12 @@ Send a message to continue."""
 
 age_warning = "[Session is {age} old. Use /new for a fresh start.]"
 
+# #84: Tool-only turns (e.g. silent memory updates) surface this neutral
+# status line instead of a blank message the user would never see.
+empty_turn = "_(Agent updated memory silently — send another message to continue.)_"
+
 recovered = "_Previous session could not be restored. A new session was started automatically._"
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 sigkill = "Execution was interrupted. Please send the same request again."
 
 not_found = "Session '{name}' not found."
@@ -368,6 +373,7 @@ topic_reset = "New session for **{name}** ({provider})."
 
 [telegram]
 group_rejected = "This bot is not authorized for this group."
+channel_not_whitelisted = "This channel is not whitelisted, I am out."
 where_header = "**Where**"
 where_no_tracker = "Chat tracker not available."
 where_empty = "No chat activity recorded yet."

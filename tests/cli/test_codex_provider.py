@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ductor_bot.cli.base import CLIConfig
-from ductor_bot.cli.codex_provider import CodexCLI, _codex_final_result, _log_cmd
+from ductor_bot.cli.codex_provider import CodexCLI, _codex_final_result, _log_cmd, _StreamState
 from ductor_bot.cli.executor import SubprocessResult
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.stream_events import (
@@ -203,6 +203,26 @@ class TestBuildCommand:
         cmd = cli._build_command("hello")
         assert "--model" not in cmd
 
+    def test_windows_exec_uses_dash_prompt_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows sends prompts via stdin without Codex's stdout stdin notice."""
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", True)
+        cli = _make_cli(monkeypatch)
+
+        cmd = cli._build_command("hello")
+
+        assert cmd[-2:] == ["--", "-"]
+        assert "hello" not in cmd
+
+    def test_windows_resume_uses_dash_prompt_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Resume on Windows must explicitly read the prompt from stdin."""
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", True)
+        cli = _make_cli(monkeypatch)
+
+        cmd = cli._build_command("hello", resume_session="thread-abc")
+
+        assert cmd[-3:] == ["--", "thread-abc", "-"]
+        assert "hello" not in cmd
+
     @pytest.mark.parametrize(
         ("effort", "should_have_flag"),
         [
@@ -303,8 +323,51 @@ class TestParseOutput:
     def test_empty_stdout_with_stderr(self) -> None:
         resp = CodexCLI._parse_output(b"", b"some error", 1)
         assert resp.is_error is True
+        assert resp.result == "some error"
         assert resp.stderr == "some error"
         assert resp.returncode == 1
+
+    def test_empty_stdout_strips_stdin_notice_from_stderr(self) -> None:
+        resp = CodexCLI._parse_output(
+            b"",
+            b"Reading prompt from stdin...\nError: thread/resume failed: no rollout found",
+            1,
+        )
+        assert resp.is_error is True
+        assert resp.result == "Error: thread/resume failed: no rollout found"
+        assert "Reading prompt" not in resp.result
+
+    def test_stdin_notice_stdout_prefers_stderr_error(self) -> None:
+        """Windows stdin notices must not hide the real stderr failure."""
+        resp = CodexCLI._parse_output(
+            b"Reading prompt from stdin...\n",
+            b"Error: thread/resume failed: no rollout found for thread id abc",
+            1,
+        )
+        assert resp.is_error is True
+        assert "no rollout found" in resp.result
+        assert "Reading prompt" not in resp.result
+
+    def test_stdin_notice_stdout_only_is_removed(self) -> None:
+        resp = CodexCLI._parse_output(b"Reading prompt from stdin...\n", b"", 1)
+        assert resp.is_error is True
+        assert resp.result == ""
+
+    def test_non_streaming_turn_failed_error_beats_stdin_notice(self) -> None:
+        raw = "\n".join(
+            [
+                "Reading prompt from stdin...",
+                json.dumps(
+                    {
+                        "type": "turn.failed",
+                        "error": {"message": "You've hit your usage limit."},
+                    }
+                ),
+            ]
+        )
+        resp = CodexCLI._parse_output(raw.encode(), b"thread not found", 1)
+        assert resp.is_error is True
+        assert resp.result == "You've hit your usage limit."
 
     def test_successful_jsonl_output(self) -> None:
         lines = "\n".join(
@@ -828,15 +891,45 @@ class TestCodexFinalResult:
         assert result.result == ""
         assert result.session_id is None
 
-    def test_error_with_stderr(self) -> None:
+    def test_error_falls_back_to_stderr_when_no_other_source(self) -> None:
         proc = MagicMock(spec=asyncio.subprocess.Process)
         proc.returncode = 1
 
         result = _codex_final_result(
-            SubprocessResult(process=proc, stderr_bytes=b"fatal error"), ["partial"], None
+            SubprocessResult(process=proc, stderr_bytes=b"fatal error"), [], None
         )
         assert result.is_error is True
         assert "fatal error" in result.result
+
+    def test_error_accumulated_text_beats_stderr(self) -> None:
+        """Partial assistant output is more useful than raw stderr noise."""
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = 1
+
+        result = _codex_final_result(
+            SubprocessResult(process=proc, stderr_bytes=b"thread not found"),
+            ["partial response"],
+            None,
+        )
+        assert result.is_error is True
+        assert "partial response" in result.result
+        assert "thread not found" not in result.result
+
+    def test_error_last_error_message_beats_everything(self) -> None:
+        """Issue #117: in-stream turn.failed message wins over stderr/accumulated."""
+        proc = MagicMock(spec=asyncio.subprocess.Process)
+        proc.returncode = 1
+
+        result = _codex_final_result(
+            SubprocessResult(process=proc, stderr_bytes=b"thread 019dc9ee not found"),
+            ["partial"],
+            None,
+            last_error_message="You've hit your usage limit. Try again at 6:00 PM.",
+        )
+        assert result.is_error is True
+        assert "usage limit" in result.result
+        assert "thread" not in result.result
+        assert "partial" not in result.result
 
     def test_error_no_stderr_uses_accumulated(self) -> None:
         proc = MagicMock(spec=asyncio.subprocess.Process)
@@ -878,6 +971,54 @@ class TestCodexFinalResult:
         # The error_detail uses stderr_text which is truncated at 2000
         # then the result is further truncated at 500
         assert result.is_error is True
+
+
+# ---------------------------------------------------------------------------
+# _StreamState (issue #117 — capture in-stream error messages)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamStateLastErrorMessage:
+    def test_initial_state(self) -> None:
+        state = _StreamState()
+        assert state.last_error_message is None
+
+    def test_tracks_error_result_event(self) -> None:
+        """ResultEvent(is_error=True) — e.g. Codex turn.failed — is captured."""
+        state = _StreamState()
+        state.track(
+            ResultEvent(
+                type="result",
+                result="You've hit your usage limit. Try again at 6:00 PM.",
+                is_error=True,
+            )
+        )
+        assert state.last_error_message == "You've hit your usage limit. Try again at 6:00 PM."
+
+    def test_ignores_success_result_event(self) -> None:
+        state = _StreamState()
+        state.track(ResultEvent(type="result", result="ok", is_error=False))
+        assert state.last_error_message is None
+
+    def test_ignores_error_result_event_with_empty_text(self) -> None:
+        state = _StreamState()
+        state.track(ResultEvent(type="result", result="", is_error=True))
+        assert state.last_error_message is None
+
+    def test_last_error_wins_over_earlier(self) -> None:
+        """Later error events overwrite earlier ones (most recent cause)."""
+        state = _StreamState()
+        state.track(ResultEvent(type="result", result="first error", is_error=True))
+        state.track(ResultEvent(type="result", result="second error", is_error=True))
+        assert state.last_error_message == "second error"
+
+    def test_assistant_text_unaffected_by_error_tracking(self) -> None:
+        state = _StreamState()
+        state.track(AssistantTextDelta(type="assistant_text_delta", text="hello "))
+        state.track(ResultEvent(type="result", result="boom", is_error=True))
+        state.track(AssistantTextDelta(type="assistant_text_delta", text="world"))
+        assert state.accumulated_text == ["hello ", "world"]
+        assert state.last_error_message == "boom"
 
 
 # ---------------------------------------------------------------------------

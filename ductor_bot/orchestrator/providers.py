@@ -119,6 +119,17 @@ class ProviderManager:
         self.refresh_known_model_ids()
         self._gemini_api_key_mode = None  # Invalidate to re-check on next access
 
+    def refresh_gemini_api_key_mode(self) -> bool:
+        """Re-read ``~/.gemini/settings.json`` and update the cache.
+
+        Allows runtime auth-mode flips (e.g. user switches from API-key to
+        OAuth in Gemini CLI) without a ductor restart.
+        """
+        from ductor_bot.cli.auth import gemini_uses_api_key_mode
+
+        self._gemini_api_key_mode = gemini_uses_api_key_mode()
+        return self._gemini_api_key_mode
+
     def refresh_known_model_ids(self) -> None:
         """Refresh directive-known model IDs from dynamic provider registries."""
         self._known_model_ids = CLAUDE_MODELS | _GEMINI_ALIASES | get_gemini_models()

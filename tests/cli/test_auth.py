@@ -227,6 +227,27 @@ def test_check_codex_auth_config_toml_installed(
     assert result.status == AuthStatus.INSTALLED
 
 
+def test_check_codex_auth_handles_home_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Path.home() can raise RuntimeError on Windows when %USERPROFILE%/%HOMEDRIVE%/
+    %HOMEPATH% are all unset. check_codex_auth must return NOT_FOUND instead of
+    propagating the exception (otherwise the onboarding wizard aborts).
+    """
+
+    def _raise_runtime_error() -> Path:
+        raise RuntimeError("Could not determine home directory")
+
+    monkeypatch.setattr(Path, "home", _raise_runtime_error)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = check_codex_auth()
+
+    assert result.provider == "codex"
+    assert result.status == AuthStatus.NOT_FOUND
+
+
 # -- Gemini auth --
 
 

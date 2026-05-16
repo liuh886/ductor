@@ -50,7 +50,7 @@ async def _handle_recovery(bot: TelegramBot, sentinel: dict[str, object] | None)
     if sentinel is None and startup_info.kind.value != "service_restart":
         note = startup_notification_text(startup_info.kind.value)
         if note:
-            await bot.notification_service.notify_all(note)
+            await bot.notify_startup(note)
 
     from ductor_bot.infra.recovery import RecoveryPlanner
     from ductor_bot.text.response_format import recovery_notification_text

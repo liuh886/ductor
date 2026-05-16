@@ -30,6 +30,11 @@ _ZONE2_PY_DIRS = frozenset(
         "workspace/tools/webhook_tools",
         "workspace/tools/agent_tools",
         "workspace/tools/task_tools",
+        # media_tools scripts consume framework env-vars
+        # (DUCTOR_TRANSCRIBE_COMMAND, DUCTOR_VIDEO_TRANSCRIBE_COMMAND) — keep
+        # them framework-managed so v0.16.0 users inherit the configurable
+        # transcription hooks from #66 automatically on upgrade.
+        "workspace/tools/media_tools",
     }
 )
 
@@ -110,10 +115,40 @@ def _handle_zone2_file(entry: Path, target: Path, dst: Path) -> None:
             logger.debug("Zone 2 copy: %s", mirror_target)
 
 
+def _backup_user_modified_zone2(entry: Path, target: Path) -> None:
+    """Preserve user edits before overwriting a Zone 2 ``.py`` file.
+
+    If *target* exists and differs from *entry* (the framework template),
+    rename it to a ``.bak`` sibling and log a WARNING so the user sees the
+    backup in default log output. Skip silently if contents match or if the
+    target itself is already a ``.bak`` file.
+    """
+    if target.name.endswith(".bak") or not target.exists():
+        return
+    try:
+        if target.read_bytes() == entry.read_bytes():
+            return
+    except OSError as exc:
+        logger.warning("Could not compare %s for backup: %s", target, exc)
+        return
+    backup = target.with_suffix(target.suffix + ".bak")
+    try:
+        target.replace(backup)
+        logger.warning(
+            "Zone 2 overwrite: saved user-modified %s to %s before applying framework update",
+            target,
+            backup,
+        )
+    except OSError as exc:
+        logger.warning("Could not create backup for %s: %s", target, exc)
+
+
 def _handle_regular_file(entry: Path, target: Path, src: Path, root_src: Path) -> None:
     """Handle regular file with Zone 2 .py or Zone 3 logic."""
     if _is_zone2_py_file(entry, src, root_src):
-        # Zone 2 .py file: always overwrite (framework-controlled)
+        # Zone 2 .py file: always overwrite (framework-controlled).
+        # Back up user modifications first so upgrades never destroy edits silently.
+        _backup_user_modified_zone2(entry, target)
         _copy_with_symlink_check(entry, target)
         logger.debug("Zone 2 copy (framework tool): %s", target)
     elif not target.exists():

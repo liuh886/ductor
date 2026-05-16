@@ -7,6 +7,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+# #79: allowed priority levels for background tasks. The scheduler gives
+# ``interactive`` a concurrency-cap bypass so user-facing follow-ups stay
+# responsive while heavy ``batch`` work runs. ``background`` is the default
+# and behaves exactly as before. Unknown values coerce to ``background``.
+TASK_PRIORITIES: tuple[str, ...] = ("interactive", "background", "batch")
+_DEFAULT_PRIORITY: str = "background"
+
+
+def normalise_priority(value: str | None) -> str:
+    """Return a valid priority or the default (``background``)."""
+    if value and value in TASK_PRIORITIES:
+        return value
+    return _DEFAULT_PRIORITY
+
 
 @dataclass(slots=True)
 class TaskSubmit:
@@ -21,6 +35,7 @@ class TaskSubmit:
     provider_override: str = ""
     model_override: str = ""
     thinking_override: str = ""
+    priority: str = _DEFAULT_PRIORITY
 
 
 @dataclass(slots=True)
@@ -48,6 +63,7 @@ class TaskEntry:
     thinking: str = ""
     tasks_dir: str = ""  # Agent's tasks directory (for per-agent folder resolution)
     thread_id: int | None = None  # Forum topic ID (for routing results back to topic)
+    priority: str = _DEFAULT_PRIORITY  # #79: interactive | background | batch
 
     def to_dict(self) -> dict[str, object]:
         d: dict[str, object] = {
@@ -56,6 +72,11 @@ class TaskEntry:
             "parent_agent": self.parent_agent,
             "name": self.name,
             "prompt_preview": self.prompt_preview,
+            # #90: original_prompt MUST round-trip so that a restart mid-task
+            # preserves the full prompt for resume/retry and for the parent
+            # agent's "Original task: <prompt>" injection. prompt_preview
+            # (80 chars) alone is too short.
+            "original_prompt": self.original_prompt,
             "provider": self.provider,
             "model": self.model,
             "status": self.status,
@@ -68,9 +89,9 @@ class TaskEntry:
             "question_count": self.question_count,
             "num_turns": self.num_turns,
             "last_question": self.last_question,
-            "original_prompt": self.original_prompt,
             "thinking": self.thinking,
             "tasks_dir": self.tasks_dir,
+            "priority": self.priority,
         }
         if self.thread_id is not None:
             d["thread_id"] = self.thread_id
@@ -96,10 +117,13 @@ class TaskEntry:
             question_count=d.get("question_count", 0),
             num_turns=d.get("num_turns", 0),
             last_question=d.get("last_question", ""),
+            # #90: .get(..., "") default preserves backward-compat for tasks.json
+            # files written before the original_prompt field was persisted.
             original_prompt=d.get("original_prompt", ""),
             thinking=d.get("thinking", ""),
             tasks_dir=d.get("tasks_dir", ""),
             thread_id=d.get("thread_id"),
+            priority=normalise_priority(d.get("priority")),
         )
 
 

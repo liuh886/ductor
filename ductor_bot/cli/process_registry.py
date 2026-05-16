@@ -38,6 +38,12 @@ class ProcessRegistry:
         self._aborted: set[int] = set()
         self._aborted_labels: set[tuple[int, str]] = set()
         self._interrupted: set[int] = set()
+        # MED #9: serialize bulk kill operations (kill_for_task / kill_stale /
+        # kill_by_label) against each other so a concurrent ``register`` that
+        # slips in mid-iteration can't orphan subprocesses past a cancel.
+        # ``register`` itself stays lock-free — a single dict.setdefault()+
+        # list.append() pair is atomic under the GIL.
+        self._kill_lock: asyncio.Lock = asyncio.Lock()
 
     def register(
         self,
@@ -47,7 +53,14 @@ class ProcessRegistry:
         *,
         topic_id: int | None = None,
     ) -> TrackedProcess:
-        """Register a subprocess. Returns the tracking handle."""
+        """Register a subprocess. Returns the tracking handle.
+
+        Lock-free on purpose: ``dict.setdefault`` + ``list.append`` is atomic
+        under the GIL. Bulk kill operations (:meth:`kill_for_task`,
+        :meth:`kill_stale`, :meth:`kill_by_label`) serialize against each
+        other via :attr:`_kill_lock`, which is sufficient — a register that
+        happens between two kills simply belongs to the next cancel round.
+        """
         tracked = TrackedProcess(
             process=process,
             chat_id=chat_id,
@@ -129,17 +142,18 @@ class ProcessRegistry:
 
     async def kill_by_label(self, chat_id: int, label: str) -> int:
         """Kill processes matching *label* for *chat_id*. Returns count killed."""
-        self._aborted_labels.add((chat_id, label))
-        entries = self._processes.get(chat_id, [])
-        to_kill = [e for e in entries if e.label == label and e.process.returncode is None]
-        if not to_kill:
-            return 0
-        remaining = [e for e in entries if e not in to_kill]
-        if remaining:
-            self._processes[chat_id] = remaining
-        else:
-            self._processes.pop(chat_id, None)
-        return await _kill_processes(to_kill)
+        async with self._kill_lock:
+            self._aborted_labels.add((chat_id, label))
+            entries = self._processes.get(chat_id, [])
+            to_kill = [e for e in entries if e.label == label and e.process.returncode is None]
+            if not to_kill:
+                return 0
+            remaining = [e for e in entries if e not in to_kill]
+            if remaining:
+                self._processes[chat_id] = remaining
+            else:
+                self._processes.pop(chat_id, None)
+            return await _kill_processes(to_kill)
 
     def clear_label_abort(self, chat_id: int, label: str) -> None:
         """Clear the abort flag for a specific label."""
@@ -175,28 +189,57 @@ class ProcessRegistry:
 
     async def kill_stale(self, max_age_seconds: float) -> int:
         """Kill processes older than *max_age_seconds* (wall-clock). Returns count killed."""
-        now = time.time()
-        stale: list[TrackedProcess] = []
-        for entries in self._processes.values():
-            for tracked in entries:
-                if tracked.process.returncode is not None:
-                    continue
-                age = now - tracked.registered_at
-                if age > max_age_seconds:
-                    logger.warning(
-                        "Stale process: pid=%s label=%s chat=%d age=%.0fs",
-                        tracked.process.pid,
-                        tracked.label,
-                        tracked.chat_id,
-                        age,
-                    )
-                    stale.append(tracked)
-        if not stale:
-            return 0
-        killed = await _kill_processes(stale)
-        for tracked in stale:
-            self.unregister(tracked)
-        return killed
+        async with self._kill_lock:
+            now = time.time()
+            stale: list[TrackedProcess] = []
+            for entries in self._processes.values():
+                for tracked in entries:
+                    if tracked.process.returncode is not None:
+                        continue
+                    age = now - tracked.registered_at
+                    if age > max_age_seconds:
+                        logger.warning(
+                            "Stale process: pid=%s label=%s chat=%d age=%.0fs",
+                            tracked.process.pid,
+                            tracked.label,
+                            tracked.chat_id,
+                            age,
+                        )
+                        stale.append(tracked)
+            if not stale:
+                return 0
+            killed = await _kill_processes(stale)
+            for tracked in stale:
+                self.unregister(tracked)
+            return killed
+
+    async def kill_for_task(self, task_id: str) -> int:
+        """Kill any tracked process labelled ``f'task:{task_id}'``. Returns count killed.
+
+        Mirrors :meth:`kill_stale` semantics but filters by label. Uses the
+        SIGTERM → 2s → SIGKILL ladder via :func:`_kill_processes`. Already-exited
+        processes are skipped (``returncode is not None``). Each killed entry is
+        unregistered after the ladder completes.
+
+        MED #9: the collect → kill → unregister sequence runs under
+        :attr:`_kill_lock` so a subprocess that registers mid-iteration
+        cannot slip past the cancel. ``register`` remains lock-free.
+        """
+        label = f"task:{task_id}"
+        async with self._kill_lock:
+            targets: list[TrackedProcess] = []
+            for entries in self._processes.values():
+                for tracked in entries:
+                    if tracked.process.returncode is not None:
+                        continue
+                    if tracked.label == label:
+                        targets.append(tracked)
+            if not targets:
+                return 0
+            killed = await _kill_processes(targets)
+            for tracked in targets:
+                self.unregister(tracked)
+            return killed
 
 
 def _send_sigterm(entries: list[TrackedProcess]) -> int:

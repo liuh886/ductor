@@ -203,8 +203,10 @@ class TelegramBot:
 
         allowed = set(config.allowed_user_ids)
         allowed_groups = set(config.allowed_group_ids)
+        allowed_channels = set(config.allowed_channel_ids)
         self._allowed_users = allowed
         self._allowed_groups = allowed_groups
+        self._allowed_channels = allowed_channels
         self._chat_tracker: ChatTracker | None = None  # set in _on_startup
         self._topic_names = TopicNameCache()
         self._lock_pool = lock_pool or LockPool()
@@ -305,6 +307,72 @@ class TelegramBot:
         for uid in self._config.allowed_user_ids:
             await send_rich(self._bot, uid, text, opts)
 
+    async def notify_startup(self, text: str) -> None:
+        """Route startup-lifecycle notifications (#64).
+
+        Fallback policy:
+          * ``startup_targets`` empty (default) -> broadcast via ``notify_all``.
+          * ``startup_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback). This is how users opt out of lifecycle
+            notifications without losing upgrade routing.
+
+        Per-target failures are swallowed at warning level so a single bad
+        target does not mask the rest.
+        """
+        configured = self._config.notifications.startup_targets
+        if not configured:
+            await self._notification_service.notify_all(text)
+            return
+        targets = [t for t in configured if t.enabled and t.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                await send_rich(
+                    self._bot,
+                    target.chat_id,
+                    text,
+                    SendRichOpts(thread_id=target.topic_id),
+                )
+            except Exception:
+                logger.warning(
+                    "notify_startup: delivery failed for chat_id=%s topic_id=%s",
+                    target.chat_id,
+                    target.topic_id,
+                    exc_info=True,
+                )
+
+    async def notify_upgrade(self, text: str, opts: SendRichOpts | None = None) -> None:
+        """Route upgrade-available notifications (#64).
+
+        Fallback policy (mirrors ``notify_startup``):
+          * ``upgrade_targets`` empty (default) -> ``broadcast``.
+          * ``upgrade_targets`` non-empty but every entry disabled -> explicit
+            silence (no fallback).
+        ``opts`` (reply_markup, etc.) is preserved on each per-target send.
+        """
+        configured = self._config.notifications.upgrade_targets
+        if not configured:
+            await self.broadcast(text, opts)
+            return
+        targets = [t for t in configured if t.enabled and t.chat_id is not None]
+        for target in targets:
+            try:
+                assert target.chat_id is not None
+                target_opts = SendRichOpts(
+                    reply_markup=opts.reply_markup if opts else None,
+                    allowed_roots=opts.allowed_roots if opts else None,
+                    thread_id=target.topic_id,
+                    reply_to_message_id=opts.reply_to_message_id if opts else None,
+                )
+                await send_rich(self._bot, target.chat_id, text, target_opts)
+            except Exception:
+                logger.warning(
+                    "notify_upgrade: delivery failed for chat_id=%s topic_id=%s",
+                    target.chat_id,
+                    target.topic_id,
+                    exc_info=True,
+                )
+
     async def _on_startup(self) -> None:
         from ductor_bot.messenger.telegram.startup import run_startup
 
@@ -367,6 +435,10 @@ class TelegramBot:
             self._allowed_groups.update(config.allowed_group_ids)
             logger.info("Auth hot-reloaded: allowed_group_ids (%d)", len(self._allowed_groups))
             self._group_audit_task = asyncio.create_task(self._fire_audit())
+        if "allowed_channel_ids" in hot:
+            self._allowed_channels.clear()
+            self._allowed_channels.update(config.allowed_channel_ids)
+            logger.info("Auth hot-reloaded: allowed_channel_ids (%d)", len(self._allowed_channels))
         if "language" in hot:
             _rebuild_commands()
             self._lang_sync_task = asyncio.create_task(self._sync_commands())
@@ -380,9 +452,17 @@ class TelegramBot:
             self._chat_tracker.record_rejected(chat_id, chat_type, title)
 
     async def _on_bot_added(self, event: ChatMemberUpdated) -> None:
-        """Bot was added to a group."""
+        """Bot was added to a group or channel."""
         chat = event.chat
-        allowed = chat.id in self._allowed_groups
+        is_channel = chat.type == "channel"
+        if is_channel:
+            allowed = chat.id in self._allowed_channels
+            reject_key = "telegram.channel_not_whitelisted"
+            chat_kind = "channel"
+        else:
+            allowed = chat.id in self._allowed_groups
+            reject_key = "telegram.group_rejected"
+            chat_kind = "group"
         if self._chat_tracker:
             self._chat_tracker.record_join(
                 chat.id,
@@ -394,13 +474,18 @@ class TelegramBot:
             with contextlib.suppress(TelegramAPIError):
                 await self._bot.send_message(
                     chat.id,
-                    t("telegram.group_rejected"),
+                    t(reject_key),
                 )
             with contextlib.suppress(TelegramAPIError):
                 await self._bot.leave_chat(chat.id)
             if self._chat_tracker:
                 self._chat_tracker.record_leave(chat.id, "auto_left")
-            logger.info("Auto-left unauthorized group chat_id=%d title=%s", chat.id, chat.title)
+            logger.info(
+                "Auto-left unauthorized %s chat_id=%d title=%s",
+                chat_kind,
+                chat.id,
+                chat.title,
+            )
             return
         await self._send_join_notification(chat.id)
 
@@ -459,7 +544,10 @@ class TelegramBot:
         for rec in self._chat_tracker.get_all():
             if rec.status != "active":
                 continue
-            if rec.chat_id in self._allowed_groups:
+            if rec.chat_type == "channel":
+                if rec.chat_id in self._allowed_channels:
+                    continue
+            elif rec.chat_id in self._allowed_groups:
                 continue
             # Not allowed — try to leave.
             try:
@@ -1276,7 +1364,9 @@ class TelegramBot:
         thread_id = get_thread_id(message)
         logger.debug("Message text=%s", text[:80])
 
-        if self._config.scene.seen_reaction:
+        # #63: status_reaction (stage-based) wins over seen_reaction (one-shot).
+        # Both enabled would fight over the same Telegram emoji slot.
+        if self._config.scene.seen_reaction and not self._config.scene.status_reaction:
             await self._set_seen_reaction(message)
 
         if self._config.streaming.enabled:
@@ -1349,7 +1439,12 @@ class TelegramBot:
         *,
         thread_id: int | None = None,
     ) -> None:
-        """Non-streaming flow: one-shot orchestrator call -> Telegram delivery."""
+        """Non-streaming flow: one-shot orchestrator call -> Telegram delivery.
+
+        ``reply_to`` doubles as the user's trigger message (passed as
+        ``message`` so the reaction tracker anchors consistently with the
+        streaming path — MED #10).
+        """
         await run_non_streaming_message(
             NonStreamingDispatch(
                 bot=self._bot,
@@ -1357,6 +1452,7 @@ class TelegramBot:
                 key=key,
                 text=text,
                 allowed_roots=self.file_roots(self._orch.paths),
+                message=reply_to,
                 reply_to=reply_to,
                 thread_id=thread_id,
                 scene_config=self._config.scene,
@@ -1367,7 +1463,17 @@ class TelegramBot:
 
     async def on_async_interagent_result(self, result: AsyncInterAgentResult) -> None:
         """Handle async inter-agent result via the message bus."""
-        from ductor_bot.bus.adapters import from_interagent_result
+        from ductor_bot.bus.adapters import (
+            build_interagent_injection_prompt,
+            from_interagent_result,
+        )
+
+        if result.transport and result.transport != "tg":
+            logger.debug(
+                "Skipping async interagent result for transport=%s in Telegram handler",
+                result.transport,
+            )
+            return
 
         # Prefer the originating chat context carried by the result;
         # fall back to the sender agent's default DM.
@@ -1378,7 +1484,28 @@ class TelegramBot:
             logger.warning("No chat_id available for async interagent result delivery")
             return
         set_log_context(operation="ia-async", chat_id=chat_id)
-        await self._bus.submit(from_interagent_result(result, chat_id))
+
+        injection_prompt = build_interagent_injection_prompt(
+            result,
+            agent_name=self._agent_name,
+            transport_label="Telegram chat",
+        )
+        if injection_prompt:
+            logger.info(
+                "ia-async inject: task=%s from=%s prompt_len=%d",
+                result.task_id,
+                result.recipient or result.sender,
+                len(injection_prompt),
+            )
+
+        await self._bus.submit(
+            from_interagent_result(
+                result,
+                chat_id,
+                injection_prompt=injection_prompt,
+                transport="tg",
+            )
+        )
 
     async def on_task_result(self, result: TaskResult) -> None:
         """Handle background task result via the message bus."""

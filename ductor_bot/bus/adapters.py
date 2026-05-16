@@ -141,7 +141,53 @@ def from_webhook_wake(chat_id: int, prompt: str) -> Envelope:
 # -- Inter-agent ---------------------------------------------------------------
 
 
-def from_interagent_result(result: AsyncInterAgentResult, chat_id: int) -> Envelope:
+def build_interagent_injection_prompt(
+    result: AsyncInterAgentResult,
+    *,
+    agent_name: str,
+    transport_label: str,
+) -> str:
+    """Build the prompt injected into the recipient agent's session.
+
+    Used when an async inter-agent task returns a successful result.
+    ``transport_label`` describes where the user reaches the recipient
+    (e.g. ``"Telegram chat"``, ``"Matrix room"``).  Returns ``""`` when
+    ``result.success`` is False — callers should treat an empty string as
+    "no injection, deliver raw text only".
+    """
+    if not result.success:
+        return ""
+    recipient = result.recipient or result.sender
+    session_hint = (
+        f"\nThe recipient processed this in session `{result.session_name}`. "
+        f"The user can continue this session in the recipient's {transport_label} "
+        f"via `@{result.session_name} <message>`."
+        if result.session_name
+        else ""
+    )
+    task_context = (
+        f"\n\nOriginal task you sent to '{recipient}':\n{result.original_message}"
+        if result.original_message
+        else ""
+    )
+    return (
+        f"[ASYNC INTER-AGENT RESPONSE from '{recipient}'"
+        f" (task {result.task_id})]\n"
+        f"{result.result_text}\n"
+        f"[END ASYNC INTER-AGENT RESPONSE]{session_hint}{task_context}\n\n"
+        f"You are agent '{agent_name}'. Process this response from agent "
+        f"'{recipient}' and communicate the relevant results to the user "
+        f"in your {transport_label}."
+    )
+
+
+def from_interagent_result(
+    result: AsyncInterAgentResult,
+    chat_id: int,
+    *,
+    injection_prompt: str = "",
+    transport: str | None = None,
+) -> Envelope:
     """Convert an async inter-agent result.
 
     Uses ``result.chat_id`` / ``result.topic_id`` when available so that
@@ -150,8 +196,13 @@ def from_interagent_result(result: AsyncInterAgentResult, chat_id: int) -> Envel
 
     Error results are delivered without lock or injection.
     Success results acquire the lock and inject into the active session.
+    ``injection_prompt`` must be supplied by the caller (e.g.
+    ``app.on_async_interagent_result``) so that ``bus._process`` can
+    actually invoke the CLI injection step.  When empty, injection is
+    skipped and only the raw ``result_text`` is delivered.
     """
     delivery_chat_id = result.chat_id or chat_id
+    delivery_transport = transport or getattr(result, "transport", "") or "tg"
     meta = {
         "task_id": result.task_id,
         "sender": result.sender,
@@ -159,6 +210,7 @@ def from_interagent_result(result: AsyncInterAgentResult, chat_id: int) -> Envel
         "error": result.error,
         "provider_switch_notice": result.provider_switch_notice,
         "original_message": result.original_message,
+        "transport": delivery_transport,
     }
 
     if not result.success:
@@ -166,6 +218,7 @@ def from_interagent_result(result: AsyncInterAgentResult, chat_id: int) -> Envel
             origin=Origin.INTERAGENT,
             chat_id=delivery_chat_id,
             topic_id=result.topic_id,
+            transport=delivery_transport,
             prompt_preview=result.message_preview,
             result_text=result.result_text,
             status="error",
@@ -181,12 +234,14 @@ def from_interagent_result(result: AsyncInterAgentResult, chat_id: int) -> Envel
         origin=Origin.INTERAGENT,
         chat_id=delivery_chat_id,
         topic_id=result.topic_id,
+        transport=delivery_transport,
+        prompt=injection_prompt,
         prompt_preview=result.message_preview,
         result_text=result.result_text,
         status="success",
         delivery=DeliveryMode.UNICAST,
         lock_mode=LockMode.REQUIRED,
-        needs_injection=True,
+        needs_injection=bool(injection_prompt),
         elapsed_seconds=result.elapsed_seconds,
         session_name=result.session_name,
         metadata=meta,

@@ -242,6 +242,40 @@ class TestHandleInteragentMessage:
         assert ns is not None
         assert ns.status == "idle"
 
+    async def test_handle_interagent_message_recovers_from_stale_session(
+        self, orch_ia: Orchestrator
+    ) -> None:
+        """#81: when the first cli.execute returns a stale-session error, the
+        handler must end the named session, create a fresh one, retry without
+        ``resume_session``, and prepend a recovery notice to
+        ``provider_switch_notice`` so the caller sees what happened."""
+        # Seed an idle session with a (about to be) stale session_id.
+        await orch_ia.handle_interagent_message("main", "Task 1")
+        ns = orch_ia._named_sessions.get(12345, "ia-main")
+        assert ns is not None
+        ns.session_id = "stale-id"
+        ns.status = "idle"
+
+        stale_response = CLIResponse(
+            result="No conversation found with session ID: stale-id",
+            is_error=True,
+        )
+        fresh_response = CLIResponse(session_id="fresh-sess", result="fresh response")
+        orch_ia._cli_service.execute = AsyncMock(side_effect=[stale_response, fresh_response])
+
+        result_text, session_name, notice = await orch_ia.handle_interagent_message(
+            "main", "Task 2"
+        )
+
+        assert result_text == "fresh response"
+        assert session_name == "ia-main"
+        assert "stale" in notice.lower()
+        assert orch_ia._cli_service.execute.call_count == 2
+        first_call_req = orch_ia._cli_service.execute.call_args_list[0][0][0]
+        second_call_req = orch_ia._cli_service.execute.call_args_list[1][0][0]
+        assert first_call_req.resume_session == "stale-id"
+        assert second_call_req.resume_session is None
+
 
 class TestHandleAsyncInteragentResult:
     """Test handle_async_interagent_result."""

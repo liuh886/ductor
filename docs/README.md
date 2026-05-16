@@ -44,7 +44,7 @@ ductor routes chat input to official provider CLIs (`claude`, `codex`, `gemini`)
 
 Runtime behavior notes:
 
-- `/new` resets only the active provider bucket of the active session key (topic-aware).
+- `/new` is a factory reset for the active `SessionKey`: it clears the configured default-provider bucket for that chat/topic and leaves other provider buckets intact.
 - Forum topics are isolated: each topic has its own transport-aware `SessionKey(...)` state.
 - Normal CLI errors do not auto-reset sessions; context is preserved unless explicit reset/recovery path applies.
 - Startup can recover interrupted foreground turns and safely resume eligible named sessions.

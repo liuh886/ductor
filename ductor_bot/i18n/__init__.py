@@ -8,7 +8,7 @@ Public API::
     t("session.error", model="opus")  # chat/Markdown string
     t_rich("lifecycle.stopped")  # CLI/Rich string
     t_cmd("new")  # bot command description
-    t_plural("tasks.cancelled", 3, count=3)  # plural-aware
+    t_plural("tasks.cancelled", 3)  # plural-aware (count is auto-bound)
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ LANGUAGES: dict[str, str] = {
     "nl": "Nederlands",
     "es": "Español",
     "fr": "Français",
+    "id": "Bahasa Indonesia",
     "pt": "Português",
     "ru": "Русский",
 }

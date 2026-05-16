@@ -57,6 +57,9 @@ class StreamingConfig(BaseModel):
     max_edit_failures: int = 3
     append_mode: bool = False
     sentence_break: bool = True
+    show_reasoning_stream: bool = False
+    show_tool_progress: bool = True
+    show_thinking_indicator: bool = True
 
 
 class DockerConfig(BaseModel):
@@ -85,6 +88,36 @@ _DEFAULT_HEARTBEAT_PROMPT = (
 )
 
 _DEFAULT_HEARTBEAT_ACK = "HEARTBEAT_OK"
+
+_DEFAULT_FLUSH_PROMPT = (
+    "## PRE-COMPACTION MEMORY FLUSH\n"
+    "The conversation context is about to be compacted. Before that happens: "
+    "review the recent conversation and APPEND any durable facts, decisions, "
+    "preferences, or learnings to memory_system/MAINMEMORY.md that are not "
+    "already captured there. Do NOT overwrite existing entries. If there is "
+    "nothing new worth saving, reply exactly: FLUSH_NOOP"
+)
+
+_DEFAULT_MEMORY_REFLECTION_PROMPT = (
+    "## MEMORY REFLECTION\n"
+    "Review the last several messages in this conversation.\n"
+    "Check: were there any new decisions, corrections, error solutions, user "
+    "preferences, or important facts that you did NOT yet write to memory?\n"
+    "If yes -- update memory_system/MAINMEMORY.md silently.\n"
+    "If everything is already recorded -- do nothing."
+)
+
+_DEFAULT_COMPACT_PROMPT = (
+    "## MEMORY COMPACTION\n"
+    "memory_system/MAINMEMORY.md has grown large. Rewrite it as follows:\n"
+    "1. Preserve entries from the last {preserve_days} days verbatim.\n"
+    "2. For older entries, cluster by topic and replace each cluster with "
+    "ONE dense entry that preserves all key facts in fewer lines.\n"
+    "3. Target size: roughly {target_lines} lines total.\n"
+    "4. Do NOT delete facts -- only compress their expression.\n"
+    "If MAINMEMORY.md is already at or below {target_lines} lines, reply "
+    "exactly: COMPACT_NOOP"
+)
 
 
 class HeartbeatTarget(BaseModel):
@@ -141,6 +174,45 @@ class CleanupConfig(BaseModel):
         elif "telegram_files_days" in data:
             data.pop("telegram_files_days")
         super().__init__(**data)
+
+
+class MemoryFlushConfig(BaseModel):
+    """Settings for the pre-compaction silent memory flush (#77)."""
+
+    enabled: bool = True
+    flush_prompt: str = _DEFAULT_FLUSH_PROMPT
+    # ``0`` disables the dedup window (flush fires on every boundary).
+    dedup_seconds: int = Field(default=300, ge=0)
+
+
+class MemoryReflectionConfig(BaseModel):
+    """Settings for the periodic memory reflection hook (#65)."""
+
+    enabled: bool = False
+    # Must be >= 1 to avoid ``ZeroDivisionError`` in modulo check (hooks.py).
+    every_n_messages: int = Field(default=10, ge=1)
+    prompt: str = _DEFAULT_MEMORY_REFLECTION_PROMPT
+
+
+class MemoryCompactionConfig(BaseModel):
+    """Settings for LLM-driven memory compaction (#80)."""
+
+    enabled: bool = True
+    trigger_lines: int = Field(default=70, ge=1)
+    target_lines: int = Field(default=40, ge=1)
+    # ``0`` disables the "preserve recent entries verbatim" guard.
+    preserve_recency_days: int = Field(default=14, ge=0)
+    prompt: str = _DEFAULT_COMPACT_PROMPT
+
+    @model_validator(mode="after")
+    def _check_target_le_trigger(self) -> MemoryCompactionConfig:
+        """``target_lines`` must not exceed ``trigger_lines`` (compaction would be a no-op)."""
+        if self.target_lines > self.trigger_lines:
+            raise ValueError(
+                f"target_lines ({self.target_lines}) must be <= "
+                f"trigger_lines ({self.trigger_lines})"
+            )
+        return self
 
 
 class ImageConfig(BaseModel):
@@ -203,10 +275,55 @@ class WebhookConfig(BaseModel):
     rate_limit_per_minute: int = 30
 
 
+class TranscriptionConfig(BaseModel):
+    """External transcription hooks for audio + video (#66).
+
+    Empty strings preserve the built-in strategies in the bundled tool
+    scripts (OpenAI Whisper API → local whisper CLI → whisper.cpp).
+    When a value is set, the bot exports it via
+    ``DUCTOR_TRANSCRIBE_COMMAND`` / ``DUCTOR_VIDEO_TRANSCRIBE_COMMAND``
+    and the tool script invokes the external command first (falling
+    back to the built-ins on failure).
+    """
+
+    audio_command: str = ""
+    video_command: str = ""
+
+
+class NotificationTarget(BaseModel):
+    """A chat/topic to route startup or upgrade notifications to (#64).
+
+    ``topic_id`` is Telegram-specific (forum-topic thread). Matrix ignores it.
+    """
+
+    enabled: bool = True
+    chat_id: int | None = None
+    topic_id: int | None = None
+
+
+class NotificationsConfig(BaseModel):
+    """Opt-in routing for lifecycle notifications (#64).
+
+    Empty lists preserve the previous fan-out-to-all behaviour. When
+    ``startup_targets`` has at least one enabled target with a valid
+    ``chat_id``, startup notices go to those targets only; same for
+    ``upgrade_targets`` and new-version notices.
+    """
+
+    startup_targets: list[NotificationTarget] = Field(default_factory=list)
+    upgrade_targets: list[NotificationTarget] = Field(default_factory=list)
+
+
 class SceneConfig(BaseModel):
     """Settings for scene indicators and technical footer."""
 
     seen_reaction: bool = False
+    # #63: when True, the user's message gets a stage-based reaction that
+    # updates as the agent works (thinking/tool/system) and clears on
+    # completion. Overrides ``seen_reaction`` so they do not fight over
+    # the same emoji slot. Default on — gives users immediate visual
+    # feedback that the agent is working.
+    status_reaction: bool = True
     technical_footer: bool = False
 
 
@@ -299,6 +416,9 @@ class AgentConfig(BaseModel):
     docker: DockerConfig = Field(default_factory=DockerConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
+    memory_flush: MemoryFlushConfig = Field(default_factory=MemoryFlushConfig)
+    memory_reflection: MemoryReflectionConfig = Field(default_factory=MemoryReflectionConfig)
+    memory_compaction: MemoryCompactionConfig = Field(default_factory=MemoryCompactionConfig)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     cli_parameters: CLIParametersConfig = Field(default_factory=CLIParametersConfig)
@@ -306,6 +426,8 @@ class AgentConfig(BaseModel):
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     tasks: TasksConfig = Field(default_factory=TasksConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
     user_timezone: str = ""
     language: str = "en"
     update_check: bool = True
@@ -316,6 +438,7 @@ class AgentConfig(BaseModel):
     telegram_token: str = ""
     allowed_user_ids: list[int] = Field(default_factory=list)
     allowed_group_ids: list[int] = Field(default_factory=list)
+    allowed_channel_ids: list[int] = Field(default_factory=list)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
 
     @field_validator("gemini_api_key", mode="before")
@@ -446,7 +569,17 @@ def _detect_posix_timezone() -> ZoneInfo | None:
         return None
 
 
-CLAUDE_MODELS_ORDERED: tuple[str, ...] = ("haiku", "sonnet", "opus")
+# `[1m]` suffix unlocks Claude Code's 1M-context beta on sonnet + opus.
+# The Claude CLI strips the suffix before dispatch and sets the beta header
+# internally (see https://code.claude.com/docs/en/model-config). Haiku has
+# no 1M variant upstream, so it is intentionally omitted.
+CLAUDE_MODELS_ORDERED: tuple[str, ...] = (
+    "haiku",
+    "sonnet",
+    "sonnet[1m]",
+    "opus",
+    "opus[1m]",
+)
 CLAUDE_MODELS: frozenset[str] = frozenset(CLAUDE_MODELS_ORDERED)
 
 # "auto" is a Gemini-specific alias (Gemini CLI auto-selects the best model).

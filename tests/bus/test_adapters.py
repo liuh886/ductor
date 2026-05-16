@@ -160,15 +160,40 @@ def test_from_webhook_wake() -> None:
     assert env.lock_mode == LockMode.REQUIRED
 
 
-def test_from_interagent_success() -> None:
+def test_from_interagent_success_without_prompt_no_injection() -> None:
+    """rr#18: without injection_prompt, needs_injection must be False (raw deliver)."""
     env = from_interagent_result(_FakeInterAgentResult(), chat_id=100)
     assert env.origin == Origin.INTERAGENT
     assert env.chat_id == 100
     assert env.status == "success"
     assert env.delivery == DeliveryMode.UNICAST
     assert env.lock_mode == LockMode.REQUIRED
-    assert env.needs_injection
+    assert not env.needs_injection
+    assert env.prompt == ""
     assert env.metadata["sender"] == "agent-a"
+
+
+def test_from_interagent_success_with_prompt_enables_injection() -> None:
+    """rr#18: injection_prompt wires needs_injection=True and sets envelope.prompt."""
+    prompt = "[ASYNC INTER-AGENT RESPONSE from 'dev' (task t1)]\nresult\n[END]"
+    env = from_interagent_result(_FakeInterAgentResult(), chat_id=100, injection_prompt=prompt)
+    assert env.origin == Origin.INTERAGENT
+    assert env.needs_injection
+    assert env.prompt == prompt
+    assert env.lock_mode == LockMode.REQUIRED
+
+
+def test_from_interagent_matrix_transport() -> None:
+    """Matrix callers must produce mx envelopes for session injection and delivery."""
+    prompt = "[ASYNC INTER-AGENT RESPONSE from 'dev' (task t1)]\nresult\n[END]"
+    env = from_interagent_result(
+        _FakeInterAgentResult(),
+        chat_id=100,
+        injection_prompt=prompt,
+        transport="mx",
+    )
+    assert env.transport == "mx"
+    assert env.metadata["transport"] == "mx"
 
 
 def test_from_interagent_error() -> None:
@@ -247,6 +272,14 @@ def test_from_task_result_cancelled() -> None:
     env = from_task_result(_FakeTaskResult(status="cancelled"))
     assert env.lock_mode == LockMode.NONE
     assert not env.needs_injection
+
+
+def test_from_task_result_preserves_parent_agent() -> None:
+    """#73: parent_agent must round-trip through Envelope.metadata so the
+    per-agent transport adapter can route the result back to the originating
+    sub-agent's bot (not the main agent's)."""
+    env = from_task_result(_FakeTaskResult(parent_agent="sonic"))
+    assert env.metadata["parent_agent"] == "sonic"
 
 
 def test_from_task_question() -> None:

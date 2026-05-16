@@ -54,6 +54,7 @@ class AgentRequest:
     provider_override: str | None = None
     chat_id: int = 0
     topic_id: int | None = None
+    transport: str = "tg"
     process_label: str = "main"
     resume_session: str | None = None
     continue_session: bool = False

@@ -328,12 +328,22 @@ async def _build_status(orch: Orchestrator, key: SessionKey) -> str:
         auth_lines.append(f"  [{provider}] {result.status.value}{age_label}")
     auth_block = t("status.auth_header") + "\n" + "\n".join(auth_lines)
 
+    streaming_cfg = orch._config.streaming
+    streaming_block = "\n".join(
+        [
+            "Streaming visibility:",
+            f"  Reasoning stream: {'on' if streaming_cfg.show_reasoning_stream else 'off'}",
+            f"  Tool progress: {'on' if streaming_cfg.show_tool_progress else 'off'}",
+            f"  Thinking indicator: {'on' if streaming_cfg.show_thinking_indicator else 'off'}",
+        ]
+    )
+
     agent_block = _build_agent_health_block(orch)
 
     blocks = [t("status.header"), SEP, session_block]
     if bg_block:
         blocks += [SEP, bg_block]
-    blocks += [SEP, auth_block]
+    blocks += [SEP, auth_block, SEP, streaming_block]
     if agent_block:
         blocks += [SEP, agent_block]
     return fmt(*blocks)

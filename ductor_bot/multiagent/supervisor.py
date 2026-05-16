@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.config import AgentConfig, update_config_file_async
 from ductor_bot.infra.file_watcher import FileWatcher
 from ductor_bot.infra.restart import EXIT_RESTART
@@ -146,6 +147,11 @@ class AgentSupervisor:
                 state_repo=task_repo,
                 state_backend=self._main_config.state_backend,
             )
+            # #92: shared fallback ProcessRegistry. In practice every agent's
+            # CLIService holds its OWN registry (see ``Orchestrator.__init__``),
+            # so per-agent registries wired in ``_wire_task_hub`` take precedence.
+            # The shared fallback is kept for test setups and single-agent deploys.
+            self._task_process_registry = ProcessRegistry()
             self._task_hub = TaskHub(
                 registry,
                 self._main_paths,
@@ -153,6 +159,7 @@ class AgentSupervisor:
                 process_repo=process_repo,
                 message_repo=message_repo,
                 config=self._main_config.tasks,
+                process_registry=self._task_process_registry,
             )
             self._internal_api.set_task_hub(self._task_hub)
             logger.info(
@@ -412,6 +419,10 @@ class AgentSupervisor:
         # Register this agent's CLI service and workspace paths for task execution
         hub.set_cli_service(name, orch.cli_service)
         hub.set_agent_paths(name, stack.paths)
+        # #92: register this agent's ProcessRegistry so TaskHub.cancel routes
+        # kill_for_task to the registry where task:<id> subprocesses actually
+        # live (each orchestrator owns its own — see Orchestrator.__init__).
+        hub.set_agent_process_registry(name, orch.process_registry)
 
         hub.set_result_handler(name, stack.bot.on_task_result)
         hub.set_question_handler(name, stack.bot.on_task_question)

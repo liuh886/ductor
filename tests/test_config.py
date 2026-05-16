@@ -10,6 +10,9 @@ from pydantic import ValidationError
 from ductor_bot.config import (
     AgentConfig,
     DockerConfig,
+    MemoryCompactionConfig,
+    MemoryFlushConfig,
+    MemoryReflectionConfig,
     ModelRegistry,
     StreamingConfig,
     deep_merge_config,
@@ -197,4 +200,64 @@ def test_transports_default_is_telegram() -> None:
     """Default AgentConfig has transports=['telegram']."""
     cfg = AgentConfig()
     assert cfg.transports == ["telegram"]
-    assert cfg.is_multi_transport is False
+
+
+# -- Memory* config bounds (MED #4) --
+
+
+def test_memory_reflection_rejects_zero_every_n_messages() -> None:
+    """``every_n_messages=0`` would trigger ZeroDivisionError in hooks.py modulo check."""
+    with pytest.raises(ValidationError, match="every_n_messages"):
+        MemoryReflectionConfig(every_n_messages=0)
+
+
+def test_memory_reflection_rejects_negative_every_n_messages() -> None:
+    """Negative cadence is nonsense."""
+    with pytest.raises(ValidationError, match="every_n_messages"):
+        MemoryReflectionConfig(every_n_messages=-5)
+
+
+def test_memory_flush_rejects_negative_dedup_seconds() -> None:
+    """``dedup_seconds`` accepts 0 (no window) but rejects negative values."""
+    with pytest.raises(ValidationError, match="dedup_seconds"):
+        MemoryFlushConfig(dedup_seconds=-1)
+
+
+def test_memory_flush_accepts_zero_dedup_seconds() -> None:
+    """0 means no dedup window -- flush on every boundary."""
+    cfg = MemoryFlushConfig(dedup_seconds=0)
+    assert cfg.dedup_seconds == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("trigger_lines", 0),
+        ("trigger_lines", -10),
+        ("target_lines", 0),
+        ("target_lines", -3),
+    ],
+)
+def test_memory_compaction_rejects_nonpositive_line_counts(field: str, value: int) -> None:
+    """``trigger_lines`` / ``target_lines`` must be >= 1."""
+    with pytest.raises(ValidationError, match=field):
+        MemoryCompactionConfig(**{field: value})
+
+
+def test_memory_compaction_rejects_negative_preserve_recency_days() -> None:
+    """``preserve_recency_days`` accepts 0 (disabled) but rejects negative."""
+    with pytest.raises(ValidationError, match="preserve_recency_days"):
+        MemoryCompactionConfig(preserve_recency_days=-1)
+
+
+def test_memory_compaction_rejects_target_gt_trigger() -> None:
+    """``target_lines`` must not exceed ``trigger_lines`` (compaction no-op)."""
+    with pytest.raises(ValidationError, match="target_lines"):
+        MemoryCompactionConfig(trigger_lines=40, target_lines=70)
+
+
+def test_memory_compaction_accepts_target_eq_trigger() -> None:
+    """``target_lines == trigger_lines`` is allowed (boundary case)."""
+    cfg = MemoryCompactionConfig(trigger_lines=50, target_lines=50)
+    assert cfg.target_lines == 50
+    assert cfg.trigger_lines == 50

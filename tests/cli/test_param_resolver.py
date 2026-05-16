@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from ductor_bot.cli.codex_cache import CodexModelCache
@@ -10,7 +12,12 @@ from ductor_bot.cli.param_resolver import (
     TaskOverrides,
     resolve_cli_config,
 )
-from ductor_bot.config import AgentConfig, reset_gemini_models, set_gemini_models
+from ductor_bot.config import (
+    AgentConfig,
+    CLIParametersConfig,
+    reset_gemini_models,
+    set_gemini_models,
+)
 from ductor_bot.errors import DuctorError
 
 
@@ -75,16 +82,15 @@ def test_resolve_with_task_overrides(
     """Should apply task overrides over global config."""
     overrides = TaskOverrides(
         provider="codex",
-        model="gpt-4o-mini",
+        model="gpt-4o",
         reasoning_effort="low",
     )
 
     result = resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
 
     assert result.provider == "codex"
-    assert result.model == "gpt-4o-mini"
-    # gpt-4o-mini doesn't support reasoning, should be empty
-    assert result.reasoning_effort == ""
+    assert result.model == "gpt-4o"
+    assert result.reasoning_effort == "low"
     assert result.cli_parameters == []
 
 
@@ -143,17 +149,15 @@ def test_resolve_codex_reasoning_effort(
 def test_resolve_codex_effort_fallback(
     base_config: AgentConfig, codex_cache: CodexModelCache
 ) -> None:
-    """Should fall back to empty reasoning effort for non-reasoning models."""
+    """Explicit invalid reasoning override must fail loudly."""
     overrides = TaskOverrides(
         provider="codex",
         model="gpt-4o-mini",
         reasoning_effort="high",  # Attempt to set, but model doesn't support
     )
 
-    result = resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
-
-    assert result.model == "gpt-4o-mini"
-    assert result.reasoning_effort == ""
+    with pytest.raises(DuctorError, match="Invalid reasoning effort"):
+        resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
 
 
 def test_resolve_claude_ignores_reasoning(
@@ -201,3 +205,83 @@ def test_resolve_gemini_fallback_prefix_when_no_discovery(
 
     assert result.provider == "gemini"
     assert result.model == "gemini-foo"
+
+
+def test_resolve_merges_base_claude_params(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    """Base claude bucket MUST concat with overrides, in order: base first, override second."""
+    merged = base_config.model_copy(
+        update={
+            "cli_parameters": CLIParametersConfig(claude=["--mcp-config", "brave.json"]),
+        }
+    )
+    overrides = TaskOverrides(cli_parameters=["--debug"])
+
+    result = resolve_cli_config(merged, codex_cache, task_overrides=overrides)
+
+    assert result.provider == "claude"
+    assert result.cli_parameters == ["--mcp-config", "brave.json", "--debug"]
+
+
+def test_resolve_picks_correct_provider_bucket(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    """Per-provider bucket selection MUST NOT leak claude/gemini flags into codex spawn."""
+    merged = base_config.model_copy(
+        update={
+            "cli_parameters": CLIParametersConfig(
+                claude=["--claude-only"],
+                codex=["--codex-only"],
+                gemini=["--gemini-only"],
+            ),
+        }
+    )
+    overrides = TaskOverrides(provider="codex", model="gpt-4o")
+
+    result = resolve_cli_config(merged, codex_cache, task_overrides=overrides)
+
+    assert result.provider == "codex"
+    assert result.cli_parameters == ["--codex-only"]
+
+
+def test_resolve_gemini_bucket_with_overrides(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    """Gemini bucket + override concat; claude bucket MUST NOT leak when provider=gemini."""
+    set_gemini_models(frozenset({"gemini-2.5-pro"}))
+    merged = base_config.model_copy(
+        update={
+            "cli_parameters": CLIParametersConfig(
+                claude=["IGNORED"],
+                gemini=["--thinking-budget", "4096"],
+            ),
+        }
+    )
+    overrides = TaskOverrides(
+        provider="gemini",
+        model="gemini-2.5-pro",
+        cli_parameters=["--show-thoughts"],
+    )
+
+    result = resolve_cli_config(merged, codex_cache, task_overrides=overrides)
+
+    assert result.provider == "gemini"
+    assert result.cli_parameters == ["--thinking-budget", "4096", "--show-thoughts"]
+
+
+def test_resolve_missing_bucket_falls_back_to_empty(
+    base_config: AgentConfig, codex_cache: CodexModelCache
+) -> None:
+    """Forward-compat: future provider addition without matching bucket must not AttributeError."""
+    # Simulate a future provider scenario by swapping cli_parameters for a stub that
+    # lacks the resolved provider's attribute. AgentConfig.model_construct bypasses
+    # pydantic validation so the stub is accepted as-is; the getattr+None fallback
+    # in resolve_cli_config must keep this from raising.
+    stub = SimpleNamespace(codex=["x"], gemini=["y"])  # no 'claude' field
+    broken = AgentConfig.model_construct(**{**base_config.model_dump(), "cli_parameters": stub})
+
+    result = resolve_cli_config(broken, codex_cache)
+
+    assert result.provider == "claude"
+    assert result.cli_parameters == []

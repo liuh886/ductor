@@ -9,7 +9,7 @@ from aiohttp.test_utils import TestClient
 
 from ductor_bot.multiagent.bus import InterAgentBus
 from ductor_bot.multiagent.health import AgentHealth
-from ductor_bot.multiagent.internal_api import InternalAgentAPI
+from ductor_bot.multiagent.internal_api import InternalAgentAPI, _normalise_transport
 
 
 @pytest.fixture
@@ -101,6 +101,11 @@ class TestHandleSendAsync:
         data = await resp.json()
         assert data["success"] is True
         assert "task_id" in data
+
+    def test_normalise_transport_aliases(self) -> None:
+        assert _normalise_transport("telegram") == "tg"
+        assert _normalise_transport("matrix") == "mx"
+        assert _normalise_transport("mx") == "mx"
 
     async def test_send_async_unknown_recipient(self, client: TestClient) -> None:
         resp = await client.post(

@@ -23,7 +23,10 @@ reset_body = """\
 
 age_warning = "[Сессии уже {age}. Используй /new для свежего старта.]"
 
+empty_turn = "_(Агент молча обновил память — отправь ещё одно сообщение, чтобы продолжить.)_"
+
 recovered = "_Предыдущую сессию не удалось восстановить. Новая сессия запущена автоматически._"
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 sigkill = "Выполнение было прервано. Пожалуйста, отправь тот же запрос ещё раз."
 
 not_found = "Сессия '{name}' не найдена."
@@ -369,6 +372,7 @@ topic_reset = "Новая сессия для **{name}** ({provider})."
 
 [telegram]
 group_rejected = "Этот бот не авторизован для этой группы."
+channel_not_whitelisted = "Этот канал не в списке разрешённых, я покидаю его."
 where_header = "**Где**"
 where_no_tracker = "Трекер чатов недоступен."
 where_empty = "Активности в чатах пока не зафиксировано."

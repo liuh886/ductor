@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -42,12 +42,12 @@ class _LazyDict(dict[str, str]):
     and subscript access -- enough for production code and tests.
     """
 
-    def __init__(self, builder: object) -> None:
+    def __init__(self, builder: Callable[[], dict[str, str]]) -> None:
         super().__init__()
-        self._builder = builder  # type: ignore[assignment]
+        self._builder = builder
 
     def _data(self) -> dict[str, str]:
-        return self._builder()  # type: ignore[no-any-return]
+        return self._builder()
 
     def __getitem__(self, key: str) -> str:
         return self._data()[key]
@@ -66,8 +66,8 @@ class _LazyDict(dict[str, str]):
 
 
 # Backward-compatible module-level names used by tests.
-WELCOME_CALLBACKS: dict[str, str] = _LazyDict(_welcome_callbacks)  # type: ignore[assignment]
-_BUTTON_LABELS: dict[str, str] = _LazyDict(_button_labels_dict)  # type: ignore[assignment]
+WELCOME_CALLBACKS: dict[str, str] = _LazyDict(_welcome_callbacks)
+_BUTTON_LABELS: dict[str, str] = _LazyDict(_button_labels_dict)
 
 
 def build_welcome_text(

@@ -14,7 +14,7 @@ import time
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli.types import AgentRequest
-from ductor_bot.orchestrator.flows import _update_session
+from ductor_bot.orchestrator.flows import _is_invalid_session, _update_session
 from ductor_bot.session.key import SessionKey
 from ductor_bot.session.named import NamedSession
 
@@ -23,6 +23,14 @@ if TYPE_CHECKING:
     from ductor_bot.orchestrator.core import Orchestrator
 
 logger = logging.getLogger(__name__)
+
+_TRANSPORT_ALIASES = {"telegram": "tg", "matrix": "mx"}
+
+
+def _transport_id(value: str) -> str:
+    """Return the short transport id used by SessionKey and Envelope."""
+    stripped = value.strip().lower()
+    return _TRANSPORT_ALIASES.get(stripped, stripped or "tg")
 
 
 def _state_repos(orch: Orchestrator) -> tuple[object | None, object | None]:
@@ -157,6 +165,7 @@ async def _inject_prompt(
         prompt=prompt,
         chat_id=chat_id,
         topic_id=topic_id,
+        transport=transport,
         process_label=process_label,
         resume_session=resume_id,
         timeout_seconds=orch._config.cli_timeout,
@@ -323,6 +332,7 @@ async def handle_interagent_message(
     """
     own_name = orch._cli_service._config.agent_name
     chat_id = _interagent_chat_id(orch)
+    transport = _transport_id(orch._config.transport)
     ns, _is_new, provider_switch_notice = _get_or_create_interagent_session(
         orch,
         sender,
@@ -348,6 +358,7 @@ async def handle_interagent_message(
     request = AgentRequest(
         prompt=prompt,
         chat_id=chat_id,
+        transport=transport,
         process_label=f"interagent:{sender}",
         resume_session=ns.session_id or None,
         timeout_seconds=orch._config.cli_timeout,
@@ -396,29 +407,85 @@ async def handle_interagent_message(
             ns.name,
             provider_switch_notice,
         )
-    else:
-        if response and response.session_id:
-            orch._named_sessions.update_after_response(
-                chat_id, ns.name, response.session_id, status="idle"
-            )
-        else:
-            ns.status = "idle"
-        await _record_message(
-            orch,
-            storage_key,
-            role="assistant",
-            content_text=response.result if response else "",
-            source="interagent_result",
-            process_id=process_id,
-            content_json={
-                "sender": sender,
-                "session_name": ns.name,
-                "session_id": response.session_id if response else "",
-                "is_error": bool(response.is_error) if response else False,
-            },
+
+    # #81: Claude / Codex CLI can invalidate cached session IDs after a
+    # version bump or cache clear. Detect the stale-session error and retry
+    # ONCE with a fresh session so async inter-agent sends don't silently
+    # fail. The recovery is visible: it emits a WARNING log AND prepends a
+    # notice to provider_switch_notice so the caller sees what happened.
+    if _is_invalid_session(response):
+        stale_id = ns.session_id
+        logger.warning(
+            "Inter-agent session stale (from=%s session=%s stale_id=%s) -- "
+            "retrying with fresh session",
+            sender,
+            ns.name,
+            stale_id,
         )
-        await _record_process_finish(orch, process_id, 1 if response and response.is_error else 0)
-        return (response.result if response else ""), ns.name, provider_switch_notice
+        orch._named_sessions.end_session(chat_id, ns.name)
+        ns, _, _ = _get_or_create_interagent_session(orch, sender, new_session=True)
+        ns.status = "running"
+        retry_request = AgentRequest(
+            prompt=prompt,
+            chat_id=chat_id,
+            transport=transport,
+            process_label=f"interagent:{sender}",
+            resume_session=None,
+            timeout_seconds=orch._config.cli_timeout,
+        )
+        try:
+            response = await orch._cli_service.execute(retry_request)
+        except Exception:
+            ns.status = "idle"
+            logger.exception("Inter-agent retry failed (from=%s)", sender)
+            await _record_message(
+                orch,
+                storage_key,
+                role="assistant",
+                content_text=f"Error processing inter-agent message from '{sender}' (after stale-session retry)",
+                source="interagent_result",
+                process_id=process_id,
+                content_json={"sender": sender, "session_name": ns.name, "is_error": True},
+            )
+            await _record_process_finish(orch, process_id, 1)
+            return (
+                f"Error processing inter-agent message from '{sender}' (after stale-session retry)",
+                ns.name,
+                provider_switch_notice,
+            )
+        recovery_notice = (
+            f"Inter-agent session `{ns.name}` was stale "
+            f"(CLI rejected session `{stale_id}`); started a fresh session "
+            f"and retried. This is normal after a CLI update."
+        )
+        provider_switch_notice = (
+            f"{provider_switch_notice}\n{recovery_notice}".strip()
+            if provider_switch_notice
+            else recovery_notice
+        )
+
+    if response and response.session_id:
+        orch._named_sessions.update_after_response(
+            chat_id, ns.name, response.session_id, status="idle"
+        )
+    else:
+        ns.status = "idle"
+    await _record_message(
+        orch,
+        storage_key,
+        role="assistant",
+        content_text=response.result if response else "",
+        source="interagent_result",
+        process_id=process_id,
+        content_json={
+            "sender": sender,
+            "session_name": ns.name,
+            "session_id": response.session_id if response else "",
+            "is_error": bool(response.is_error) if response else False,
+        },
+    )
+    await _record_process_finish(orch, process_id, 1 if response and response.is_error else 0)
+    return (response.result if response else ""), ns.name, provider_switch_notice
 
 
 async def handle_async_interagent_result(

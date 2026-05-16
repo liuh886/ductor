@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Claude Code, Codex CLI, and Gemini CLI as your coding assistant — on Telegram.</strong><br>
-  Uses only official CLIs. Nothing spoofed, nothing proxied. Matrix and more via plugin system.
+  <strong>Claude Code, Codex CLI, and Gemini CLI as your coding assistant — on Telegram and Matrix.</strong><br>
+  Uses only official CLIs. Nothing spoofed, nothing proxied. Multi-transport, automation, and sub-agents in one runtime.
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
 
 ---
 
-If you want to control Claude Code, Google's Gemini CLI, or OpenAI's Codex CLI via Telegram, build automations, or manage multiple agents easily — ductor is the right tool for you. Additional messengers (Matrix, and more to come) are supported via a modular plugin system.
+If you want to control Claude Code, Google's Gemini CLI, or OpenAI's Codex CLI via Telegram or Matrix, build automations, or manage multiple agents easily — ductor is the right tool for you. The messaging layer is modular: Telegram and Matrix ship today, and new transports plug into the same transport-agnostic core.
 
 ductor runs on your machine and sends simple console commands as if you were typing them yourself, so you can use your active subscriptions (Claude Max, etc.) directly. No API proxying, no SDK patching, no spoofed headers. Just the official CLIs, executed as subprocesses, with all state kept in plain JSON and Markdown under `~/.ductor/`.
 
@@ -35,7 +35,7 @@ ductor runs on your machine and sends simple console commands as if you were typ
 ## Quick start
 
 ```bash
-pipx install ductor
+pipx install ductor    # or: uv tool install ductor
 ductor
 ```
 
@@ -194,12 +194,18 @@ Main chat:  "Ask codex-agent to write tests for the API"
 - **Multi-transport** — run Telegram and Matrix simultaneously, or pick one
 - **Multi-language** — UI in English, Deutsch, Nederlands, Français, Русский, Español, Português
 - **Real-time streaming** — live message edits (Telegram) or segment-based output (Matrix)
+- **Telegram reasoning + tool UX controls** — optional reasoning stream, live tool progress, and separate thinking indicator controls
 - **Provider switching** — `/model` to change provider/model (never blocks, even during active processes)
 - **Persistent memory** — plain Markdown files that survive across sessions
+- **Memory maintenance** — pre-compaction flush, optional reflection cadence, and LLM-driven compaction
 - **Cron jobs** — in-process scheduler with timezone support, per-job overrides, result routing to originating chat
 - **Webhooks** — `wake` (inject into active chat) and `cron_task` (isolated task run) modes
 - **Heartbeat** — proactive checks with per-target settings, group/topic support, chat validation
 - **Image processing** — auto-resize and WebP conversion for incoming images (configurable)
+- **Media transcription hooks** — configurable external audio/video transcription commands for bundled media tools
+- **Notification routing** — startup/upgrade lifecycle messages can target specific chats/topics
+- **Task priorities** — `interactive`, `background`, and `batch` scheduling modes for background work
+- **Telegram status reactions** — stage-aware emoji tracker on the user message while the agent works
 - **Config hot-reload** — most settings update without restart (including language, scene, image)
 - **Docker sandbox** — optional sidecar container with configurable host mounts
 - **Service manager** — Linux (systemd), macOS (launchd), Windows (Task Scheduler)
@@ -222,7 +228,7 @@ Both transports can run **in parallel** on the same agent:
 {"transports": ["telegram", "matrix"]}
 ```
 
-### Plugin system for additional messengers
+### Modular transport architecture
 
 Each messenger is a self-contained module under `messenger/<name>/` implementing a
 shared `BotProtocol`. The core (orchestrator, sessions, CLI, cron, etc.) is completely
@@ -252,6 +258,8 @@ All three are **hot-reloadable** — edit `config.json` and changes take effect 
 > **Privacy Mode:** Telegram bots have Privacy Mode enabled by default and only see `/commands` in groups. To let the bot see all messages, make it a **group admin** or disable Privacy Mode via BotFather (`/setprivacy` → Disable). If changed after joining, remove and re-add the bot.
 
 **Group management:** When the bot is added to a group not in `allowed_group_ids`, it warns and auto-leaves. Use `/where` to see tracked groups and their IDs.
+
+**Channel allowlist:** Telegram channels are tracked separately via `allowed_channel_ids`. Unauthorized channels are announced and auto-left on join/audit just like unauthorized groups.
 
 > **Tip — adding a group for the first time:**
 > 1. Create a Telegram group, enable topics if you want isolated chats
@@ -302,7 +310,7 @@ This is **hot-reloadable** — change the language without restarting the bot.
 | Command | Description |
 |---|---|
 | `/model` | Interactive model/provider selector |
-| `/new` | Reset active provider session |
+| `/new` | Reset the configured default-provider session for this chat/topic |
 | `/stop` | Stop current message and discard queued messages |
 | `/interrupt` | Interrupt current message, queued messages continue |
 | `/stop_all` | Kill everything — all messages, sessions, tasks, all agents |
@@ -320,6 +328,8 @@ This is **hot-reloadable** — change the language without restarting the bot.
 | `/where` | Show tracked chats/groups |
 | `/leave <id>` | Manually leave a group |
 | `/info` | Version + links |
+
+`/new` is intentionally a factory reset for the current `SessionKey`: it clears the bucket tied to the configured default model/provider for that chat or topic, not whichever provider you last switched to temporarily via `/model`.
 
 ## Common CLI commands
 
@@ -422,9 +432,24 @@ ductor runs official provider CLIs and does not impersonate provider clients. Va
 ```bash
 git clone https://github.com/PleasePrompto/ductor.git
 cd ductor
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-pytest && ruff format . && ruff check . && mypy ductor_bot
+uv sync --extra dev
+```
+
+Run checks with [just](https://github.com/casey/just):
+
+```bash
+just check   # linters + type checks (parallel)
+just test    # test suite
+just fix     # auto-fix formatting and lint issues
+```
+
+Or directly with uv:
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy ductor_bot
 ```
 
 Zero warnings, zero errors.
