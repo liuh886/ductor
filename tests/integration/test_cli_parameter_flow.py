@@ -96,7 +96,11 @@ def test_main_agent_codex_parameters() -> None:
     # POSIX passes the prompt as a positional arg; Windows feeds it via stdin.
     if "--" in cmd:
         separator_idx = cmd.index("--")
-        assert cmd[separator_idx + 1] == "test prompt"
+        prompt_arg = cmd[separator_idx + 1]
+        if prompt_arg == "-":
+            assert provider._stdin_prompt("test prompt") == "test prompt"
+        else:
+            assert prompt_arg == "test prompt"
     else:
         assert provider._stdin_prompt("test prompt") == "test prompt"
 

@@ -364,8 +364,8 @@ class DockerManager:
         # container are owned by the host user, not root.
         # macOS and Windows Docker Desktop handle this transparently.
         if _needs_uid_mapping():
-            uid = os.getuid()
-            gid = os.getgid()
+            uid = os.getuid()  # type: ignore[attr-defined]
+            gid = os.getgid()  # type: ignore[attr-defined]
             cmd += ["--user", f"{uid}:{gid}"]
             # Explicit HOME so CLIs find their config dirs (~/.claude, ~/.codex,
             # ~/.gemini) even when the host UID has no passwd entry inside the

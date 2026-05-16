@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,10 +10,11 @@ from ductor_bot.messenger.matrix.startup import run_matrix_startup
 
 
 @pytest.mark.asyncio
-async def test_matrix_primary_startup_starts_api_with_shared_lock_pool() -> None:
+async def test_matrix_primary_startup_starts_api_with_shared_lock_pool(tmp_path: Path) -> None:
     lock_pool = object()
     orchestrator = MagicMock()
     orchestrator.paths = MagicMock()
+    orchestrator.paths.startup_state_path = tmp_path / "startup_state.json"
     orchestrator.wire_observers_to_bus = MagicMock()
     orchestrator.inflight_tracker = MagicMock()
     orchestrator.named_sessions.pop_recovered_running = MagicMock(return_value=[])
@@ -55,9 +57,10 @@ async def test_matrix_primary_startup_starts_api_with_shared_lock_pool() -> None
 
 
 @pytest.mark.asyncio
-async def test_matrix_primary_startup_runs_recovery_flow() -> None:
+async def test_matrix_primary_startup_runs_recovery_flow(tmp_path: Path) -> None:
     orchestrator = MagicMock()
     orchestrator.paths = MagicMock()
+    orchestrator.paths.startup_state_path = tmp_path / "startup_state.json"
     orchestrator.wire_observers_to_bus = MagicMock()
     orchestrator.inflight_tracker = MagicMock()
     orchestrator.inflight_tracker.clear = MagicMock()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -22,7 +23,10 @@ class TestSaveCredentials:
 
         assert creds_path.exists()
         mode = oct(creds_path.stat().st_mode & 0o777)
-        assert mode == "0o600"
+        if os.name == "posix":
+            assert mode == "0o600"
+        else:
+            assert mode in {"0o600", "0o666"}
 
         data = json.loads(creds_path.read_text())
         assert data["user_id"] == "@bot:test"

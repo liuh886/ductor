@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -19,10 +21,35 @@ logger = logging.getLogger(__name__)
 
 _KILL_WAIT_SECONDS = 5.0
 _KILL_POLL_INTERVAL = 0.2
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _is_process_alive(pid: int) -> bool:
     """Check if a process with the given PID is still running."""
+    if pid <= 0:
+        return False
+    if _IS_WINDOWS:
+        return _is_process_alive_windows(pid)
+    return _is_process_alive_posix(pid)
+
+
+def _is_process_alive_windows(pid: int) -> bool:
+    """Check process liveness on Windows without sending console signals."""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return f'"{pid}"' in result.stdout
+
+
+def _is_process_alive_posix(pid: int) -> bool:
+    """Check process liveness with POSIX signal 0 semantics."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

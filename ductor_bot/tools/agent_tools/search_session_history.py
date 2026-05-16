@@ -50,6 +50,24 @@ def _build_fts_query(query: str) -> str:
     return " AND ".join(f'"{token}"' for token in tokens)
 
 
+def _to_float(value: object, default: float = 0.0) -> float:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(value: object, default: int = 0) -> int:
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def search_session_history(query: str, ductor_home: Path | str | None = None) -> list[dict[str, object]]:
     """Search message history across the root and sub-agent ``state.db`` files."""
     paths = resolve_paths(ductor_home=ductor_home)
@@ -88,10 +106,10 @@ def search_session_history(query: str, ductor_home: Path | str | None = None) ->
 
     results.sort(
         key=lambda row: (
-            float(row.get("created_at", 0.0)),
+            _to_float(row.get("created_at", 0.0)),
             str(row.get("state_scope", "")),
             str(row.get("agent_name", "")),
-            int(row.get("id", 0)),
+            _to_int(row.get("id", 0)),
         ),
         reverse=True,
     )

@@ -229,6 +229,7 @@ async def send_rich(
     clean_text = FILE_PATH_RE.sub("", text).strip()
     logger.debug("Sending rich text chars=%d files=%d", len(clean_text), len(file_paths))
 
+    button_markup: InlineKeyboardMarkup | None
     if o.reply_markup is not None:
         button_markup = o.reply_markup
     else:

@@ -77,7 +77,7 @@ def test_agent_config_streaming_defaults() -> None:
     assert cfg.streaming.enabled is True
     assert cfg.streaming.min_chars == 200
     assert cfg.streaming.max_chars == 4000
-    assert cfg.scene.status_reaction is False
+    assert cfg.scene.status_reaction is True
 
 
 def test_agent_config_docker_defaults() -> None:

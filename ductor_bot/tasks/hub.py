@@ -132,13 +132,6 @@ class TaskHub:
             db = getattr(self._message_repo, "_db", None)
             if db:
                 self._summary_repo = SessionSummaryRepository(db)
-        # #92: registry used to kill task subprocess trees on cancel. A single
-        # shared registry works when all task subprocesses register into it
-        # (supervisor wires this — see ``AgentSupervisor._wire_task_hub``).
-        # For multi-agent setups where each agent owns its own ProcessRegistry,
-        # per-agent lookups take precedence via ``_agent_process_registries``.
-        self._process_registry = process_registry
-        self._agent_process_registries: dict[str, ProcessRegistry] = {}
 
     def start_maintenance(self) -> None:
         """Start periodic orphan cleanup (call once after bot startup)."""

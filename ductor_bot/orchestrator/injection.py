@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ductor_bot.cli.types import AgentRequest
 from ductor_bot.orchestrator.flows import _is_invalid_session, _update_session
@@ -21,6 +21,7 @@ from ductor_bot.session.named import NamedSession
 if TYPE_CHECKING:
     from ductor_bot.multiagent.bus import AsyncInterAgentResult
     from ductor_bot.orchestrator.core import Orchestrator
+    from ductor_bot.runtime.state import MessageRepository, ProcessRepository
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +34,12 @@ def _transport_id(value: str) -> str:
     return _TRANSPORT_ALIASES.get(stripped, stripped or "tg")
 
 
-def _state_repos(orch: Orchestrator) -> tuple[object | None, object | None]:
+def _state_repos(orch: Orchestrator) -> tuple[ProcessRepository | None, MessageRepository | None]:
     """Return optional runtime-state repositories for inter-agent persistence."""
-    return getattr(orch, "_process_repo", None), getattr(orch, "_message_repo", None)
+    return (
+        cast("ProcessRepository | None", getattr(orch, "_process_repo", None)),
+        cast("MessageRepository | None", getattr(orch, "_message_repo", None)),
+    )
 
 
 async def _apply_runtime_compression(
@@ -209,7 +213,7 @@ async def _inject_prompt(
         )
 
         if active and response:
-            await _update_session(orch, active, response)
+            await _update_session(orch, active, response, request)
 
         await _record_process_finish(
             orch,

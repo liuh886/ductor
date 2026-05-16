@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from ductor_bot.runtime.state.db import RuntimeStateDB
 
@@ -70,7 +71,7 @@ class MessageRepository:
                     process_id,
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
 
     def get(self, message_id: int) -> dict[str, object] | None:
         """Load a message row by ID."""
@@ -114,10 +115,11 @@ class MessageRepository:
         return [self._row_to_dict(row) for row in rows]
 
     @staticmethod
-    def _row_to_dict(row: object) -> dict[str, object]:
+    def _row_to_dict(row: Any) -> dict[str, object]:
         """Convert a SQLite row to a plain dict."""
-        mapping = dict(row)  # sqlite3.Row is mapping-like
-        mapping["content_json"] = json.loads(str(mapping.get("content_json", "{}")))
+        mapping: dict[str, object] = dict(row)  # sqlite3.Row is mapping-like
+        decoded = json.loads(str(mapping.get("content_json", "{}")))
+        mapping["content_json"] = decoded if isinstance(decoded, dict) else {}
         mapping["is_compressed"] = bool(mapping.get("is_compressed", 0))
         mapping["protected"] = bool(mapping.get("protected", 0))
         return mapping

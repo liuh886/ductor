@@ -366,7 +366,7 @@ class TestHookApplication:
 
         sixth_call = mock_execute.call_args_list[5]
         prompt = sixth_call[0][0].prompt
-        assert "MEMORY CHECK" in prompt
+        assert "Memory Check" in prompt
 
     async def test_hook_does_not_fire_before_threshold(
         self, orch_with_mock_cli: tuple[Orchestrator, AsyncMock]
@@ -379,7 +379,7 @@ class TestHookApplication:
 
         for call in mock_execute.call_args_list:
             prompt = call[0][0].prompt
-            assert "MEMORY CHECK" not in prompt
+            assert "Memory Check" not in prompt
 
     async def test_custom_hook_modifies_prompt(
         self, orch_with_mock_cli: tuple[Orchestrator, AsyncMock]
@@ -606,7 +606,8 @@ class TestFullRoundTrip:
         request = mock_execute.call_args[0][0]
         assert request.system_prompt is not None
         assert memory_text in request.system_prompt
-        assert request.append_system_prompt == ""
+        assert request.append_system_prompt
+        assert "Routing Policy" in request.append_system_prompt
 
     async def test_resumed_session_skips_mainmemory_injection(
         self, orch_with_mock_cli: tuple[Orchestrator, AsyncMock]
@@ -623,4 +624,5 @@ class TestFullRoundTrip:
         await orch.handle_message(KEY, "Second")
 
         request = mock_execute.call_args[0][0]
-        assert request.append_system_prompt is None
+        assert request.append_system_prompt
+        assert "Routing Policy" in request.append_system_prompt

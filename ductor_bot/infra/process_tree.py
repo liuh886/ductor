@@ -79,7 +79,7 @@ def force_kill_process_tree(pid: int) -> None:
 
     # Kill descendants before root to avoid reparenting survivors.
     targets = [*list_process_descendants(pid), pid]
-    _send_posix_signal(targets, signal.SIGKILL)
+    _send_posix_signal(targets, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def interrupt_process(pid: int) -> None:

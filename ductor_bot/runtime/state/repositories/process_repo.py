@@ -45,7 +45,7 @@ class ProcessRepository:
                     int(timed_out),
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
 
     def finish(self, process_id: int, *, exit_code: int | None = None) -> None:
         """Mark a process as finished."""

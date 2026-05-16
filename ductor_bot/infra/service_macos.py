@@ -69,7 +69,7 @@ def _generate_plist_data(binary_path: str) -> dict[str, Any]:
     paths = resolve_paths()
 
     path_dirs = [
-        str(home / ".local" / "bin"),
+        (home / ".local" / "bin").as_posix(),
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/usr/bin",

@@ -60,7 +60,7 @@ async def _run_child(cmd: list[str]) -> tuple[int, bool]:
     async def _watch_files() -> None:
         nonlocal file_change
         try:
-            from watchfiles import awatch  # type: ignore[import-not-found]
+            from watchfiles import awatch
         except ImportError:
             return  # watchfiles not installed, skip hot-reload
 

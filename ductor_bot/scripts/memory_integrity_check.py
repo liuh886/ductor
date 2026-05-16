@@ -132,8 +132,11 @@ def _latest_row_timestamp(rows: list[dict[str, object]]) -> float:
     latest = 0.0
     for row in rows:
         for key in ("updated_at", "created_at"):
+            value = row.get(key, 0.0)
+            if not isinstance(value, (str, bytes, bytearray, int, float)):
+                continue
             try:
-                latest = max(latest, float(row.get(key, 0.0)))
+                latest = max(latest, float(value))
             except (TypeError, ValueError):
                 continue
     return latest

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ductor_bot.runtime.state.db import RuntimeStateDB
 
@@ -59,7 +59,8 @@ class InflightTurnRepository:
             ).fetchone()
         if row is None:
             return None
-        return json.loads(str(row["payload_json"]))
+        payload = json.loads(str(row["payload_json"]))
+        return payload if isinstance(payload, dict) else {}
 
     def list_all(self) -> list[dict[str, object]]:
         """Return all inflight turns."""
@@ -69,7 +70,7 @@ class InflightTurnRepository:
             ).fetchall()
         turns: list[dict[str, object]] = []
         for row in rows:
-            payload = json.loads(str(row["payload_json"]))
+            payload: dict[str, Any] = json.loads(str(row["payload_json"]))
             payload["storage_key"] = str(row["storage_key"])
             turns.append(payload)
         return turns

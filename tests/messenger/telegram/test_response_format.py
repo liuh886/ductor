@@ -86,7 +86,7 @@ class TestSessionErrorText:
             "gpt-5.4",
             "WARNING: bootstrap noisy\nThe command line is too long.\nMore details",
         )
-        assert "The command line is too long." in text
+        assert "Context length exceeded" in text
         assert "bootstrap noisy" not in text
 
     def test_without_detail(self) -> None:

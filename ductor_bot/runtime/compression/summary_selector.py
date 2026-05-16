@@ -12,6 +12,16 @@ _SUMMARY_KIND = "runtime_context"
 _SUMMARY_VERSION = "v1"
 
 
+def _object_to_int(value: object, default: int = 0) -> int:
+    """Convert SQLite payload values to int for mypy and runtime safety."""
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(slots=True)
 class SummarySelection:
     """Selected summary text plus the protected tail used to build prompt context."""
@@ -51,9 +61,9 @@ class SummarySelector:
         if not older_messages:
             return SummarySelection(summary_text="", tail_messages=tail_messages)
 
-        coverage_to = int(older_messages[-1]["id"])
+        coverage_to = _object_to_int(older_messages[-1]["id"])
         cached = self._summary_repo.latest_for_session(session_storage_key, kind=_SUMMARY_KIND)
-        if cached is not None and int(cached.get("coverage_to_message_id") or 0) == coverage_to:
+        if cached is not None and _object_to_int(cached.get("coverage_to_message_id")) == coverage_to:
             return SummarySelection(
                 summary_text=str(cached.get("summary_text", "")),
                 tail_messages=tail_messages,
@@ -65,7 +75,7 @@ class SummarySelector:
             session_storage_key,
             _SUMMARY_KIND,
             summary_text,
-            coverage_from_message_id=int(older_messages[0]["id"]),
+            coverage_from_message_id=_object_to_int(older_messages[0]["id"]),
             coverage_to_message_id=coverage_to,
             version=_SUMMARY_VERSION,
         )

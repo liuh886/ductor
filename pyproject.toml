@@ -155,6 +155,7 @@ docstring-code-format = true
 
 [tool.mypy]
 python_version = "3.11"
+exclude = ["^ductor_bot/_home_defaults/"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true

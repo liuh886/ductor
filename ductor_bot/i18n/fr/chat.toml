@@ -32,7 +32,6 @@ sigkill = "L'exécution a été interrompue. Renvoie la même requête, s'il te 
 not_found = "Session '{name}' introuvable."
 ended = "La session '{name}' est terminée. Lance-en une nouvelle avec /session."
 still_running = "La session '{name}' travaille encore. Patiente ou utilise /stop pour annuler."
-recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 
 # -- Stop/interruption ---------------------------------------------------------
 

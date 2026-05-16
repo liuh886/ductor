@@ -47,7 +47,7 @@ class SessionSummaryRepository:
                     version,
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
 
     def latest_for_session(
         self,

@@ -51,7 +51,7 @@ def _turn_from_dict(data: dict[str, Any]) -> InflightTurn:
     request = dict(data.get("request", {}))
     transport = str(data.get("transport") or request.get("transport") or "tg")
     topic_id_raw = data.get("topic_id", request.get("topic_id"))
-    topic_id = None if topic_id_raw in (None, "") else int(topic_id_raw)
+    topic_id = None if topic_id_raw in (None, "") else int(str(topic_id_raw))
     return InflightTurn(
         transport=transport,
         chat_id=int(data.get("chat_id", 0)),

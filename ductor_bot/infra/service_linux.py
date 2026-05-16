@@ -67,7 +67,7 @@ def _generate_service_unit(binary_path: str) -> str:
     """Generate the systemd service unit file content."""
     home = Path.home()
     path_dirs = [
-        str(home / ".local" / "bin"),
+        (home / ".local" / "bin").as_posix(),
         "/usr/local/bin",
         "/usr/bin",
         "/bin",

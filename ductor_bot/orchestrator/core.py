@@ -261,16 +261,6 @@ class Orchestrator:
         )
         self._api_stop: Callable[[], Awaitable[None]] | None = None
         self._inflight_tracker = InflightTracker(paths.inflight_turns_path, state_db=runtime_db)
-        self._memory_flusher: MemoryFlusher | None = (
-            MemoryFlusher(
-                config.memory_flush,
-                self._cli_service,
-                config.memory_compaction,
-                paths,
-            )
-            if config.memory_flush.enabled
-            else None
-        )
         self._hook_registry = MessageHookRegistry()
         self._hook_registry.register(MAINMEMORY_REMINDER)
         self._hook_registry.register(DELEGATION_BRIEF)

@@ -181,7 +181,9 @@ class CLIService:
             k: v for k, v in asdict(request).items() if k != "timeout_controller"
         }
         turn = InflightTurn(
+            transport=request.transport,
             chat_id=request.chat_id,
+            topic_id=request.topic_id,
             provider=provider,
             model=model,
             session_id=request.resume_session or (
@@ -216,7 +218,7 @@ class CLIService:
             self._log_call(request, agent_resp, elapsed_ms)
             return agent_resp
         finally:
-            self._inflight_repo.delete(request.chat_id)
+            self._inflight_repo.delete(turn.storage_key)
 
     async def execute_streaming(  # noqa: PLR0913
         self,
@@ -236,7 +238,9 @@ class CLIService:
             k: v for k, v in asdict(request).items() if k != "timeout_controller"
         }
         turn = InflightTurn(
+            transport=request.transport,
             chat_id=request.chat_id,
+            topic_id=request.topic_id,
             provider=provider,
             model=model,
             session_id=request.resume_session or (
@@ -330,7 +334,7 @@ class CLIService:
             )
             return _cli_response_to_agent_response(cli_resp)
         finally:
-            self._inflight_repo.delete(request.chat_id)
+            self._inflight_repo.delete(turn.storage_key)
 
     async def _handle_stream_fallback(
         self,

@@ -1405,19 +1405,18 @@ async def normal_streaming(  # noqa: C901, PLR0911, PLR0915
             on_compact_boundary=cb.on_compact_boundary,
         )
 
-        execute_kwargs = {
-            "on_text_delta": execution_callbacks.on_text_delta,
-            "on_tool_activity": _on_tool_activity,
-            "on_system_status": execution_callbacks.on_system_status,
-            "on_compact_boundary": (
+        response = await orch._cli_service.execute_streaming(
+            request,
+            on_text_delta=execution_callbacks.on_text_delta,
+            on_tool_activity=_on_tool_activity,
+            on_system_status=execution_callbacks.on_system_status,
+            on_reasoning_delta=execution_callbacks.on_reasoning_delta,
+            on_compact_boundary=(
                 _on_boundary
                 if execution_callbacks.on_compact_boundary is None
                 else execution_callbacks.on_compact_boundary
             ),
-        }
-        if execution_callbacks.on_reasoning_delta is not None:
-            execute_kwargs["on_reasoning_delta"] = execution_callbacks.on_reasoning_delta
-        response = await orch._cli_service.execute_streaming(request, **execute_kwargs)
+        )
         recovery_planned = (
             not orch._process_registry.was_aborted(key.chat_id, key.topic_id)
             and not orch._process_registry.was_interrupted(key.chat_id, key.topic_id)
