@@ -62,11 +62,11 @@ class RecoveryPlanner:
         """Plan foreground turn recovery from inflight tracker."""
         interrupted = self._inflight.load_interrupted(max_age_seconds=self._max_age)
         actions: list[RecoveryAction] = []
-        seen_chats: set[int] = set()
+        seen_sessions: set[str] = set()
         for turn in interrupted:
-            if turn.chat_id in seen_chats:
+            if turn.storage_key in seen_sessions:
                 continue
-            seen_chats.add(turn.chat_id)
+            seen_sessions.add(turn.storage_key)
             actions.append(
                 RecoveryAction(
                     chat_id=turn.chat_id,

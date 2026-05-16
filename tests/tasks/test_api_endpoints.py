@@ -12,6 +12,12 @@ from ductor_bot.multiagent.internal_api import InternalAgentAPI
 if TYPE_CHECKING:
     from aiohttp.test_utils import TestClient
 
+_TOKEN = "test-internal-token"
+
+
+def _auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_TOKEN}"}
+
 
 def _make_task_hub(
     *,
@@ -34,7 +40,7 @@ def _make_task_hub(
 @pytest.fixture
 async def api_client(aiohttp_client: object) -> TestClient:
     """Create test client with task-only API (no bus)."""
-    api = InternalAgentAPI(bus=None, port=0)
+    api = InternalAgentAPI(bus=None, port=0, auth_token=_TOKEN)
     hub = _make_task_hub()
     api.set_task_hub(hub)
     api._app["_test_hub"] = hub  # Stash for test access
@@ -46,20 +52,42 @@ class TestTaskCreate:
         resp = await api_client.post(
             "/tasks/create",
             json={"from": "main", "prompt": "build website", "name": "Website"},
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         data = await resp.json()
         assert data["success"] is True
         assert data["task_id"] == "abc123"
 
+    async def test_passes_transport_and_topic_to_submit(self, api_client: TestClient) -> None:
+        hub = api_client.app["_test_hub"]
+
+        resp = await api_client.post(
+            "/tasks/create",
+            json={
+                "from": "main",
+                "prompt": "build website",
+                "transport": "mx",
+                "chat_id": 77,
+                "topic_id": 12,
+            },
+            headers=_auth_headers(),
+        )
+
+        assert resp.status == 200
+        submit = hub.submit.call_args.args[0]
+        assert submit.transport == "mx"
+        assert submit.chat_id == 77
+        assert submit.thread_id == 12
+
     async def test_missing_prompt(self, api_client: TestClient) -> None:
-        resp = await api_client.post("/tasks/create", json={"from": "main"})
+        resp = await api_client.post("/tasks/create", json={"from": "main"}, headers=_auth_headers())
         assert resp.status == 400
         data = await resp.json()
         assert data["success"] is False
 
     async def test_invalid_json(self, api_client: TestClient) -> None:
-        resp = await api_client.post("/tasks/create", data=b"not json")
+        resp = await api_client.post("/tasks/create", data=b"not json", headers=_auth_headers())
         assert resp.status == 400
 
 
@@ -68,6 +96,7 @@ class TestTaskAskParent:
         resp = await api_client.post(
             "/tasks/ask_parent",
             json={"task_id": "abc", "question": "Which framework?"},
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         data = await resp.json()
@@ -75,13 +104,13 @@ class TestTaskAskParent:
         assert data["answer"] == "Yes, use HTML"
 
     async def test_missing_fields(self, api_client: TestClient) -> None:
-        resp = await api_client.post("/tasks/ask_parent", json={"task_id": "abc"})
+        resp = await api_client.post("/tasks/ask_parent", json={"task_id": "abc"}, headers=_auth_headers())
         assert resp.status == 400
 
 
 class TestTaskList:
     async def test_returns_empty(self, api_client: TestClient) -> None:
-        resp = await api_client.get("/tasks/list")
+        resp = await api_client.get("/tasks/list", headers=_auth_headers())
         assert resp.status == 200
         data = await resp.json()
         assert data["tasks"] == []
@@ -89,13 +118,13 @@ class TestTaskList:
 
 class TestTaskCancel:
     async def test_cancels_task(self, api_client: TestClient) -> None:
-        resp = await api_client.post("/tasks/cancel", json={"task_id": "abc"})
+        resp = await api_client.post("/tasks/cancel", json={"task_id": "abc"}, headers=_auth_headers())
         assert resp.status == 200
         data = await resp.json()
         assert data["success"] is True
 
     async def test_missing_task_id(self, api_client: TestClient) -> None:
-        resp = await api_client.post("/tasks/cancel", json={})
+        resp = await api_client.post("/tasks/cancel", json={}, headers=_auth_headers())
         assert resp.status == 400
 
 
@@ -111,6 +140,7 @@ class TestTaskDelete:
         resp = await api_client.post(
             "/tasks/delete",
             json={"task_id": "abc", "from": "main"},
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         data = await resp.json()
@@ -127,6 +157,7 @@ class TestTaskDelete:
         resp = await api_client.post(
             "/tasks/delete",
             json={"task_id": "abc", "from": "main"},
+            headers=_auth_headers(),
         )
         assert resp.status == 409
 
@@ -134,7 +165,7 @@ class TestTaskDelete:
         hub = api_client.app["_test_hub"]
         hub.registry.get.return_value = None
 
-        resp = await api_client.post("/tasks/delete", json={"task_id": "nope"})
+        resp = await api_client.post("/tasks/delete", json={"task_id": "nope"}, headers=_auth_headers())
         assert resp.status == 404
 
     async def test_unauthorized(self, api_client: TestClient) -> None:
@@ -146,11 +177,12 @@ class TestTaskDelete:
         resp = await api_client.post(
             "/tasks/delete",
             json={"task_id": "abc", "from": "other_agent"},
+            headers=_auth_headers(),
         )
         assert resp.status == 403
 
     async def test_missing_task_id(self, api_client: TestClient) -> None:
-        resp = await api_client.post("/tasks/delete", json={})
+        resp = await api_client.post("/tasks/delete", json={}, headers=_auth_headers())
         assert resp.status == 400
 
 
@@ -164,5 +196,9 @@ class TestTaskOnlyMode:
         assert resp.status == 404
 
     async def test_task_routes_work_without_bus(self, api_client: TestClient) -> None:
-        resp = await api_client.get("/tasks/list")
+        resp = await api_client.get("/tasks/list", headers=_auth_headers())
         assert resp.status == 200
+
+    async def test_missing_token_rejected(self, api_client: TestClient) -> None:
+        resp = await api_client.get("/tasks/list")
+        assert resp.status == 401

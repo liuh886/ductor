@@ -1,20 +1,22 @@
 """Tests for SQLite-backed runtime-state repositories."""
 
-# ruff: noqa: INP001
-
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from ductor_bot.runtime.memory import MemoryFragment
 from ductor_bot.runtime.state import (
     MemoryFragmentRepository,
+    MemoryPromotionJournalRepository,
     MessageRepository,
     NamedSessionRepository,
+    OutcomeEventRepository,
     ProcessRepository,
     RuntimeStateDB,
     SessionRepository,
     TaskRepository,
+    TaskStateRepository,
     ToolCallRepository,
 )
 from ductor_bot.session.manager import ProviderSessionData, SessionData
@@ -84,6 +86,7 @@ def test_task_repository_round_trip(tmp_path: Path) -> None:
         task_id="deadbeef",
         chat_id=9,
         parent_agent="main",
+        transport="tg",
         name="Task",
         prompt_preview="preview",
         provider="claude",
@@ -101,6 +104,30 @@ def test_task_repository_round_trip(tmp_path: Path) -> None:
     assert loaded[0].task_id == "deadbeef"
     assert loaded[0].thread_id == 7
     assert loaded[0].original_prompt == "full prompt"
+
+
+def test_task_state_repository_round_trip(tmp_path: Path) -> None:
+    repo = TaskStateRepository(RuntimeStateDB(tmp_path / "state.db"))
+
+    repo.upsert(
+        task_id="task-1",
+        storage_key="tg:1:5",
+        status="RUNNING",
+        current_step=2,
+        total_steps=4,
+        step_label="write tests",
+        context_snapshot_json={"owner": "main", "priority": "high"},
+    )
+
+    loaded = repo.list_by_storage_key("tg:1:5")
+
+    assert len(loaded) == 1
+    assert loaded[0]["task_id"] == "task-1"
+    assert loaded[0]["status"] == "RUNNING"
+    assert loaded[0]["current_step"] == 2
+    assert loaded[0]["total_steps"] == 4
+    assert loaded[0]["step_label"] == "write tests"
+    assert loaded[0]["context_snapshot_json"] == {"owner": "main", "priority": "high"}
 
 
 def test_message_repository_append_and_list(tmp_path: Path) -> None:
@@ -164,16 +191,136 @@ def test_tool_call_repository_record_and_list(tmp_path: Path) -> None:
         tool_namespace="mcp",
         arguments_json={"query": "ductors"},
         result_preview="ok",
+        outcome="running",
+        attempt=2,
+        details_json={"flow": "normal_streaming"},
+    )
+    repo.finish(
+        tool_call_id,
+        result_preview="success",
+        latency_ms=42.5,
+        success=True,
+        outcome="recovered",
+        details_json={"flow": "normal_streaming", "recovery_reason": "sigkill"},
     )
 
     loaded = repo.get(tool_call_id)
     assert loaded is not None
     assert loaded["tool_name"] == "search"
     assert loaded["arguments_json"] == {"query": "ductors"}
+    assert loaded["outcome"] == "recovered"
+    assert loaded["attempt"] == 2
+    assert loaded["details_json"]["recovery_reason"] == "sigkill"
 
     by_session = repo.list_by_session("tg:1")
     assert len(by_session) == 1
     assert by_session[0]["id"] == tool_call_id
+
+
+def test_outcome_event_repository_records_unlearned_without_full_prompt(
+    tmp_path: Path,
+) -> None:
+    repo = OutcomeEventRepository(RuntimeStateDB(tmp_path / "state.db"))
+
+    first_id = repo.record(
+        "task",
+        "task-1",
+        event_type="task_finished",
+        session_storage_key="tg:1",
+        task_id="task-1",
+        process_id=42,
+        provider="gemini",
+        model="gemini-3",
+        flow="task",
+        outcome="success",
+        failure_class="",
+        status="done",
+        empty_result=False,
+        recovery_count=1,
+        duration_ms=1234.5,
+        confidence=2.0,
+        payload_json={
+            "prompt": "full prompt should not be stored",
+            "original_prompt": "also full prompt",
+            "prompt_preview": "safe preview",
+            "details": {"last_prompt": "nested full prompt", "score": float("inf")},
+            "path": tmp_path,
+        },
+    )
+    first_payload = repo.list_unlearned()[0]["payload_json"]
+
+    assert first_payload == {
+        "details": {"score": "inf"},
+        "path": str(tmp_path),
+        "prompt_preview": "safe preview",
+    }
+    first_row = repo.list_unlearned()[0]
+    assert first_row["session_storage_key"] == "tg:1"
+    assert first_row["task_id"] == "task-1"
+    assert first_row["process_id"] == 42
+    assert first_row["provider"] == "gemini"
+    assert first_row["model"] == "gemini-3"
+    assert first_row["flow"] == "task"
+    assert first_row["status"] == "done"
+    assert first_row["empty_result"] is False
+    assert first_row["recovery_count"] == 1
+    assert first_row["duration_ms"] == 1234.5
+    assert first_row["confidence"] == 1.0
+
+    second_id = repo.upsert(
+        "task",
+        "task-1",
+        event_type="task_finished",
+        outcome="recovered",
+        payload_json={"prompt_preview": "updated preview"},
+    )
+
+    unlearned = repo.list_unlearned()
+
+    assert second_id == first_id
+    assert len(unlearned) == 1
+    assert unlearned[0]["source_type"] == "task"
+    assert unlearned[0]["source_id"] == "task-1"
+    assert unlearned[0]["outcome"] == "recovered"
+    assert unlearned[0]["payload_json"] == {"prompt_preview": "updated preview"}
+
+
+def test_outcome_event_repository_mark_learned(tmp_path: Path) -> None:
+    repo = OutcomeEventRepository(RuntimeStateDB(tmp_path / "state.db"))
+
+    repo.record("flow", "flow-1", outcome="failed")
+    repo.record("flow", "flow-2", outcome="success")
+
+    repo.mark_learned("flow", "flow-1")
+
+    unlearned = repo.list_unlearned()
+    assert [row["source_id"] for row in unlearned] == ["flow-2"]
+
+
+def test_outcome_event_repository_lists_recent_filtered_events(tmp_path: Path) -> None:
+    db = RuntimeStateDB(tmp_path / "state.db")
+    repo = OutcomeEventRepository(db)
+
+    repo.record("chat_turn", "recent-gemini", provider="gemini", flow="normal", outcome="success")
+    repo.record("chat_turn", "recent-claude", provider="claude", flow="normal", outcome="success")
+    repo.record(
+        "chat_turn",
+        "recent-stream",
+        provider="gemini",
+        flow="normal_streaming",
+        outcome="success",
+    )
+    repo.record("chat_turn", "old-gemini", provider="gemini", flow="normal", outcome="timeout")
+    old_cutoff = time.time() - 10
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE outcome_events SET created_at = ? WHERE source_id = ?",
+            (old_cutoff - 100, "old-gemini"),
+        )
+
+    rows = repo.list_recent(provider="gemini", flow="normal", since=old_cutoff)
+
+    assert [row["source_id"] for row in rows] == ["recent-gemini"]
 
 
 def test_memory_fragment_repository_round_trip(tmp_path: Path) -> None:
@@ -214,6 +361,8 @@ def test_memory_fragment_repository_scope_query(tmp_path: Path) -> None:
 
     all_rows = repo.list_all()
     assert [row["title"] for row in all_rows] == ["A", "B", "C"]
+    assert all(float(row["created_at"]) > 0 for row in all_rows)
+    assert all(float(row["updated_at"]) > 0 for row in all_rows)
 
 
 def test_memory_fragment_repository_replace_for_scope(tmp_path: Path) -> None:
@@ -235,3 +384,111 @@ def test_memory_fragment_repository_replace_for_scope(tmp_path: Path) -> None:
     shared = repo.list_by_scope("sharedmemory")
     assert [row["title"] for row in scoped] == ["New Main"]
     assert [row["title"] for row in shared] == ["Shared"]
+    assert float(scoped[0]["created_at"]) > 0
+    assert float(scoped[0]["updated_at"]) > 0
+    assert float(shared[0]["created_at"]) > 0
+    assert float(shared[0]["updated_at"]) > 0
+
+
+def test_memory_fragment_repository_deduplicates_and_reports_conflicts(tmp_path: Path) -> None:
+    repo = MemoryFragmentRepository(RuntimeStateDB(tmp_path / "state.db"))
+    repo.replace_for_scope(
+        "mainmemory",
+        [
+            MemoryFragment(
+                title="Preferences",
+                body="- Keep answers short",
+                scope="mainmemory",
+                agent_name="main",
+                ulid="mf_1",
+            ),
+            MemoryFragment(
+                title="Preferences",
+                body="- Keep answers short",
+                scope="mainmemory",
+                agent_name="main",
+                ulid="mf_2",
+            ),
+            MemoryFragment(
+                title="Preferences",
+                body="- Prefer exhaustive replies",
+                scope="mainmemory",
+                agent_name="main",
+                ulid="mf_3",
+            ),
+        ],
+        agent_name="main",
+    )
+
+    stored = repo.list_by_scope("mainmemory", agent_name="main")
+    conflicts = repo.list_conflicts("mainmemory", agent_name="main")
+
+    assert len(stored) == 2
+    assert len(conflicts) == 1
+    assert conflicts[0].title == "Preferences"
+
+
+def test_memory_promotion_journal_repository_candidate_lifecycle(tmp_path: Path) -> None:
+    db = RuntimeStateDB(tmp_path / "state.db")
+    repo = MemoryPromotionJournalRepository(db)
+
+    first_id = repo.create_candidate(
+        session_storage_key="tg:1",
+        source_message_ids=[3, 1],
+        agent_name="main",
+        target_scope="mainmemory",
+        title="Preferences",
+        body="- prefers concise answers",
+        tags=["preferences"],
+        verification={"confidence": 0.8},
+    )
+    duplicate_id = repo.create_candidate(
+        session_storage_key="tg:1",
+        source_message_ids=[1, 3],
+        agent_name="main",
+        target_scope="mainmemory",
+        title="Preferences",
+        body="- prefers concise answers",
+        tags=["updated"],
+        verification={"confidence": 0.9},
+    )
+    other_id = repo.create_candidate(
+        session_storage_key="tg:1",
+        source_message_ids=[4],
+        agent_name="main",
+        target_scope="mainmemory",
+        title="Preferences",
+        body="- prefers detailed answers",
+    )
+
+    assert duplicate_id == first_id
+    assert other_id != first_id
+
+    pending = repo.list_pending(target_scope="mainmemory", agent_name="main")
+    assert [row["id"] for row in pending] == [first_id, other_id]
+    assert pending[0]["source_message_ids_json"] == [1, 3]
+    assert pending[0]["tags_json"] == ["preferences"]
+    assert pending[0]["verification_json"] == {"confidence": 0.8}
+
+    loaded = repo.get(first_id)
+    assert loaded is not None
+    assert loaded["status"] == "pending"
+
+    repo.set_status(other_id, "rejected", verification={"reason": "conflict"})
+    repo.mark_promoted(first_id, "mf_01HX")
+
+    assert [row["id"] for row in repo.list_pending()] == []
+    promoted = repo.get(first_id)
+    rejected = repo.get(other_id)
+    assert promoted is not None
+    assert rejected is not None
+    assert promoted["status"] == "promoted"
+    assert promoted["promoted_fragment_ulid"] == "mf_01HX"
+    assert rejected["status"] == "rejected"
+    assert rejected["verification_json"] == {"reason": "conflict"}
+
+    with db.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS count FROM memory_fragments").fetchone()
+
+    assert count is not None
+    assert count["count"] == 0

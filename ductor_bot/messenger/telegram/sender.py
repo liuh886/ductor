@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 _PHOTO_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
 _VIDEO_SUFFIXES = frozenset({".mp4"})
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a"})
+_BUTTON_ONLY_PLACEHOLDER = "\u2060"
 
 
 def _select_telegram_upload_mode(path: Path, mime: str) -> str:
@@ -60,37 +61,69 @@ def _select_telegram_upload_mode(path: Path, mime: str) -> str:
     return "document"
 
 
-async def _send_document(bot: Bot, chat_id: int, path: Path, thread_id: int | None) -> None:
+async def _send_document(
+    bot: Bot,
+    chat_id: int,
+    path: Path,
+    thread_id: int | None,
+    reply_to_message_id: int | None,
+) -> None:
     await bot.send_document(
         chat_id=chat_id,
         document=FSInputFile(path),
         message_thread_id=thread_id,
+        reply_parameters=(
+            ReplyParameters(message_id=reply_to_message_id, allow_sending_without_reply=True)
+            if reply_to_message_id
+            else None
+        ),
     )
 
 
-async def _send_by_mode(
+async def _send_by_mode(  # noqa: PLR0913
     bot: Bot,
     chat_id: int,
     path: Path,
     *,
     upload_mode: str,
     thread_id: int | None,
+    reply_to_message_id: int | None,
 ) -> None:
     if upload_mode == "document":
-        await _send_document(bot, chat_id, path, thread_id)
+        await _send_document(bot, chat_id, path, thread_id, reply_to_message_id)
         return
 
     input_file = FSInputFile(path)
+    reply_parameters = (
+        ReplyParameters(message_id=reply_to_message_id, allow_sending_without_reply=True)
+        if reply_to_message_id
+        else None
+    )
 
     try:
         if upload_mode == "photo":
-            await bot.send_photo(chat_id=chat_id, photo=input_file, message_thread_id=thread_id)
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=input_file,
+                message_thread_id=thread_id,
+                reply_parameters=reply_parameters,
+            )
         elif upload_mode == "video":
-            await bot.send_video(chat_id=chat_id, video=input_file, message_thread_id=thread_id)
+            await bot.send_video(
+                chat_id=chat_id,
+                video=input_file,
+                message_thread_id=thread_id,
+                reply_parameters=reply_parameters,
+            )
         elif upload_mode == "audio":
-            await bot.send_audio(chat_id=chat_id, audio=input_file, message_thread_id=thread_id)
+            await bot.send_audio(
+                chat_id=chat_id,
+                audio=input_file,
+                message_thread_id=thread_id,
+                reply_parameters=reply_parameters,
+            )
         else:
-            await _send_document(bot, chat_id, path, thread_id)
+            await _send_document(bot, chat_id, path, thread_id, reply_to_message_id)
             return
     except TelegramBadRequest:
         logger.info(
@@ -98,16 +131,17 @@ async def _send_by_mode(
             upload_mode.capitalize(),
             path.name,
         )
-        await _send_document(bot, chat_id, path, thread_id)
+        await _send_document(bot, chat_id, path, thread_id, reply_to_message_id)
 
 
-async def send_files_from_text(
+async def send_files_from_text(  # noqa: PLR0913
     bot: Bot,
     chat_id: int,
     text: str,
     *,
     allowed_roots: Sequence[Path] | None = None,
     thread_id: int | None = None,
+    reply_to_message_id: int | None = None,
 ) -> None:
     """Extract ``<file:/path>`` tags from *text* and send each file.
 
@@ -121,6 +155,7 @@ async def send_files_from_text(
             path_from_file_tag(fp),
             allowed_roots=allowed_roots,
             thread_id=thread_id,
+            reply_to_message_id=reply_to_message_id,
         )
 
 
@@ -194,8 +229,14 @@ async def send_rich(
     clean_text = FILE_PATH_RE.sub("", text).strip()
     logger.debug("Sending rich text chars=%d files=%d", len(clean_text), len(file_paths))
 
-    button_markup = o.reply_markup if o.reply_markup is not None else extract_buttons(clean_text)[1]
+    if o.reply_markup is not None:
+        button_markup = o.reply_markup
+    else:
+        clean_text, button_markup = extract_buttons(clean_text)
     last_msg: Message | None = None
+
+    if not clean_text and button_markup is not None:
+        clean_text = _BUTTON_ONLY_PLACEHOLDER
 
     if clean_text:
         last_msg = await _send_text_chunks(
@@ -218,23 +259,25 @@ async def send_rich(
         except TelegramBadRequest:
             logger.warning("Failed to attach button keyboard in send_rich")
 
-    for fp in file_paths:
+    for i, fp in enumerate(file_paths):
         await send_file(
             bot,
             chat_id,
             path_from_file_tag(fp),
             allowed_roots=o.allowed_roots,
             thread_id=o.thread_id,
+            reply_to_message_id=o.reply_to_message_id if last_msg is None and i == 0 else None,
         )
 
 
-async def send_file(
+async def send_file(  # noqa: PLR0913
     bot: Bot,
     chat_id: int,
     path: Path,
     *,
     allowed_roots: Sequence[Path] | None = None,
     thread_id: int | None = None,
+    reply_to_message_id: int | None = None,
 ) -> None:
     """Send a local file with Telegram media/document routing."""
     if allowed_roots is not None and not is_path_safe(path, allowed_roots):
@@ -271,6 +314,7 @@ async def send_file(
             path,
             upload_mode=upload_mode,
             thread_id=thread_id,
+            reply_to_message_id=reply_to_message_id,
         )
 
         logger.info("Sent file: %s (%s)", path.name, mime)

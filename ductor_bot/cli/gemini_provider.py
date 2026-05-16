@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
+import shutil
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -18,6 +20,7 @@ from ductor_bot.cli.base import (
     CLIConfig,
     _feed_stdin_and_close,
     docker_wrap,
+    redact_command_for_logging,
 )
 from ductor_bot.cli.gemini_events import extract_result_text, extract_text, parse_gemini_stream_line
 from ductor_bot.cli.gemini_utils import (
@@ -39,6 +42,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 300.0
+_GEMINI_RUNTIME_FILES = (
+    "settings.json",
+    "oauth_creds.json",
+    "oauth_creds.json.bak",
+    "google_accounts.json",
+    "installation_id",
+    "projects.json",
+    "state.json",
+    "trustedFolders.json",
+)
+_CONTAINER_ONLY_INCLUDE_PREFIXES = ("/mnt", "/ductor")
+_HOST_FAST_PATH_DISABLED_AGENTS = frozenset({"bot4-assistant"})
 
 # Must match ``_DUCTOR_MOUNT`` in ``ductor_bot.infra.docker``.
 _CONTAINER_DUCTOR = "/ductor"
@@ -68,13 +83,12 @@ class GeminiCLI(BaseCLI):
     def __init__(self, config: CLIConfig) -> None:
         self._config = config
         self._working_dir = Path(config.working_dir).resolve()
-
-        if config.docker_container:
-            self._cli: str = "gemini"
-            self._cli_js: str | None = None
-        else:
-            self._cli = find_gemini_cli()
-            self._cli_js = find_gemini_cli_js()
+        self._docker_cli: str = "gemini"
+        self._docker_cli_js: str | None = None
+        self._host_cli = find_gemini_cli()
+        self._host_cli_js = find_gemini_cli_js()
+        self._cli = self._docker_cli if config.docker_container else self._host_cli
+        self._cli_js = self._docker_cli_js if config.docker_container else self._host_cli_js
 
         logger.info("GeminiCLI: cwd=%s model=%s", self._working_dir, config.model)
 
@@ -84,12 +98,21 @@ class GeminiCLI(BaseCLI):
         streaming: bool = False,
         resume_session: str | None = None,
         continue_session: bool = False,
+        use_host_exec: bool = False,
     ) -> list[str]:
         """Build the CLI command list."""
         cfg = self._config
-        cmd = ["node", self._cli_js] if self._cli_js else [self._cli]
+        if self._config.docker_container and not use_host_exec:
+            cli = self._docker_cli
+            cli_js = self._docker_cli_js
+        else:
+            cli = self._host_cli
+            cli_js = self._host_cli_js
+        cmd = ["node", cli_js] if cli_js else [cli]
         cmd += ["--output-format", "stream-json" if streaming else "json"]
-        cmd += ["--include-directories", "."]
+        plan = cfg.capability_plan
+        if plan is None or plan.include_directories:
+            cmd += ["--include-directories", "."]
 
         if cfg.model:
             cmd += ["--model", cfg.model]
@@ -102,22 +125,57 @@ class GeminiCLI(BaseCLI):
         if cfg.allowed_tools:
             cmd += ["--allowed-tools", *cfg.allowed_tools]
         if cfg.cli_parameters:
-            cmd.extend(cfg.cli_parameters)
+            cmd.extend(self._filtered_cli_parameters(use_host_exec=use_host_exec))
 
         return cmd
 
-    def _prepare_env(self, system_prompt_path: str | None = None) -> dict[str, str]:
+    def _filtered_cli_parameters(self, *, use_host_exec: bool) -> list[str]:
+        """Return CLI parameters after removing host-incompatible container paths."""
+        if not self._config.cli_parameters:
+            return []
+
+        if not use_host_exec:
+            return list(self._config.cli_parameters)
+
+        filtered: list[str] = []
+        idx = 0
+        params = self._config.cli_parameters
+        while idx < len(params):
+            part = params[idx]
+            if part == "--include-directories" and idx + 1 < len(params):
+                value = params[idx + 1]
+                if value.startswith(_CONTAINER_ONLY_INCLUDE_PREFIXES):
+                    logger.info(
+                        "Skipping container-only include directory on host Gemini path: %s",
+                        value,
+                    )
+                    idx += 2
+                    continue
+                filtered.extend((part, value))
+                idx += 2
+                continue
+            filtered.append(part)
+            idx += 1
+        return filtered
+
+    def _prepare_env(
+        self,
+        system_prompt_path: str | None = None,
+        *,
+        cli_path: str | None = None,
+    ) -> dict[str, str]:
         """Build environment dict with Gemini-specific vars."""
         env = os.environ.copy()
         # Ensure ``node`` resolution works when gemini was discovered via an
         # absolute path outside the inherited PATH (service/runtime environments).
         cli_parent = ""
-        if self._cli.startswith("/"):
-            cli_parent = str(PurePosixPath(self._cli).parent)
+        effective_cli = cli_path or self._host_cli
+        if effective_cli.startswith("/"):
+            cli_parent = str(PurePosixPath(effective_cli).parent)
         else:
-            cli_path = Path(self._cli)
-            if cli_path.is_absolute():
-                cli_parent = str(cli_path.parent)
+            resolved_cli = Path(effective_cli)
+            if resolved_cli.is_absolute():
+                cli_parent = str(resolved_cli.parent)
         if cli_parent:
             path_entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
             if cli_parent not in path_entries:
@@ -126,6 +184,9 @@ class GeminiCLI(BaseCLI):
         env["GEMINI_IDE_ENABLED"] = "false"
         if system_prompt_path:
             env["GEMINI_SYSTEM_MD"] = system_prompt_path
+        runtime_home = self._prepare_isolated_runtime(use_copies=False)
+        if runtime_home is not None:
+            env["GEMINI_CLI_HOME"] = str(runtime_home)
         self._inject_config_gemini_api_key(env)
         return env
 
@@ -159,15 +220,21 @@ class GeminiCLI(BaseCLI):
         timeout_controller: TimeoutController | None = None,
     ) -> CLIResponse:
         """Execute a non-streaming Gemini CLI call."""
+        use_host_exec = self._should_use_host_fast_path()
         cmd = self._build_command(
             streaming=False,
             resume_session=resume_session,
             continue_session=continue_session,
+            use_host_exec=use_host_exec,
         )
 
         system_prompt_path = self._create_system_prompt_path()
         try:
-            exec_cmd, use_cwd, subprocess_env = self._resolve_exec(cmd, system_prompt_path)
+            exec_cmd, use_cwd, subprocess_env = self._resolve_exec(
+                cmd,
+                system_prompt_path,
+                use_host_exec=use_host_exec,
+            )
             _log_cmd(exec_cmd)
 
             process = await asyncio.create_subprocess_exec(
@@ -215,15 +282,21 @@ class GeminiCLI(BaseCLI):
         timeout_controller: TimeoutController | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream events from Gemini CLI."""
+        use_host_exec = self._should_use_host_fast_path()
         cmd = self._build_command(
             streaming=True,
             resume_session=resume_session,
             continue_session=continue_session,
+            use_host_exec=use_host_exec,
         )
 
         system_prompt_path = self._create_system_prompt_path()
         try:
-            exec_cmd, use_cwd, subprocess_env = self._resolve_exec(cmd, system_prompt_path)
+            exec_cmd, use_cwd, subprocess_env = self._resolve_exec(
+                cmd,
+                system_prompt_path,
+                use_host_exec=use_host_exec,
+            )
             _log_cmd(exec_cmd, streaming=True)
 
             process = await asyncio.create_subprocess_exec(
@@ -273,7 +346,9 @@ class GeminiCLI(BaseCLI):
                 stderr_bytes=stderr_bytes,
                 state=state,
             )
-            was_aborted = bool(reg and reg.was_aborted(self._config.chat_id))
+            was_aborted = bool(
+                reg and reg.was_aborted(self._config.chat_id, self._config.topic_id)
+            )
             if final_event is not None and not timed_out and not was_aborted:
                 yield final_event
         finally:
@@ -362,8 +437,54 @@ class GeminiCLI(BaseCLI):
             container_path = self._host_to_container_path(system_prompt_path)
             if container_path:
                 extra["GEMINI_SYSTEM_MD"] = container_path
+        runtime_home = self._prepare_isolated_runtime(use_copies=True)
+        if runtime_home is not None:
+            container_runtime = self._host_to_container_path(str(runtime_home))
+            if container_runtime:
+                extra["GEMINI_CLI_HOME"] = container_runtime
 
         return extra
+
+    def _prepare_isolated_runtime(self, *, use_copies: bool) -> Path | None:
+        """Create a minimal Gemini runtime for the current execution plan.
+
+        Returns the runtime root used as ``GEMINI_CLI_HOME`` or ``None`` when
+        no isolation should be applied.
+        """
+        plan = self._config.capability_plan
+        if plan is None:
+            return None
+
+        paths = resolve_paths()
+        source_dotgemini = _source_gemini_dotdir()
+        if not source_dotgemini.is_dir():
+            return None
+
+        selected = tuple(sorted(skill.source_path for skill in plan.selected_skills))
+        payload = json.dumps(
+            {
+                "profile": plan.runtime_profile,
+                "skills": selected,
+                "include_directories": plan.include_directories,
+            },
+            sort_keys=True,
+        )
+        fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        runtime_root = paths.ductor_home / "tmp" / "gemini_cli" / fingerprint
+        dotgemini = runtime_root / ".gemini"
+        skills_dir = dotgemini / "skills"
+        try:
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            _sync_gemini_runtime_files(source_dotgemini, dotgemini)
+            _sync_selected_skills(
+                skills_dir,
+                selected,
+                use_copies=use_copies,
+            )
+        except OSError:
+            logger.warning("Failed to prepare isolated Gemini runtime", exc_info=True)
+            return None
+        return runtime_root
 
     @staticmethod
     def _host_to_container_path(host_path: str) -> str | None:
@@ -377,6 +498,8 @@ class GeminiCLI(BaseCLI):
         self,
         cmd: list[str],
         system_prompt_path: str | None,
+        *,
+        use_host_exec: bool = False,
     ) -> tuple[list[str], str | None, dict[str, str] | None]:
         """Resolve command, cwd, and env for subprocess execution.
 
@@ -384,16 +507,30 @@ class GeminiCLI(BaseCLI):
         ``subprocess_env`` is ``None`` (inherit host env for the ``docker``
         binary) and Gemini-specific vars are forwarded via ``-e`` flags.
         """
-        if self._config.docker_container:
+        if self._config.docker_container and not use_host_exec:
             extra_env = self._docker_extra_env(system_prompt_path)
             exec_cmd, use_cwd = docker_wrap(
                 cmd, self._config, extra_env=extra_env, interactive=True
             )
             return exec_cmd, use_cwd, None
 
-        env = self._prepare_env(system_prompt_path)
-        exec_cmd, use_cwd = docker_wrap(cmd, self._config)
-        return exec_cmd, use_cwd, env
+        env = self._prepare_env(system_prompt_path, cli_path=self._host_cli)
+        return cmd, str(self._working_dir), env
+
+    def _should_use_host_fast_path(self) -> bool:
+        """Return True when a simple Gemini chat turn should bypass Docker."""
+        if not self._config.docker_container:
+            return False
+        if self._config.agent_name in _HOST_FAST_PATH_DISABLED_AGENTS:
+            return False
+        plan = self._config.capability_plan
+        if plan is None:
+            return False
+        return (
+            plan.runtime_profile == "chat_light"
+            and not plan.include_directories
+            and not plan.needs_workspace_write
+        )
 
     def _track_process(
         self,
@@ -567,26 +704,9 @@ async def _cleanup_file(path: str | None) -> None:
         await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
 
-_SENSITIVE_ENV_KEYS = ("GEMINI_API_KEY",)
-
-
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
     """Log the CLI command with sensitive env values masked."""
-    safe: list[str] = []
-    mask_next = False
-    for i, c in enumerate(cmd):
-        if mask_next:
-            safe.append(c[:4] + "***" if len(c) > 4 else "***")
-            mask_next = False
-            continue
-        if c == "-e" and i + 1 < len(cmd):
-            nxt = cmd[i + 1]
-            if any(nxt.startswith(f"{k}=") for k in _SENSITIVE_ENV_KEYS):
-                mask_next = True
-        if len(c) > 80 and i > 0 and cmd[i - 1].startswith("--"):
-            safe.append(c[:80] + "...")
-        else:
-            safe.append(c)
+    safe = redact_command_for_logging(cmd)
     logger.info("%s: %s", "Gemini stream cmd" if streaming else "Gemini cmd", " ".join(safe))
 
 
@@ -594,6 +714,74 @@ def _gemini_settings_path(env: dict[str, str]) -> Path:
     """Resolve Gemini settings path honoring GEMINI_CLI_HOME."""
     base = Path(env.get("GEMINI_CLI_HOME", str(Path.home()))).expanduser()
     return base / ".gemini" / "settings.json"
+
+
+def _source_gemini_dotdir() -> Path:
+    """Return the source ``.gemini`` directory used for auth/config seeding."""
+    base = Path(os.environ.get("GEMINI_CLI_HOME", str(Path.home()))).expanduser()
+    return base / ".gemini"
+
+
+def _sync_gemini_runtime_files(source_dotgemini: Path, target_dotgemini: Path) -> None:
+    """Copy the minimal set of Gemini auth/config files into the isolated runtime."""
+    target_dotgemini.mkdir(parents=True, exist_ok=True)
+    for filename in _GEMINI_RUNTIME_FILES:
+        source = source_dotgemini / filename
+        if not source.exists() or not source.is_file():
+            continue
+        dest = target_dotgemini / filename
+        try:
+            source_mtime = source.stat().st_mtime_ns
+            dest_mtime = dest.stat().st_mtime_ns if dest.exists() else -1
+        except OSError:
+            source_mtime = -1
+            dest_mtime = -2
+        if dest.exists() and source_mtime == dest_mtime:
+            continue
+        shutil.copy2(source, dest)
+
+
+def _sync_selected_skills(  # noqa: C901, PLR0912
+    skills_dir: Path,
+    selected_skill_paths: tuple[str, ...],
+    *,
+    use_copies: bool,
+) -> None:
+    """Materialize only the selected skills into an isolated Gemini runtime."""
+    use_copies = use_copies or os.name == "nt"
+    desired: dict[str, Path] = {}
+    for skill_path in selected_skill_paths:
+        source = Path(skill_path)
+        if source.is_dir():
+            desired[source.name] = source
+
+    for existing in list(skills_dir.iterdir()):
+        if existing.name not in desired:
+            if existing.is_symlink() or existing.is_file():
+                existing.unlink(missing_ok=True)
+            elif existing.is_dir():
+                shutil.rmtree(existing, ignore_errors=True)
+
+    for name, source in desired.items():
+        dest = skills_dir / name
+        if use_copies:
+            if dest.is_symlink() or dest.is_file():
+                dest.unlink(missing_ok=True)
+            elif dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(source, dest, symlinks=True, dirs_exist_ok=True)
+            continue
+
+        if dest.is_symlink():
+            try:
+                if dest.resolve() == source.resolve():
+                    continue
+            except OSError:
+                pass
+            dest.unlink(missing_ok=True)
+        elif dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        dest.symlink_to(source, target_is_directory=True)
 
 
 def _parse_response(stdout: bytes, stderr: bytes, returncode: int | None) -> CLIResponse:

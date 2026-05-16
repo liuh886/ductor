@@ -14,7 +14,7 @@ from ductor_bot.tasks.models import TaskEntry
 
 @pytest.mark.asyncio
 async def test_skill_extractor_success(tmp_path: Path) -> None:
-    """Verify that SkillExtractor generates a discoverable skill directory."""
+    """Verify that SkillExtractor generates a hidden candidate skill directory."""
     skills_dir = tmp_path / "skills"
     db_path = tmp_path / "state.db"
     db = RuntimeStateDB(db_path)
@@ -40,6 +40,7 @@ async def test_skill_extractor_success(tmp_path: Path) -> None:
         task_id="task-123",
         chat_id=1,
         parent_agent="main",
+        transport="tg",
         name="Test Task",
         prompt_preview="test prompt",
         provider="claude",
@@ -56,12 +57,14 @@ async def test_skill_extractor_success(tmp_path: Path) -> None:
     assert skill_path is not None
     assert skill_path.exists()
     assert skill_path.is_dir()
-    assert skill_path.parent == skills_dir
+    assert skill_path.parent == skills_dir / ".candidates"
     assert skill_path.name.startswith("skill_Test_Task_task-123")
+    assert not (skills_dir / skill_path.name).exists()
 
     skill_md = skill_path / "SKILL.md"
     assert skill_md.exists()
     content = skill_md.read_text(encoding="utf-8")
+    assert content.startswith("---\nstatus: candidate\n---\n")
     assert "# Test Skill" in content
     assert "Procedural Steps: 1. do test" in content
 
@@ -76,6 +79,57 @@ async def test_skill_extractor_success(tmp_path: Path) -> None:
     assert "I am testing" in request.prompt
     assert request.provider_override == "claude"
     assert request.model_override == "opus"
+
+
+@pytest.mark.asyncio
+async def test_skill_extractor_adds_candidate_status_to_existing_frontmatter(
+    tmp_path: Path,
+) -> None:
+    """Existing frontmatter is preserved and guarded with candidate status."""
+    skills_dir = tmp_path / "skills"
+    db = RuntimeStateDB(tmp_path / "state.db")
+    message_repo = MessageRepository(db)
+    summary_repo = SessionSummaryRepository(db)
+
+    cli_service = MagicMock()
+    cli_service.execute = AsyncMock()
+    cli_service.execute.return_value = AgentResponse(
+        result=(
+            "---\n"
+            "name: test-skill\n"
+            "description: Test skill\n"
+            "phase_trigger: DEBUGGING\n"
+            "---\n\n"
+            "# Test Skill\n"
+        ),
+        is_error=False,
+        num_turns=1,
+    )
+
+    extractor = SkillExtractor(
+        cli_service=cli_service,
+        message_repo=message_repo,
+        summary_repo=summary_repo,
+        skills_dir=skills_dir,
+    )
+    entry = TaskEntry(
+        task_id="task-456",
+        chat_id=1,
+        parent_agent="main",
+        transport="tg",
+        name="Test Task",
+        prompt_preview="test prompt",
+        provider="claude",
+        model="opus",
+        status="done",
+    )
+    message_repo.append("task:task-456", "user", "history")
+
+    skill_path = await extractor.extract(entry)
+
+    assert skill_path is not None
+    content = (skill_path / "SKILL.md").read_text(encoding="utf-8")
+    assert content.startswith("---\nstatus: candidate\nname: test-skill\n")
 
 
 @pytest.mark.asyncio
@@ -99,6 +153,7 @@ async def test_skill_extractor_no_history(tmp_path: Path) -> None:
         task_id="empty-task",
         chat_id=1,
         parent_agent="main",
+        transport="tg",
         name="Empty",
         prompt_preview="none",
         provider="claude",

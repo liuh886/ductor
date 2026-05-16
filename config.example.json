@@ -15,7 +15,7 @@
     "max_turns": null,
     "max_session_messages": null,
     "permission_mode": "bypassPermissions",
-    "cli_timeout": 600.0,
+    "cli_timeout": 1200.0,
     "reasoning_effort": "medium",
     "file_access": "all",
     "gemini_api_key": "null",
@@ -112,7 +112,7 @@
     },
     "transcription": {"audio_command": "", "video_command": ""},
     "timeouts": {
-        "normal": 600.0,
+        "normal": 1200.0,
         "background": 1800.0,
         "subagent": 3600.0,
         "warning_intervals": [60.0, 10.0],

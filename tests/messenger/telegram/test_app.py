@@ -1292,9 +1292,9 @@ class TestFileRoots:
         roots = tg_bot.file_roots(tg_bot._orch.paths)
         assert roots == [tg_bot._orch.paths.workspace]
 
-    def test_default_config_is_all(self) -> None:
+    def test_default_config_is_workspace(self) -> None:
         config = AgentConfig()
-        assert config.file_access == "all"
+        assert config.file_access == "workspace"
 
 
 # ---------------------------------------------------------------------------

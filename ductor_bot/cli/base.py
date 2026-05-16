@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.stream_events import StreamEvent
 from ductor_bot.cli.types import CLIResponse
+from ductor_bot.orchestrator.capabilities.models import CapabilityExecutionPlan
 
 if TYPE_CHECKING:
     from ductor_bot.cli.process_registry import ProcessRegistry
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
+_REDACTED_ENV_DISPLAY = "<redacted>"
 
 
 def _win_feed_stdin(process: asyncio.subprocess.Process, data: str) -> None:
@@ -96,6 +98,7 @@ class CLIConfig:
     process_label: str = "main"
     # Gemini-specific auth fallback:
     gemini_api_key: str | None = None
+    capability_plan: CapabilityExecutionPlan | None = None
     # Extra CLI parameters (provider-specific):
     cli_parameters: list[str] = field(default_factory=list)
     # Transport identification (for routing results back):
@@ -103,12 +106,87 @@ class CLIConfig:
     # Multi-agent identification:
     agent_name: str = "main"
     interagent_port: int = 8799
+    interagent_token: str = ""
     # External transcription hooks (#66) — empty strings keep built-in strategies.
     transcribe_command: str = ""
     video_transcribe_command: str = ""
 
 
 _CONTAINER_DUCTOR_MOUNT = "/ductor"
+_SCOPED_SECRET_KEYS: dict[str, frozenset[str]] = {
+    "gemini": frozenset(
+        {
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_GCA",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+        }
+    ),
+    "codex": frozenset({"OPENAI_API_KEY"}),
+    "claude": frozenset(),
+}
+_COMMON_RUNTIME_SECRET_KEYS = frozenset(
+    {
+        "OBSIDIAN_GATEWAY_URL",
+        "OBSIDIAN_GATEWAY_KEY",
+    }
+)
+
+
+def redact_command_for_logging(
+    cmd: list[str],
+    *,
+    truncate_long_options: bool = True,
+) -> list[str]:
+    """Return a log-safe copy of *cmd* with secret env values redacted."""
+    safe: list[str] = []
+    idx = 0
+    while idx < len(cmd):
+        part = cmd[idx]
+        if part == "-e" and idx + 1 < len(cmd):
+            safe.append(part)
+            key_value = cmd[idx + 1]
+            key, sep, _value = key_value.partition("=")
+            if sep and _should_redact_env_key(key):
+                safe.append(f"{key}={_REDACTED_ENV_DISPLAY}")
+            elif truncate_long_options and len(key_value) > 80:
+                safe.append(key_value[:80] + "...")
+            else:
+                safe.append(key_value)
+            idx += 2
+            continue
+
+        if (
+            len(part) > 80
+            and (
+                not truncate_long_options
+                or (idx > 0 and cmd[idx - 1].startswith("--"))
+            )
+        ):
+            safe.append(part[:80] + "...")
+        else:
+            safe.append(part)
+        idx += 1
+    return safe
+
+
+def _should_redact_env_key(key: str) -> bool:
+    """Return True when an env-var name is likely to contain a secret."""
+    lowered = key.lower()
+    return any(token in lowered for token in ("token", "secret", "password", "key"))
+
+
+def _append_env_flag(env_flags: list[str], key: str, value: str | int) -> None:
+    """Append one Docker environment flag pair."""
+    env_flags += ["-e", f"{key}={value}"]
+
+
+def _provider_secret_env(provider: str, secret_env: dict[str, str]) -> dict[str, str]:
+    """Return the subset of secrets needed by one provider process."""
+    allowed = _SCOPED_SECRET_KEYS.get(provider, frozenset()) | _COMMON_RUNTIME_SECRET_KEYS
+    return {key: value for key, value in secret_env.items() if key in allowed}
 
 
 def _to_container_path(host_path: Path, main_home: Path) -> str:
@@ -144,6 +222,8 @@ def _docker_env_flags(
         "-e",
         "DUCTOR_INTERAGENT_HOST=host.docker.internal",
     ]
+    if config.interagent_token:
+        env_flags += ["-e", f"DUCTOR_INTERAGENT_TOKEN={config.interagent_token}"]
     if config.topic_id:
         env_flags += ["-e", f"DUCTOR_TOPIC_ID={config.topic_id}"]
     if config.transcribe_command:
@@ -192,7 +272,7 @@ def docker_wrap(
 
         from ductor_bot.infra.env_secrets import load_env_secrets
 
-        merged_extra = dict(load_env_secrets(main_home / ".env"))
+        merged_extra = _provider_secret_env(config.provider, load_env_secrets(main_home / ".env"))
         # Remove keys already in host env (subprocess inherits docker binary env).
         for key in list(merged_extra):
             if key in os.environ:

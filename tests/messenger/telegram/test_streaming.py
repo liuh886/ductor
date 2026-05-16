@@ -215,7 +215,41 @@ class TestStreamEditorButtons:
 
         editor = StreamEditor(bot, chat_id=1)
         await editor.finalize("[button:Ghost]")
-        bot.edit_message_reply_markup.assert_not_called()
+        bot.send_message.assert_called_once()
+        bot.edit_message_reply_markup.assert_called_once()
+
+    async def test_tool_only_empty_final_response_sends_placeholder(self) -> None:
+        from ductor_bot.messenger.telegram.streaming import StreamEditor
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        bot.send_message = AsyncMock(return_value=sent_msg)
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_tool("read_file")
+        await editor.finalize("")
+
+        assert bot.send_message.call_count == 2
+        assert "No final text response was returned" in bot.send_message.call_args.kwargs["text"]
+
+    async def test_button_only_final_response_sends_keyboard(self) -> None:
+        from ductor_bot.messenger.telegram.streaming import StreamEditor
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        type(sent_msg).message_id = PropertyMock(return_value=101)
+        bot.send_message = AsyncMock(return_value=sent_msg)
+        bot.edit_message_reply_markup = AsyncMock()
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.finalize("[button:Yes] [button:No]")
+
+        bot.send_message.assert_called_once()
+        assert bot.send_message.call_args.kwargs["text"]
+        bot.edit_message_reply_markup.assert_called_once()
+        markup = bot.edit_message_reply_markup.call_args.kwargs["reply_markup"]
+        assert markup.inline_keyboard[0][0].text == "Yes"
+        assert markup.inline_keyboard[0][1].text == "No"
 
     async def test_keyboard_on_last_message_after_multiple_chunks(self) -> None:
         from ductor_bot.messenger.telegram.streaming import StreamEditor

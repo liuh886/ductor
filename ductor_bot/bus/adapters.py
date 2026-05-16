@@ -40,7 +40,7 @@ def from_background_result(result: BackgroundResult) -> Envelope:
         model=result.model,
         session_name=result.session_name,
         session_id=result.session_id,
-        metadata={"task_id": result.task_id},
+        metadata={"task_id": result.task_id, "silent": result.silent},
     )
 
 

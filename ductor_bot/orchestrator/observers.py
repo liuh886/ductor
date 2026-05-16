@@ -14,10 +14,10 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ductor_bot.background import BackgroundObserver, BackgroundResult
+from ductor_bot.webhook.observer import WebhookObserver
 
 if TYPE_CHECKING:
     from ductor_bot.bus.bus import MessageBus
-    from ductor_bot.webhook.observer import WebhookObserver
 from ductor_bot.cleanup import CleanupObserver
 from ductor_bot.cli.codex_cache import CodexModelCache
 from ductor_bot.cli.codex_cache_observer import CodexCacheObserver
@@ -97,8 +97,6 @@ class ObserverManager:
         codex_cache: CodexModelCache,
     ) -> None:
         """Create Background, Cron, and Webhook observers (after caches are ready)."""
-        from ductor_bot.webhook.observer import WebhookObserver
-
         config, paths = self._config, self._paths
         self.codex_cache = codex_cache
         self.background = BackgroundObserver(

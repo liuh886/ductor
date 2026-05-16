@@ -16,6 +16,7 @@ from rich.panel import Panel
 
 from ductor_bot.i18n import t_rich
 from ductor_bot.infra.fs import robust_rmtree
+from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 from ductor_bot.infra.platform import is_windows
 from ductor_bot.infra.restart import EXIT_RESTART
 from ductor_bot.workspace.paths import resolve_paths
@@ -29,7 +30,7 @@ def _re_exec_bot() -> NoReturn:
     Spawns a new Python process running ``ductor_bot`` and exits the current one.
     Under a service manager the caller should ``sys.exit(EXIT_RESTART)`` instead.
     """
-    subprocess.Popen([sys.executable, "-m", "ductor_bot"])
+    subprocess.Popen([sys.executable, "-m", "ductor_bot"], creationflags=_CREATION_FLAGS)
     sys.exit(0)
 
 
@@ -53,11 +54,13 @@ def _stop_docker_container(container_name: str) -> None:
         ["docker", "stop", "-t", "5", container_name],
         capture_output=True,
         check=False,
+        creationflags=_CREATION_FLAGS,
     )
     subprocess.run(
         ["docker", "rm", "-f", container_name],
         capture_output=True,
         check=False,
+        creationflags=_CREATION_FLAGS,
     )
     _console.print(t_rich("lifecycle.docker_stopped"))
 
@@ -196,6 +199,7 @@ def uninstall() -> None:
                     ["docker", "rmi", image],
                     capture_output=True,
                     check=False,
+                    creationflags=_CREATION_FLAGS,
                 )
                 _console.print(t_rich("lifecycle.uninstall.image_removed"))
         except (json.JSONDecodeError, OSError):
@@ -217,12 +221,14 @@ def uninstall() -> None:
             ["pipx", "uninstall", "ductor"],
             capture_output=True,
             check=False,
+            creationflags=_CREATION_FLAGS,
         )
     else:
         subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "ductor"],
             capture_output=True,
             check=False,
+            creationflags=_CREATION_FLAGS,
         )
 
     _console.print(

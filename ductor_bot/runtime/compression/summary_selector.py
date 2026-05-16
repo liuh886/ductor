@@ -30,8 +30,8 @@ class SummarySelector:
         summary_repo: SessionSummaryRepository,
         *,
         trigger_messages: int = 8,
-        protected_tail: int = 4,
-        max_summary_items: int = 8,
+        protected_tail: int = 2,
+        max_summary_items: int = 6,
     ) -> None:
         self._message_repo = message_repo
         self._summary_repo = summary_repo

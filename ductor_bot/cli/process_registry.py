@@ -35,15 +35,20 @@ class ProcessRegistry:
 
     def __init__(self) -> None:
         self._processes: dict[int, list[TrackedProcess]] = {}
-        self._aborted: set[int] = set()
+        self._aborted: set[int | tuple[int, int | None]] = set()
         self._aborted_labels: set[tuple[int, str]] = set()
-        self._interrupted: set[int] = set()
+        self._interrupted: set[int | tuple[int, int | None]] = set()
         # MED #9: serialize bulk kill operations (kill_for_task / kill_stale /
         # kill_by_label) against each other so a concurrent ``register`` that
         # slips in mid-iteration can't orphan subprocesses past a cancel.
         # ``register`` itself stays lock-free — a single dict.setdefault()+
         # list.append() pair is atomic under the GIL.
         self._kill_lock: asyncio.Lock = asyncio.Lock()
+
+    @staticmethod
+    def _abort_key(chat_id: int, topic_id: int | None = None) -> int | tuple[int, int | None]:
+        """Return the abort/interrupt tracking key for a chat or specific topic."""
+        return chat_id if topic_id is None else (chat_id, topic_id)
 
     def register(
         self,
@@ -98,10 +103,22 @@ class ProcessRegistry:
             tracked.process.pid,
         )
 
-    async def kill_all(self, chat_id: int) -> int:
+    async def kill_all(self, chat_id: int, topic_id: int | None = None) -> int:
         """Kill every active process for *chat_id*. Returns count killed."""
-        self._aborted.add(chat_id)
-        entries = self._processes.pop(chat_id, [])
+        self._aborted.add(self._abort_key(chat_id, topic_id))
+        entries = self._processes.get(chat_id, [])
+        if topic_id is None:
+            entries = self._processes.pop(chat_id, [])
+        else:
+            to_kill = [e for e in entries if e.topic_id == topic_id and e.process.returncode is None]
+            if not to_kill:
+                return 0
+            remaining = [e for e in entries if e not in to_kill]
+            if remaining:
+                self._processes[chat_id] = remaining
+            else:
+                self._processes.pop(chat_id, None)
+            entries = to_kill
         if not entries:
             return 0
         return await _kill_processes(entries)
@@ -113,21 +130,33 @@ class ProcessRegistry:
             total += await self.kill_all(chat_id)
         return total
 
-    def was_aborted(self, chat_id: int) -> bool:
+    def was_aborted(self, chat_id: int, topic_id: int | None = None) -> bool:
         """Check whether *chat_id* has been aborted since last clear."""
-        return chat_id in self._aborted
+        key = self._abort_key(chat_id, topic_id)
+        return key in self._aborted or (topic_id is not None and chat_id in self._aborted)
 
-    def clear_abort(self, chat_id: int) -> None:
+    def clear_abort(self, chat_id: int, topic_id: int | None = None) -> None:
         """Clear the abort flag for *chat_id*."""
-        self._aborted.discard(chat_id)
+        self._aborted.discard(self._abort_key(chat_id, topic_id))
+        if topic_id is None:
+            stale_scoped = [key for key in self._aborted if isinstance(key, tuple) and key[0] == chat_id]
+            for key in stale_scoped:
+                self._aborted.discard(key)
 
-    def was_interrupted(self, chat_id: int) -> bool:
+    def was_interrupted(self, chat_id: int, topic_id: int | None = None) -> bool:
         """Check whether *chat_id* was soft-interrupted since last clear."""
-        return chat_id in self._interrupted
+        key = self._abort_key(chat_id, topic_id)
+        return key in self._interrupted or (topic_id is not None and chat_id in self._interrupted)
 
-    def clear_interrupt(self, chat_id: int) -> None:
+    def clear_interrupt(self, chat_id: int, topic_id: int | None = None) -> None:
         """Clear the interrupt flag for *chat_id*."""
-        self._interrupted.discard(chat_id)
+        self._interrupted.discard(self._abort_key(chat_id, topic_id))
+        if topic_id is None:
+            stale_scoped = [
+                key for key in self._interrupted if isinstance(key, tuple) and key[0] == chat_id
+            ]
+            for key in stale_scoped:
+                self._interrupted.discard(key)
 
     def has_active(self, chat_id: int, topic_id: int | None = None) -> bool:
         """Return True if *chat_id* has at least one running subprocess.
@@ -159,7 +188,7 @@ class ProcessRegistry:
         """Clear the abort flag for a specific label."""
         self._aborted_labels.discard((chat_id, label))
 
-    def interrupt_all(self, chat_id: int) -> int:
+    def interrupt_all(self, chat_id: int, topic_id: int | None = None) -> int:
         """Send SIGINT to every active process for *chat_id*.
 
         Unlike :meth:`kill_all` this does NOT terminate or unregister the
@@ -168,9 +197,11 @@ class ProcessRegistry:
         Returns the count of processes signalled.
         """
         entries = self._processes.get(chat_id, [])
+        if topic_id is not None:
+            entries = [e for e in entries if e.topic_id == topic_id]
         if not entries:
             return 0
-        self._interrupted.add(chat_id)
+        self._interrupted.add(self._abort_key(chat_id, topic_id))
         count = 0
         for tracked in entries:
             if tracked.process.returncode is not None:

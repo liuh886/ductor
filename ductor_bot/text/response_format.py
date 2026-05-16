@@ -7,11 +7,22 @@ from ductor_bot.i18n import t
 SEP = "\u2500\u2500\u2500"
 
 _SHELL_TOOLS = frozenset({"bash", "powershell", "cmd", "sh", "zsh", "shell"})
+EMPTY_FINAL_RESPONSE = (
+    "No final text response was returned. "
+    "The run may have timed out or only produced tool activity."
+)
 
 
 def normalize_tool_name(name: str) -> str:
     """Normalize shell-related tool names to 'Shell' for display."""
     return "Shell" if name.lower() in _SHELL_TOOLS else name
+
+
+def ensure_text_response(text: str | None) -> str:
+    """Return a user-facing fallback when a final response has no text."""
+    if text and text.strip():
+        return text
+    return EMPTY_FINAL_RESPONSE
 
 
 def fmt(*blocks: str) -> str:
@@ -38,7 +49,14 @@ _RATE_PATTERNS = (
     "upgrade to pro",
     "hit your",
 )
-_CONTEXT_PATTERNS = ("context length", "token limit", "maximum context", "too long")
+_CONTEXT_PATTERNS = (
+    "context length",
+    "token limit",
+    "maximum context",
+    "prompt is too long",
+    "input is too long",
+    "too long",
+)
 
 
 def classify_cli_error(raw: str) -> str | None:
@@ -56,14 +74,49 @@ def classify_cli_error(raw: str) -> str | None:
 def session_error_text(model: str, cli_detail: str = "") -> str:
     """Build the error message shown to the user on CLI failure."""
     base = fmt(t("session.error_header"), SEP, t("session.error_body", model=model))
-    hint = classify_cli_error(cli_detail) if cli_detail else None
+    detail_line = _best_error_detail_line(cli_detail) if cli_detail else ""
+    hint = classify_cli_error(detail_line) if detail_line else None
     if hint:
         return fmt(base, t("session.error_cause", hint=hint))
     if cli_detail:
-        # Show first meaningful line, truncated.
-        detail = cli_detail.strip().split("\n")[0][:200]
+        detail = detail_line[:200]
         return fmt(base, t("session.error_detail", detail=detail))
     return base
+
+
+def _best_error_detail_line(cli_detail: str) -> str:
+    """Pick the most actionable single-line detail from raw CLI stderr/output."""
+    lines = [line.strip() for line in cli_detail.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    preferred_prefixes = (
+        "error:",
+        "exception:",
+        "fatal:",
+        "usage:",
+    )
+    preferred_substrings = (
+        "unexpected argument",
+        "command line is too long",
+        "session not found",
+        "invalid session",
+        "permission denied",
+        "timed out",
+        "no such file",
+    )
+    warning_prefixes = ("warning:",)
+
+    for line in lines:
+        lower = line.lower()
+        if lower.startswith(preferred_prefixes) or any(s in lower for s in preferred_substrings):
+            return line
+
+    for line in lines:
+        if not line.lower().startswith(warning_prefixes):
+            return line
+
+    return lines[0]
 
 
 def timeout_error_text(model: str, timeout_seconds: float) -> str:

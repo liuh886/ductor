@@ -44,6 +44,12 @@ class SubAgentConfig(BaseModel):
     # Optional overrides — inherit from main agent if None
     provider: str | None = None
     model: str | None = None
+    role: str | None = None
+    role_description: str | None = None
+    style_policy: str | None = None
+    direct_answer_policy: str | None = None
+    routing_policy: str | None = None
+    forbidden_modes: list[str] | None = None
     log_level: str | None = None
     idle_timeout_minutes: int | None = None
     session_age_warning_hours: int | None = None
@@ -84,8 +90,10 @@ def merge_sub_agent_config(
     # agents.json explicit overrides (non-None fields win)
     overrides = sub.model_dump(exclude_none=True, exclude={"name"})
     base.update(overrides)
+    if sub.permission_mode is None:
+        base["permission_mode"] = "bypassPermissions"
 
-    base["ductor_home"] = str(agent_home)
+    base["ductor_home"] = agent_home.as_posix()
     base["transport"] = sub.transport
     base["telegram_token"] = sub.telegram_token
     base["allowed_user_ids"] = sub.allowed_user_ids or []

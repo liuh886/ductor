@@ -13,6 +13,7 @@ import pytest
 from ductor_bot.background.models import BackgroundResult, BackgroundSubmit
 from ductor_bot.background.observer import MAX_TASKS_PER_CHAT, BackgroundObserver
 from ductor_bot.cli.param_resolver import TaskExecutionConfig
+from ductor_bot.cli.types import AgentResponse
 from ductor_bot.cron.execution import OneShotExecutionResult
 from ductor_bot.infra.task_runner import TaskResult
 from ductor_bot.workspace.paths import DuctorPaths
@@ -199,6 +200,109 @@ class TestExecution:
 
         bg_result: BackgroundResult = handler.call_args[0][0]
         assert bg_result.status == "error:timeout"
+
+    async def test_named_session_resume_and_silent_delivery(self, paths: DuctorPaths) -> None:
+        cli = AsyncMock()
+        cli.execute = AsyncMock(
+            return_value=AgentResponse(
+                result="maintenance complete",
+                session_id="sess-bg-1",
+                cost_usd=0.0,
+                total_tokens=0,
+            )
+        )
+        observer = BackgroundObserver(paths, timeout_seconds=30.0, cli_service=cli)
+        handler = AsyncMock()
+        observer.set_result_handler(handler)
+
+        observer.submit(
+            BackgroundSubmit(
+                chat_id=123,
+                prompt="maintain memory",
+                message_id=0,
+                thread_id=None,
+                session_name="memory_synthesis_deadbeef",
+                resume_session_id="sess-live-1",
+                provider_override="claude",
+                model_override="opus",
+                silent=True,
+            ),
+            _make_exec_config(),
+        )
+        await asyncio.sleep(0.05)
+
+        request = cli.execute.call_args[0][0]
+        assert request.resume_session == "sess-live-1"
+
+        bg_result: BackgroundResult = handler.call_args[0][0]
+        assert bg_result.session_name == "memory_synthesis_deadbeef"
+        assert bg_result.session_id == "sess-bg-1"
+        assert bg_result.silent is True
+
+    async def test_named_session_timeout_returns_user_facing_text(self, paths: DuctorPaths) -> None:
+        cli = AsyncMock()
+        cli.execute = AsyncMock(
+            return_value=AgentResponse(
+                result="",
+                session_id="sess-bg-2",
+                timed_out=True,
+                is_error=True,
+            )
+        )
+        observer = BackgroundObserver(paths, timeout_seconds=2400.0, cli_service=cli)
+        handler = AsyncMock()
+        observer.set_result_handler(handler)
+
+        observer.submit(
+            BackgroundSubmit(
+                chat_id=123,
+                prompt="long running task",
+                message_id=0,
+                thread_id=None,
+                session_name="deep-task",
+                provider_override="gemini",
+                model_override="gemini-3-flash-preview",
+            ),
+            _make_exec_config(provider="gemini", model="gemini-3-flash-preview"),
+        )
+        await asyncio.sleep(0.05)
+
+        bg_result: BackgroundResult = handler.call_args[0][0]
+        assert bg_result.status == "error:timeout"
+        assert "cli was terminated" in bg_result.result_text.lower()
+
+    async def test_named_session_cli_error_without_text_returns_session_error(
+        self, paths: DuctorPaths
+    ) -> None:
+        cli = AsyncMock()
+        cli.execute = AsyncMock(
+            return_value=AgentResponse(
+                result="",
+                session_id="sess-bg-3",
+                is_error=True,
+            )
+        )
+        observer = BackgroundObserver(paths, timeout_seconds=30.0, cli_service=cli)
+        handler = AsyncMock()
+        observer.set_result_handler(handler)
+
+        observer.submit(
+            BackgroundSubmit(
+                chat_id=123,
+                prompt="failing task",
+                message_id=0,
+                thread_id=None,
+                session_name="broken-task",
+                provider_override="codex",
+                model_override="gpt-5.4",
+            ),
+            _make_exec_config(provider="codex", model="gpt-5.4"),
+        )
+        await asyncio.sleep(0.05)
+
+        bg_result: BackgroundResult = handler.call_args[0][0]
+        assert bg_result.status == "error:cli"
+        assert "error occurred" in bg_result.result_text.lower()
 
 
 class TestCancel:

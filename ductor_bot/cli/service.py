@@ -9,7 +9,8 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ductor_bot.cli.base import CLIConfig
@@ -25,13 +26,19 @@ from ductor_bot.cli.stream_events import (
     ToolUseEvent,
 )
 from ductor_bot.cli.types import AgentRequest, AgentResponse, CLIResponse
+from ductor_bot.infra.inflight import InflightTurn
+from ductor_bot.runtime.state.repositories.inflight_turn_repo import InflightTurnRepository
 
 if TYPE_CHECKING:
     from ductor_bot.cli.base import BaseCLI
     from ductor_bot.cli.process_registry import ProcessRegistry
     from ductor_bot.config import ModelRegistry
+    from ductor_bot.runtime.state import InflightTurnRepository
 
 logger = logging.getLogger(__name__)
+
+
+_TIMEOUT_RESULT_MARKERS = ("__TIMEOUT__", "Timeout")
 
 
 class _StreamCallbacks:
@@ -107,6 +114,7 @@ class CLIServiceConfig:
     gemini_cli_parameters: tuple[str, ...] = ()
     agent_name: str = "main"
     interagent_port: int = 8799
+    interagent_token: str = ""
     # External transcription hooks (#66) — empty strings keep built-in strategies.
     transcribe_command: str = ""
     video_transcribe_command: str = ""
@@ -130,11 +138,13 @@ class CLIService:
         models: ModelRegistry,
         available_providers: frozenset[str],
         process_registry: ProcessRegistry,
+        inflight_repo: InflightTurnRepository,
     ) -> None:
         self._config = config
         self._models = models
         self._available_providers = available_providers
         self._process_registry = process_registry
+        self._inflight_repo = inflight_repo
 
     def update_available_providers(self, providers: frozenset[str]) -> None:
         self._available_providers = providers
@@ -164,25 +174,49 @@ class CLIService:
     async def execute(self, request: AgentRequest) -> AgentResponse:
         """Execute a CLI call."""
         cli = self._make_cli(request)
-        logger.info(
-            "CLI execute starting label=%s model=%s",
-            request.process_label,
-            self._resolve_model(request),
-        )
+        provider, model = self.resolve_provider(request)
 
-        t0 = time.monotonic()
-        response = await cli.send(
-            prompt=request.prompt,
-            resume_session=request.resume_session,
-            continue_session=request.continue_session,
-            timeout_seconds=request.timeout_seconds,
-            timeout_controller=request.timeout_controller,
+        # Hermes-aligned inflight tracking
+        request_dict = {
+            k: v for k, v in asdict(request).items() if k != "timeout_controller"
+        }
+        turn = InflightTurn(
+            chat_id=request.chat_id,
+            provider=provider,
+            model=model,
+            session_id=request.resume_session or (
+                "streaming" if request.continue_session else ""
+            ),
+            prompt_preview=request.prompt[:100],
+            started_at=datetime.now(UTC).isoformat(),
+            is_recovery=False,
+            path="normal",
+            request=request_dict,
         )
-        elapsed_ms = (time.monotonic() - t0) * 1000
+        self._inflight_repo.upsert(turn)
 
-        agent_resp = _cli_response_to_agent_response(response)
-        self._log_call(request, agent_resp, elapsed_ms)
-        return agent_resp
+        try:
+            logger.info(
+                "CLI execute starting label=%s model=%s",
+                request.process_label,
+                self._resolve_model(request),
+            )
+
+            t0 = time.monotonic()
+            response = await cli.send(
+                prompt=request.prompt,
+                resume_session=request.resume_session,
+                continue_session=request.continue_session,
+                timeout_seconds=request.timeout_seconds,
+                timeout_controller=request.timeout_controller,
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000
+
+            agent_resp = _cli_response_to_agent_response(response)
+            self._log_call(request, agent_resp, elapsed_ms)
+            return agent_resp
+        finally:
+            self._inflight_repo.delete(request.chat_id)
 
     async def execute_streaming(  # noqa: PLR0913
         self,
@@ -195,84 +229,108 @@ class CLIService:
     ) -> AgentResponse:
         """Execute a streaming CLI call with automatic fallback to non-streaming."""
         cli = self._make_cli(request)
-        logger.info(
-            "CLI streaming starting label=%s model=%s",
-            request.process_label,
-            self._resolve_model(request),
-        )
+        provider, model = self.resolve_provider(request)
 
-        accumulated_text = ""
-        result_event: ResultEvent | None = None
-        stream_error = False
-
-        callbacks = _StreamCallbacks(
-            on_text_delta,
-            on_tool_activity,
-            on_system_status,
-            on_reasoning_delta,
-            on_compact_boundary,
+        # Hermes-aligned inflight tracking
+        request_dict = {
+            k: v for k, v in asdict(request).items() if k != "timeout_controller"
+        }
+        turn = InflightTurn(
+            chat_id=request.chat_id,
+            provider=provider,
+            model=model,
+            session_id=request.resume_session or (
+                "streaming" if request.continue_session else ""
+            ),
+            prompt_preview=request.prompt[:100],
+            started_at=datetime.now(UTC).isoformat(),
+            is_recovery=False,
+            path="normal",
+            request=request_dict,
         )
+        self._inflight_repo.upsert(turn)
 
         try:
-            async for event in cli.send_streaming(
-                prompt=request.prompt,
-                resume_session=request.resume_session,
-                continue_session=request.continue_session,
-                timeout_seconds=request.timeout_seconds,
-                timeout_controller=request.timeout_controller,
-            ):
-                if self._process_registry.was_aborted(request.chat_id):
-                    logger.info("Streaming aborted mid-stream chat=%d", request.chat_id)
-                    break
-                text, result = await callbacks.dispatch(event)
-                accumulated_text += text
-                if result is not None:
-                    result_event = result
-        except asyncio.CancelledError:
-            raise
-        except (OSError, RuntimeError, ValueError, UnicodeDecodeError):
-            logger.exception(
-                "Stream error label=%s, falling back",
+            logger.info(
+                "CLI streaming starting label=%s model=%s",
                 request.process_label,
-            )
-            stream_error = True
-
-        if stream_error or result_event is None:
-            return await self._handle_stream_fallback(
-                request,
-                accumulated_text,
-                stream_error=stream_error,
-                init_session_id=callbacks.init_session_id,
+                self._resolve_model(request),
             )
 
-        # Carry forward session_id from SystemInitEvent when the ResultEvent
-        # lacks one (e.g. timeout kill before final event).
-        if not result_event.session_id and callbacks.init_session_id:
-            result_event.session_id = callbacks.init_session_id
+            accumulated_text = ""
+            result_event: ResultEvent | None = None
+            stream_error = False
 
-        # Detect timeout marker from executor.
-        timed_out = (result_event.result or "").startswith("__TIMEOUT__")
+            callbacks = _StreamCallbacks(
+                on_text_delta,
+                on_tool_activity,
+                on_system_status,
+                on_reasoning_delta,
+                on_compact_boundary,
+            )
 
-        logger.info(
-            "CLI streaming completed label=%s fallback=%s timed_out=%s",
-            request.process_label,
-            stream_error,
-            timed_out,
-        )
-        cli_resp = CLIResponse(
-            session_id=result_event.session_id,
-            result="" if timed_out else (result_event.result or accumulated_text),
-            is_error=result_event.is_error,
-            timed_out=timed_out,
-            returncode=result_event.returncode,
-            duration_ms=result_event.duration_ms,
-            duration_api_ms=result_event.duration_api_ms,
-            total_cost_usd=result_event.total_cost_usd,
-            usage=result_event.usage,
-            model_usage=result_event.model_usage,
-            num_turns=result_event.num_turns,
-        )
-        return _cli_response_to_agent_response(cli_resp)
+            try:
+                async for event in cli.send_streaming(
+                    prompt=request.prompt,
+                    resume_session=request.resume_session,
+                    continue_session=request.continue_session,
+                    timeout_seconds=request.timeout_seconds,
+                    timeout_controller=request.timeout_controller,
+                ):
+                    if self._process_registry.was_aborted(request.chat_id, request.topic_id):
+                        logger.info("Streaming aborted mid-stream chat=%d", request.chat_id)
+                        break
+                    text, result = await callbacks.dispatch(event)
+                    accumulated_text += text
+                    if result is not None:
+                        result_event = result
+            except asyncio.CancelledError:
+                raise
+            except (OSError, RuntimeError, ValueError, UnicodeDecodeError):
+                logger.exception(
+                    "Stream error label=%s, falling back",
+                    request.process_label,
+                )
+                stream_error = True
+
+            if stream_error or result_event is None:
+                return await self._handle_stream_fallback(
+                    request,
+                    accumulated_text,
+                    stream_error=stream_error,
+                    init_session_id=callbacks.init_session_id,
+                )
+
+            # Carry forward session_id from SystemInitEvent when the ResultEvent
+            # lacks one (e.g. timeout kill before final event).
+            if not result_event.session_id and callbacks.init_session_id:
+                result_event.session_id = callbacks.init_session_id
+
+            # Detect timeout marker from executor.
+            timed_out = _is_timeout_result(result_event)
+
+            logger.info(
+                "CLI streaming completed label=%s fallback=%s timed_out=%s",
+                request.process_label,
+                stream_error,
+                timed_out,
+            )
+            cli_resp = CLIResponse(
+                session_id=result_event.session_id,
+                result="" if timed_out else (result_event.result or accumulated_text),
+                is_error=result_event.is_error,
+                timed_out=timed_out,
+                returncode=result_event.returncode,
+                duration_ms=result_event.duration_ms,
+                duration_api_ms=result_event.duration_api_ms,
+                total_cost_usd=result_event.total_cost_usd,
+                usage=result_event.usage,
+                model_usage=result_event.model_usage,
+                num_turns=result_event.num_turns,
+            )
+            return _cli_response_to_agent_response(cli_resp)
+        finally:
+            self._inflight_repo.delete(request.chat_id)
 
     async def _handle_stream_fallback(
         self,
@@ -283,7 +341,7 @@ class CLIService:
         init_session_id: str | None = None,
     ) -> AgentResponse:
         """Handle failed or incomplete streaming: use accumulated text or retry."""
-        was_aborted = self._process_registry.was_aborted(request.chat_id)
+        was_aborted = self._process_registry.was_aborted(request.chat_id, request.topic_id)
         logger.info(
             "Stream fallback: aborted=%s accumulated=%d init_sid=%s",
             was_aborted,
@@ -349,9 +407,11 @@ class CLIService:
                 topic_id=request.topic_id,
                 transport=request.transport,
                 process_label=request.process_label,
+                capability_plan=request.capability_plan,
                 cli_parameters=self._config.cli_parameters_for_provider(provider),
                 agent_name=self._config.agent_name,
                 interagent_port=self._config.interagent_port,
+                interagent_token=self._config.interagent_token,
                 transcribe_command=self._config.transcribe_command,
                 video_transcribe_command=self._config.video_transcribe_command,
             )
@@ -375,6 +435,20 @@ def _cli_response_to_agent_response(
     stream_fallback: bool = False,
 ) -> AgentResponse:
     """Convert internal CLIResponse to public AgentResponse."""
+    stripped = resp.result.strip()
+    empty_result = not stripped
+    if resp.timed_out:
+        outcome = "timeout"
+        failure_class = "timeout"
+    elif resp.is_error:
+        outcome = "error"
+        failure_class = "cli_error"
+    elif empty_result:
+        outcome = "empty_result"
+        failure_class = "empty_result"
+    else:
+        outcome = "success"
+        failure_class = ""
     return AgentResponse(
         result=resp.result,
         returncode=resp.returncode,
@@ -387,4 +461,13 @@ def _cli_response_to_agent_response(
         timed_out=resp.timed_out,
         duration_ms=resp.duration_ms,
         stream_fallback=stream_fallback,
+        outcome=outcome,
+        failure_class=failure_class,
+        empty_result=empty_result,
     )
+
+
+def _is_timeout_result(event: ResultEvent) -> bool:
+    """Return True when a streaming result represents a timeout."""
+    result = (event.result or "").strip()
+    return event.is_error and result in _TIMEOUT_RESULT_MARKERS

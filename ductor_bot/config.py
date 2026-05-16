@@ -72,6 +72,7 @@ class DockerConfig(BaseModel):
     mount_host_cache: bool = False
     mounts: list[str] = Field(default_factory=list)
     extras: list[str] = Field(default_factory=list)
+    bind_internal_api_public: bool = False
 
 
 _DEFAULT_HEARTBEAT_PROMPT = (
@@ -255,7 +256,7 @@ class TasksConfig(BaseModel):
 class TimeoutConfig(BaseModel):
     """Per-execution-path timeout settings."""
 
-    normal: float = 600.0
+    normal: float = 1200.0
     background: float = 1800.0
     subagent: float = 3600.0
     warning_intervals: list[float] = Field(default_factory=lambda: [60.0, 10.0])
@@ -378,7 +379,11 @@ def update_config_file(config_path: Path, **updates: object) -> None:
     """Update specific keys in config.json without overwriting other user settings."""
     from ductor_bot.infra.json_store import atomic_json_save
 
-    data: dict[str, object] = json.loads(config_path.read_text(encoding="utf-8"))
+    if config_path.is_file():
+        data: dict[str, object] = json.loads(config_path.read_text(encoding="utf-8"))
+    else:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
     data.update(updates)
     atomic_json_save(config_path, data)
     logger.info("Persisted config update: %s", ", ".join(f"{k}={v}" for k, v in updates.items()))
@@ -407,11 +412,12 @@ class AgentConfig(BaseModel):
     max_budget_usd: float | None = None
     max_turns: int | None = None
     max_session_messages: int | None = None
-    permission_mode: str = "bypassPermissions"
+    permission_mode: str = "normal"
     cli_timeout: float = 1800.0
     reasoning_effort: str = "medium"
-    file_access: str = "all"
+    file_access: str = "workspace"
     gemini_api_key: str | None = None
+    interagent_token: str = ""
     streaming: StreamingConfig = Field(default_factory=StreamingConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
@@ -430,6 +436,12 @@ class AgentConfig(BaseModel):
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
     user_timezone: str = ""
     language: str = "en"
+    role: str = ""
+    role_description: str = ""
+    style_policy: str = ""
+    direct_answer_policy: str = ""
+    routing_policy: str = ""
+    forbidden_modes: list[str] = Field(default_factory=list)
     update_check: bool = True
     group_mention_only: bool = False
     interagent_port: int = 8799
@@ -464,10 +476,10 @@ class AgentConfig(BaseModel):
     def _sync_cli_timeout_to_timeouts(self) -> AgentConfig:
         """Sync legacy ``cli_timeout`` to ``timeouts.normal`` for backward compat.
 
-        When ``cli_timeout`` differs from the default 600.0 and ``timeouts.normal``
+        When ``cli_timeout`` differs from the default 1200.0 and ``timeouts.normal``
         is still at its default, propagate ``cli_timeout`` into ``timeouts.normal``.
         """
-        if self.cli_timeout != 600.0 and self.timeouts.normal == 600.0:
+        if self.cli_timeout != 1200.0 and self.timeouts.normal == 1200.0:
             self.timeouts.normal = self.cli_timeout
         return self
 

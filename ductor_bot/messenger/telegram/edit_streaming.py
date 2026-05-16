@@ -22,7 +22,7 @@ from ductor_bot.messenger.telegram.formatting import (
     markdown_to_telegram_html,
     split_html_message,
 )
-from ductor_bot.text.response_format import normalize_tool_name
+from ductor_bot.text.response_format import EMPTY_FINAL_RESPONSE, normalize_tool_name
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from ductor_bot.config import StreamingConfig
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass(slots=True)
 class _ToolEntry:
@@ -173,6 +172,10 @@ class EditStreamEditor:
         # Discard pending indicators and strip flushed ones from active portion.
         self._s.tool_tracker = _ToolTracker()
         self._strip_active_indicators()
+        if not self._render_active_html().strip() and self._s.active_msg is not None:
+            await self._edit_message(EMPTY_FINAL_RESPONSE)
+            await self._attach_buttons(full_text)
+            return
         await self._do_edit()
         await self._attach_buttons(full_text)
 

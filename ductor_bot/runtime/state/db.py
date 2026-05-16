@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -45,6 +46,34 @@ class RuntimeStateDB:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(load_schema_sql())
             self._ensure_session_lineage_columns(conn)
+            self._ensure_messages_features(conn)
+            self._ensure_tool_calls_features(conn)
+            self._ensure_memory_fragments_ulid(conn)
+            self._ensure_memory_fragments_timestamps(conn)
+            self._ensure_inflight_turns_storage_key(conn)
+
+    @staticmethod
+    def _ensure_memory_fragments_ulid(conn: sqlite3.Connection) -> None:
+        """Add ulid column to memory_fragments."""
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memory_fragments)").fetchall()
+        }
+        if "ulid" not in existing:
+            conn.execute("ALTER TABLE memory_fragments ADD COLUMN ulid TEXT NOT NULL DEFAULT ''")
+
+    @staticmethod
+    def _ensure_memory_fragments_timestamps(conn: sqlite3.Connection) -> None:
+        """Add updated_at column to memory_fragments if missing."""
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memory_fragments)").fetchall()
+        }
+        if "updated_at" not in existing:
+            conn.execute("ALTER TABLE memory_fragments ADD COLUMN updated_at REAL NOT NULL DEFAULT 0")
+        if "created_at" not in existing:
+            # created_at should be there from 001_initial, but for robustness:
+            conn.execute("ALTER TABLE memory_fragments ADD COLUMN created_at REAL NOT NULL DEFAULT 0")
 
     @staticmethod
     def _ensure_session_lineage_columns(conn: sqlite3.Connection) -> None:
@@ -57,3 +86,133 @@ class RuntimeStateDB:
             if column in existing:
                 continue
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _ensure_messages_features(conn: sqlite3.Connection) -> None:
+        """Add thought column and FTS to messages."""
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "thought" not in existing:
+            conn.execute("ALTER TABLE messages ADD COLUMN thought TEXT NOT NULL DEFAULT ''")
+
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                session_storage_key UNINDEXED,
+                role UNINDEXED,
+                content_text,
+                thought
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_after_insert
+            AFTER INSERT ON messages
+            BEGIN
+                INSERT INTO messages_fts (rowid, session_storage_key, role, content_text, thought)
+                VALUES (new.id, new.session_storage_key, new.role, new.content_text, new.thought);
+            END;
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_after_update
+            AFTER UPDATE ON messages
+            BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.id;
+                INSERT INTO messages_fts (rowid, session_storage_key, role, content_text, thought)
+                VALUES (new.id, new.session_storage_key, new.role, new.content_text, new.thought);
+            END;
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_after_delete
+            AFTER DELETE ON messages
+            BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.id;
+            END;
+            """
+        )
+        conn.execute("DELETE FROM messages_fts")
+        conn.execute(
+            """
+            INSERT INTO messages_fts (rowid, session_storage_key, role, content_text, thought)
+            SELECT id, session_storage_key, role, content_text, thought
+            FROM messages
+            """
+        )
+
+    @staticmethod
+    def _ensure_tool_calls_features(conn: sqlite3.Connection) -> None:
+        """Add observability columns to tool_calls if missing."""
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(tool_calls)").fetchall()
+        }
+        if "outcome" not in existing:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN outcome TEXT NOT NULL DEFAULT 'success'"
+            )
+        if "attempt" not in existing:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"
+            )
+        if "details_json" not in existing:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "finished_at" not in existing:
+            conn.execute("ALTER TABLE tool_calls ADD COLUMN finished_at REAL")
+
+    @staticmethod
+    def _ensure_inflight_turns_storage_key(conn: sqlite3.Connection) -> None:
+        """Migrate legacy inflight_turns(chat_id PK) to storage_key PK."""
+        existing = conn.execute("PRAGMA table_info(inflight_turns)").fetchall()
+        if not existing:
+            return
+        names = {str(row["name"]) for row in existing}
+        if "storage_key" in names:
+            return
+        if "chat_id" not in names:
+            return
+
+        rows = conn.execute("SELECT chat_id, payload_json, updated_at FROM inflight_turns").fetchall()
+        migrated: list[tuple[str, str, float]] = []
+        for row in rows:
+            payload_json = str(row["payload_json"])
+            storage_key = f"tg:{int(row['chat_id'])}"
+            try:
+                payload = json.loads(payload_json)
+            except json.JSONDecodeError:
+                payload = {}
+            transport = str(payload.get("transport", "tg") or "tg")
+            chat_id = int(payload.get("chat_id", row["chat_id"]))
+            topic_id = payload.get("topic_id")
+            if topic_id in (None, ""):
+                storage_key = f"{transport}:{chat_id}"
+            else:
+                storage_key = f"{transport}:{chat_id}:{int(topic_id)}"
+            migrated.append((storage_key, payload_json, float(row["updated_at"])))
+
+        conn.execute("ALTER TABLE inflight_turns RENAME TO inflight_turns_legacy")
+        conn.execute(
+            """
+            CREATE TABLE inflight_turns (
+                storage_key TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO inflight_turns (storage_key, payload_json, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            migrated,
+        )
+        conn.execute("DROP TABLE inflight_turns_legacy")

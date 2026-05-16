@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.multiagent.stack import AgentStack
 from ductor_bot.runtime.state import (
     MessageRepository,
+    OutcomeEventRepository,
     ProcessRepository,
     RuntimeStateDB,
     TaskRepository,
@@ -107,19 +109,29 @@ class AgentSupervisor:
     def bus(self) -> InterAgentBus | None:
         return self._bus
 
-    async def start(self) -> int:
+    async def start(self) -> int:  # noqa: PLR0915
         """Start main agent + all sub-agents. Blocks until main agent exits."""
         self._running = True
 
         # Initialize inter-agent bus
         from ductor_bot.multiagent.bus import InterAgentBus
         from ductor_bot.multiagent.internal_api import InternalAgentAPI
+        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
 
         self._bus = InterAgentBus()
+        if not self._main_config.interagent_token:
+            self._main_config.interagent_token = secrets.token_urlsafe(32)
+            await update_config_file_async(
+                self._main_paths.config_path,
+                interagent_token=self._main_config.interagent_token,
+            )
+            logger.info("Generated internal agent API token (persisted to config)")
         self._internal_api = InternalAgentAPI(
             self._bus,
             port=self._main_config.interagent_port,
             docker_mode=self._main_config.docker.enabled,
+            auth_token=self._main_config.interagent_token,
+            bind_public=self._main_config.docker.bind_internal_api_public,
         )
         self._internal_api.set_health_ref(self._health)
         started = await self._internal_api.start()
@@ -128,23 +140,38 @@ class AgentSupervisor:
             raise RuntimeError(msg)
         logger.info("InterAgentBus and internal API started")
 
+        self._shared_knowledge = SharedKnowledgeSync(
+            self._main_paths.sharedmemory_path,
+            self,
+        )
+        await self._shared_knowledge.start()
+
         # Initialize task hub (background task delegation)
         if self._main_config.tasks.enabled:
             from ductor_bot.tasks.hub import TaskHub
             from ductor_bot.tasks.registry import TaskRegistry
 
             task_repo: TaskRepository | None = None
+            task_state_repo = None
             message_repo: MessageRepository | None = None
             process_repo: ProcessRepository | None = None
+            outcome_event_repo: OutcomeEventRepository | None = None
             if self._main_config.state_backend in {"dual", "sqlite"}:
                 runtime_db = RuntimeStateDB(self._main_config.resolved_state_db_path())
                 task_repo = TaskRepository(runtime_db)
+                from ductor_bot.runtime.state.repositories.task_state_repo import (
+                    TaskStateRepository,
+                )
+
+                task_state_repo = TaskStateRepository(runtime_db)
                 message_repo = MessageRepository(runtime_db)
                 process_repo = ProcessRepository(runtime_db)
+                outcome_event_repo = OutcomeEventRepository(runtime_db)
             registry = TaskRegistry(
                 registry_path=self._main_paths.tasks_registry_path,
                 tasks_dir=self._main_paths.tasks_dir,
                 state_repo=task_repo,
+                task_state_repo=task_state_repo,
                 state_backend=self._main_config.state_backend,
             )
             # #92: shared fallback ProcessRegistry. In practice every agent's
@@ -158,6 +185,7 @@ class AgentSupervisor:
                 cli_service=None,  # Set per-agent in _post_startup
                 process_repo=process_repo,
                 message_repo=message_repo,
+                outcome_event_repo=outcome_event_repo,
                 config=self._main_config.tasks,
                 process_registry=self._task_process_registry,
             )
@@ -206,14 +234,7 @@ class AgentSupervisor:
         # 3. Load and start sub-agents from agents.json
         await self._sync_sub_agents()
 
-        # 4. Start shared knowledge sync (SHAREDMEMORY.md → all agents)
-        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
-
-        shared_path = self._main_paths.ductor_home / "SHAREDMEMORY.md"
-        self._shared_knowledge = SharedKnowledgeSync(shared_path, self)
-        await self._shared_knowledge.start()
-
-        # 5. Start FileWatcher for agents.json
+        # 4. Start FileWatcher for agents.json
         await self._watcher.start()
 
         # 6. Wait for main agent to finish — it determines the exit code
@@ -493,10 +514,6 @@ class AgentSupervisor:
             name=f"agent:{name}",
         )
 
-        # Sync shared knowledge into the new agent's MAINMEMORY.md
-        if self._shared_knowledge:
-            await self._shared_knowledge.sync_agent(stack.paths.mainmemory_path)
-
         logger.info("Sub-agent '%s' started (home=%s)", name, agent_home)
 
     async def stop_agent(self, name: str) -> None:
@@ -656,8 +673,6 @@ class AgentSupervisor:
         """Shut down all agents and cleanup."""
         self._running = False
         await self._watcher.stop()
-        if self._shared_knowledge:
-            await self._shared_knowledge.stop()
 
         # Cancel in-flight async tasks before tearing down agents
         if self._bus:
@@ -688,6 +703,10 @@ class AgentSupervisor:
         # Stop task hub
         if self._task_hub:
             await self._task_hub.shutdown()
+
+        if self._shared_knowledge:
+            await self._shared_knowledge.stop()
+            self._shared_knowledge = None
 
         # Stop internal API
         if self._internal_api:

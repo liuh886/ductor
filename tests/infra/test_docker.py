@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -193,8 +194,7 @@ class TestDockerManager:
         from ductor_bot.infra.docker import DockerManager
 
         mgr = DockerManager(docker_config, docker_paths)
-        # Test the static method with a simple command
-        rc, output = await mgr._exec("echo", "hello")
+        rc, output = await mgr._exec(sys.executable, "-c", "print('hello')")
         assert rc == 0
         assert "hello" in output
 
@@ -330,8 +330,8 @@ class TestDockerManager:
             patch("shutil.which", return_value="/usr/bin/docker"),
             patch.object(mgr, "_exec", side_effect=mock_exec),
             patch("ductor_bot.infra.docker._needs_uid_mapping", return_value=True),
-            patch("os.getuid", return_value=1000),
-            patch("os.getgid", return_value=1000),
+            patch("os.getuid", return_value=1000, create=True),
+            patch("os.getgid", return_value=1000, create=True),
         ):
             await mgr.setup()
 

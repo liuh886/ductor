@@ -94,13 +94,10 @@ MAINMEMORY_REMINDER = MessageHook(
     name="mainmemory_reminder",
     condition=every_n_messages(6),
     suffix=(
-        "## MEMORY CHECK\n"
-        "Silently review: memory_system/MAINMEMORY.md, user_tools/, cron_tasks/.\n"
-        "Compare what you already know with this conversation so far.\n"
-        "If something important is missing from memory (personality, preferences, "
-        "decisions, facts) -- update MAINMEMORY.md silently.\n"
-        "If you notice a gap that only the user can fill, ask ONE natural follow-up "
-        "question that fits the current conversation. Do not interrogate."
+        "## Memory Check\n"
+        "Quietly compare this conversation with `memory_system/MAINMEMORY.md`.\n"
+        "Update durable memory only for reusable facts, preferences, decisions, or obligations.\n"
+        "If a single missing detail from the user would materially improve future work, ask one natural follow-up question."
     ),
 )
 
@@ -108,19 +105,14 @@ DELEGATION_BRIEF = MessageHook(
     name="delegation_brief",
     condition=on_new_session,
     suffix=(
-        "## BACKGROUND TASKS\n"
-        "You have background workers that execute tasks for you autonomously. "
-        "Any work that will likely take >30 seconds — delegate it. "
-        "The worker gets your instructions, runs independently, and reports back. "
-        "You keep chatting with the user while it works.\n"
-        '- **Create**: tools/task_tools/create_task.py --name "..." "prompt with ALL context"\n'
-        "- **Cancel**: tools/task_tools/cancel_task.py TASK_ID\n"
-        '- **Resume**: tools/task_tools/resume_task.py TASK_ID "follow-up"\n'
-        "  Resume keeps the worker's full context — use for refining results, "
-        "follow-ups, or delivering answers after a worker question.\n"
-        "- **Worker questions**: If a worker asks you something and you don't know "
-        "→ ask the user → resume the task with the answer.\n"
-        "Full docs: tools/task_tools/CLAUDE/GEMINI/AGENTS.md."
+        "## Routing Reminder\n"
+        "Start by deciding whether to answer directly or route the work.\n"
+        "Use `capability-router` plus background workers for tasks that are multi-step, cross-functional, long-running, or require formal deliverables.\n"
+        "Task tools:\n"
+        '- Create: `tools/task_tools/create_task.py --name "..." "prompt with full context"`\n'
+        "- Cancel: `tools/task_tools/cancel_task.py TASK_ID`\n"
+        '- Resume: `tools/task_tools/resume_task.py TASK_ID "follow-up"`\n'
+        "Keep the user-facing response focused on progress, outcomes, and the next useful step."
     ),
 )
 
@@ -128,9 +120,9 @@ DELEGATION_REMINDER = MessageHook(
     name="delegation_reminder",
     condition=_is_delegation_reminder_due,
     suffix=(
-        "## TASK REMINDER\n"
-        "Delegate work >30s to background tasks. Resume completed tasks for follow-ups "
-        "instead of creating new ones (keeps context). Docs: tools/task_tools/CLAUDE/GEMINI/AGENTS.md."
+        "## Routing Reminder\n"
+        "If the work now looks multi-step or long-running, route it instead of forcing a one-shot answer.\n"
+        "Resume existing tasks for follow-ups so the delegated context stays intact."
     ),
 )
 

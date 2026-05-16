@@ -32,6 +32,7 @@ sigkill = "Die Ausführung wurde unterbrochen. Bitte schick die gleiche Anfrage 
 not_found = "Session '{name}' nicht gefunden."
 ended = "Session '{name}' ist beendet. Starte eine neue mit /session."
 still_running = "Session '{name}' arbeitet noch. Warten oder mit /stop abbrechen."
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 
 # -- Stop/Interrupt ------------------------------------------------------------
 

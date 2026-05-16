@@ -669,6 +669,13 @@ class TestLogCmd:
             _log_cmd(cmd, streaming=False)
         assert "CLI cmd" in caplog.text
 
+    def test_redacts_secret_env_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        cmd = ["docker", "exec", "-e", "OPENAI_API_KEY=sk-secret-value", "claude"]
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.claude_provider"):
+            _log_cmd(cmd)
+        assert "OPENAI_API_KEY=<redacted>" in caplog.text
+        assert "sk-secret-value" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # _parse_response (additional edge cases beyond test_parse_response.py)

@@ -56,7 +56,7 @@ from ductor_bot.files.tags import (
 from ductor_bot.log_context import set_log_context
 from ductor_bot.security.paths import is_path_safe
 from ductor_bot.session.key import SessionKey
-from ductor_bot.text.response_format import normalize_tool_name
+from ductor_bot.text.response_format import ensure_text_response, normalize_tool_name
 
 if TYPE_CHECKING:
     from ductor_bot.config import ApiConfig
@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 # Callback types matching Orchestrator.handle_message_streaming / abort
 StreamingMessageHandler = Callable[..., Awaitable[Any]]
-AbortHandler = Callable[[int], Awaitable[int]]
+AbortHandler = Callable[[int, int | None], Awaitable[int]]
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
@@ -156,7 +156,7 @@ def _parse_file_refs(text: str) -> list[dict[str, object]]:
         p = path_from_file_tag(fp)
         refs.append(
             {
-                "path": str(p),
+                "path": p.as_posix(),
                 "name": p.name,
                 "is_image": is_image_path(str(p)),
             }
@@ -536,14 +536,14 @@ class ApiServer:
                 return
             # Intercept /stop since the orchestrator doesn't handle it
             if text.lower() == "/stop":
-                await self._dispatch_abort(channel, key.chat_id)
+                await self._dispatch_abort(channel, key.chat_id, key.topic_id)
                 return
             async with lock:
                 set_log_context(operation="api", chat_id=key.chat_id)
                 await self._dispatch_message(channel, key, text)
 
         elif msg_type == "abort":
-            await self._dispatch_abort(channel, key.chat_id)
+            await self._dispatch_abort(channel, key.chat_id, key.topic_id)
 
         else:
             await channel.send(
@@ -575,25 +575,23 @@ class ApiServer:
 
         callbacks = _StreamCallbacks(channel)
         result = await self._execute_streaming(key, text, callbacks)
+        if callbacks.disconnected:
+            logger.info("API client disconnected mid-stream, aborting key=%s", key.storage_key)
+            if self._handle_abort:
+                await self._handle_abort(key.chat_id, key.topic_id)
+            return
+
         if result is None:
             return
 
-        if callbacks.disconnected:
-            logger.info(
-                "API client disconnected mid-stream, aborting key=%s",
-                key.storage_key,
-            )
-            if self._handle_abort:
-                await self._handle_abort(key.chat_id)
-            return
-
         # Parse file references from the response for the app
-        files = _parse_file_refs(result.text)
+        result_text = ensure_text_response(result.text)
+        files = _parse_file_refs(result_text)
 
         await channel.send(
             {
                 "type": "result",
-                "text": result.text,
+                "text": result_text,
                 "stream_fallback": result.stream_fallback,
                 "files": files,
             },
@@ -632,9 +630,10 @@ class ApiServer:
         self,
         channel: _SecureChannel,
         chat_id: int,
+        topic_id: int | None = None,
     ) -> None:
         """Abort running CLI processes for this chat."""
         killed = 0
         if self._handle_abort:
-            killed = await self._handle_abort(chat_id)
+            killed = await self._handle_abort(chat_id, topic_id)
         await channel.send({"type": "abort_ok", "killed": killed})

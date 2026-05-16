@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.gemini_utils import find_gemini_cli
 from ductor_bot.config import NULLISH_TEXT_VALUES
+from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -122,6 +123,7 @@ def _claude_cli_logged_in() -> bool:
             text=True,
             timeout=10,
             check=False,
+            creationflags=_CREATION_FLAGS,
         )
         data = json.loads(proc.stdout)
         return data.get("loggedIn") is True

@@ -11,6 +11,7 @@ class TestTaskEntry:
             task_id="abc123",
             chat_id=42,
             parent_agent="main",
+            transport="tg",
             name="Flugsuche Paris",
             prompt_preview="Suche Flüge nach Paris",
             provider="claude",
@@ -26,12 +27,17 @@ class TestTaskEntry:
         assert restored.task_id == "abc123"
         assert restored.chat_id == 42
         assert restored.parent_agent == "main"
+        assert restored.transport == "tg"
         assert restored.name == "Flugsuche Paris"
         assert restored.provider == "claude"
         assert restored.model == "opus"
         assert restored.status == "running"
         assert restored.session_id == "sess-1"
         assert restored.question_count == 2
+        assert restored.follow_up_count == 0
+        assert restored.evaluation_status == ""
+        assert restored.outcome == ""
+        assert restored.empty_result is False
 
     def test_from_dict_defaults(self) -> None:
         d = {"task_id": "x", "chat_id": 1}
@@ -40,6 +46,9 @@ class TestTaskEntry:
         assert entry.name == ""
         assert entry.status == "running"
         assert entry.question_count == 0
+        assert entry.follow_up_count == 0
+        assert entry.evaluation_status == ""
+        assert entry.outcome == ""
 
     def test_to_dict_includes_original_prompt(self) -> None:
         """#90: original_prompt MUST be persisted so it survives bot restarts.
@@ -50,6 +59,7 @@ class TestTaskEntry:
             task_id="x",
             chat_id=1,
             parent_agent="main",
+            transport="tg",
             name="test",
             prompt_preview="short",
             provider="claude",
@@ -87,6 +97,7 @@ class TestTaskEntry:
             task_id="t1",
             chat_id=100,
             parent_agent="main",
+            transport="tg",
             name="topic-task",
             prompt_preview="short",
             provider="claude",
@@ -104,6 +115,7 @@ class TestTaskEntry:
             task_id="t2",
             chat_id=1,
             parent_agent="main",
+            transport="tg",
             name="",
             prompt_preview="",
             provider="",
@@ -126,6 +138,7 @@ class TestTaskSubmit:
             parent_agent="main",
         )
         assert sub.name == ""
+        assert sub.transport == "tg"
         assert sub.provider_override == ""
         assert sub.thinking_override == ""
 
@@ -146,6 +159,10 @@ class TestTaskResult:
         )
         assert result.status == "done"
         assert result.error == ""
+        assert result.follow_up_count == 0
+        assert result.evaluation_status == ""
+        assert result.outcome == ""
+        assert result.empty_result is False
 
     def test_thread_id_default(self) -> None:
         result = TaskResult(

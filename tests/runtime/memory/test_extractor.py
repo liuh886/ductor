@@ -1,7 +1,5 @@
 """Tests for deterministic Markdown memory fragment extraction."""
 
-# ruff: noqa: INP001
-
 from __future__ import annotations
 
 from ductor_bot.runtime.memory import MemoryFragment, extract_markdown_fragments
@@ -62,3 +60,27 @@ def test_extract_markdown_fragments_is_deterministic() -> None:
     assert first == second
     assert len(first) == 1
     assert all(isinstance(fragment, MemoryFragment) for fragment in first)
+
+
+def test_extract_markdown_fragments_ignores_yaml_frontmatter() -> None:
+    text = """---
+schema_version: 1
+memory_format: hybrid
+---
+
+# Main Memory
+
+## Preferences
+- keep answers short
+"""
+
+    fragments = extract_markdown_fragments(
+        text,
+        source_path="workspace/memory_system/MAINMEMORY.md",
+        source_kind="mainmemory",
+        scope="mainmemory",
+        agent_name="main",
+    )
+
+    assert [fragment.title for fragment in fragments] == ["Preferences"]
+    assert "schema_version" not in fragments[0].body

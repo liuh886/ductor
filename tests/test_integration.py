@@ -604,7 +604,9 @@ class TestFullRoundTrip:
         await orch.handle_message(KEY, "First message")
 
         request = mock_execute.call_args[0][0]
-        assert request.append_system_prompt == memory_text
+        assert request.system_prompt is not None
+        assert memory_text in request.system_prompt
+        assert request.append_system_prompt == ""
 
     async def test_resumed_session_skips_mainmemory_injection(
         self, orch_with_mock_cli: tuple[Orchestrator, AsyncMock]

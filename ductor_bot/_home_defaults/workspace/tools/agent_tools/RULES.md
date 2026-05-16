@@ -17,6 +17,14 @@ The user has two options:
 directly.** Do NOT show `python3 tools/...` commands to the user — those are
 internal tools for agent-to-agent communication only.
 
+## Memory Trilogy (SOP)
+
+All agents MUST follow these three rules for reliable operation:
+
+1. **Write with `replace`**: Always use the `replace` tool for surgical updates to `MAINMEMORY.md`. Avoid full file rewrites to prevent data loss.
+2. **Read unknown entities**: If you encounter a project, path, or entity you don't recognize, search the available root and sub-agent `state.db` files via `python3 tools/agent_tools/search_past_sessions.py "query"`.
+3. **Broadcast env changes**: If you change ports, environment variables, or global paths, broadcast it immediately via `python3 tools/agent_tools/edit_shared_knowledge.py --append "fact"`.
+
 ## Available Tools (internal, not user-facing)
 
 | Tool | Purpose | Availability |
@@ -222,7 +230,9 @@ can follow up directly with the sub-agent if needed.
 ## Shared Knowledge
 
 `SHAREDMEMORY.md` contains knowledge shared across all agents. Changes are
-automatically synced into every agent's MAINMEMORY.md via the supervisor.
+watched by the supervisor and loaded dynamically at runtime. Treat it as a
+small cross-agent alert channel, not a mirrored dump into every agent's
+`MAINMEMORY.md`.
 
 ```bash
 # View current shared knowledge
@@ -246,4 +256,16 @@ The workspace can be reused if the agent is re-created with the same name.
 
 ```bash
 python3 tools/agent_tools/remove_agent.py "agent-name"
+```
+
+## Searching Past Sessions
+
+To strengthen cross-session recall, use `search_past_sessions.py` to search the available root and sub-agent `state.db` files. It checks:
+
+- `messages_fts` for past message history
+- `memory_fragments` for stored shared/main memory fragments
+
+```bash
+# Search for a keyword or pattern
+python3 tools/agent_tools/search_past_sessions.py "deployment strategy"
 ```

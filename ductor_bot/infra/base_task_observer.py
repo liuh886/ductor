@@ -65,4 +65,7 @@ class BaseTaskObserver:
             )
         if result.execution.stderr:
             stderr_preview = result.execution.stderr.decode(errors="replace")[:500]
-            logger.debug("%s stderr (%s): %s", label, job_id, stderr_preview)
+            if result.status.startswith("error:"):
+                logger.warning("%s stderr (%s): %s", label, job_id, stderr_preview)
+            else:
+                logger.debug("%s stderr (%s): %s", label, job_id, stderr_preview)

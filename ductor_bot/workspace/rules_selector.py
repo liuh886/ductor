@@ -129,7 +129,7 @@ class RulesSelector:
 
         return None
 
-    def deploy_rules(self) -> None:
+    def deploy_rules(self) -> None:  # noqa: C901
         """Auto-discover and deploy all rule files to ~/.ductor/.
 
         Scans _home_defaults/ for directories with RULES templates, selects

@@ -71,7 +71,7 @@ async def test_memory_flusher_fires_silent_turn_after_boundary(tmp_path: Path) -
 
     assert cli.execute.await_count == 1
     request = cli.execute.await_args[0][0]
-    assert request.prompt == MemoryFlushConfig().flush_prompt
+    assert "pending memory candidates" in request.prompt
     assert request.resume_session == "sess-abc"
     assert request.chat_id == 101
     assert request.process_label == "memory_flush"

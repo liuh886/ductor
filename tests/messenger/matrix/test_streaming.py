@@ -140,12 +140,14 @@ class TestFinalize:
     async def test_no_text_at_all(self) -> None:
         editor, _client, send_fn = _make_editor()
         await editor.finalize(None)
-        send_fn.assert_not_awaited()
+        send_fn.assert_awaited_once()
+        assert "No final text response was returned" in send_fn.call_args[0][1]
 
     async def test_empty_buffer_empty_result(self) -> None:
         editor, _client, send_fn = _make_editor()
         await editor.finalize("")
-        send_fn.assert_not_awaited()
+        send_fn.assert_awaited_once()
+        assert "No final text response was returned" in send_fn.call_args[0][1]
 
     async def test_button_extraction_on_final(self) -> None:
         bt = ButtonTracker()
@@ -171,7 +173,8 @@ class TestFinalize:
         editor, _client, send_fn = _make_editor()
         await editor.on_delta("   ")
         await editor.finalize(None)
-        send_fn.assert_not_awaited()
+        send_fn.assert_awaited_once()
+        assert "No final text response was returned" in send_fn.call_args[0][1]
 
 
 class TestFullFlow:

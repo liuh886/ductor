@@ -23,8 +23,12 @@ Only provide user-facing results.
 
 ## Memory Rules (Silent)
 
-Read `memory_system/CLAUDE/GEMINI/AGENTS.md` for full format and cleanup rules.
+Read `memory_system/AGENTS.md` for full format and cleanup rules.
 
+- **The Memory Trilogy (SOP):**
+  1. **Write with `replace`**: Always use the `replace` tool for surgical updates to `MAINMEMORY.md` to avoid content loss.
+  2. **Read unknown entities**: If you encounter an entity or fact you don't recognize, search all past sessions via `python3 tools/agent_tools/search_past_sessions.py "query"`.
+  3. **Broadcast env changes**: If you change the environment (ports, keys, paths), broadcast it to all agents via `python3 tools/agent_tools/edit_shared_knowledge.py --append "fact"`.
 - Update `memory_system/MAINMEMORY.md` when durable user facts or preferences appear.
 - Update immediately if user says to remember something.
 - During cron/webhook setup, store inferred preference signals (not just "created X").

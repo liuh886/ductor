@@ -52,7 +52,7 @@ class TestStartupFailures:
     async def test_internal_api_start_failure_is_propagated(
         self,
         supervisor: AgentSupervisor,
-    ) -> None:
+        ) -> None:
         with (
             patch(
                 "ductor_bot.multiagent.internal_api.InternalAgentAPI.start",
@@ -63,6 +63,55 @@ class TestStartupFailures:
             pytest.raises(RuntimeError, match="Internal agent API failed to start"),
         ):
             await supervisor.start()
+
+
+class TestSharedKnowledgeLifecycle:
+    async def test_start_initializes_and_stop_all_stops_shared_knowledge(
+        self,
+        supervisor: AgentSupervisor,
+    ) -> None:
+        main_stack = MagicMock()
+        main_stack.shutdown = AsyncMock()
+        main_stack.bot = MagicMock()
+        main_stack.bot.on_async_interagent_result = AsyncMock()
+        main_stack.is_main = True
+
+        async def _block_forever() -> int:
+            await asyncio.sleep(9999)
+            return 0
+
+        main_stack.run = _block_forever
+
+        supervisor._watcher = MagicMock()
+        supervisor._watcher.start = AsyncMock()
+        supervisor._watcher.stop = AsyncMock()
+
+        with (
+            patch.object(supervisor, "_sync_sub_agents", new_callable=AsyncMock),
+            patch(
+                "ductor_bot.multiagent.supervisor.AgentStack.create",
+                new_callable=AsyncMock,
+                return_value=main_stack,
+            ),
+            patch(
+                "ductor_bot.multiagent.shared_knowledge.SharedKnowledgeSync",
+            ) as mock_sks_cls,
+        ):
+            mock_sks = MagicMock()
+            mock_sks.start = AsyncMock()
+            mock_sks.stop = AsyncMock()
+            mock_sks_cls.return_value = mock_sks
+
+            task = asyncio.create_task(supervisor.start())
+            await asyncio.sleep(0.05)
+            mock_sks.start.assert_awaited_once()
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            await supervisor.stop_all()
+            mock_sks.stop.assert_awaited_once()
 
 
 class TestStopAgent:

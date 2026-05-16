@@ -11,7 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from ductor_bot.text.response_format import normalize_tool_name
+from ductor_bot.text.response_format import ensure_text_response, normalize_tool_name
 
 if TYPE_CHECKING:
     from nio import AsyncClient
@@ -91,6 +91,12 @@ class MatrixStreamEditor:
         elif result_text:
             # Fallback: no deltas received but orchestrator returned text.
             formatted = self._button_tracker.extract_and_format(self._room_id, result_text)
+            await self._send_fn(self._room_id, formatted)
+        else:
+            formatted = self._button_tracker.extract_and_format(
+                self._room_id,
+                ensure_text_response(result_text),
+            )
             await self._send_fn(self._room_id, formatted)
 
     async def _flush_and_tag(self, _tag: str) -> None:

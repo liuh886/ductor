@@ -189,6 +189,42 @@ class TestExecuteOneShotStdin:
         assert call_kwargs["stdin"] == asyncio.subprocess.DEVNULL
         proc.communicate.assert_called_once_with(input=None)
 
+    async def test_nonzero_exit_without_stdout_uses_stderr_fallback(self) -> None:
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            proc = AsyncMock()
+            proc.communicate.return_value = (b"", b"fatal: script path missing\n")
+            proc.returncode = 1
+            mock_exec.return_value = proc
+
+            result = await execute_one_shot(
+                OneShotCommand(cmd=["/usr/bin/gemini", "-p", ""], stdin_input=b"hello"),
+                cwd=Path("/tmp"),
+                provider="gemini",
+                timeout_seconds=60,
+                timeout_label="Test",
+            )
+
+        assert result.status == "error:exit_1"
+        assert "fatal: script path missing" in result.result_text
+
+    async def test_success_without_stdout_uses_empty_response_fallback(self) -> None:
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+            proc = AsyncMock()
+            proc.communicate.return_value = (b"", b"")
+            proc.returncode = 0
+            mock_exec.return_value = proc
+
+            result = await execute_one_shot(
+                OneShotCommand(cmd=["/usr/bin/codex", "exec", "--json"], stdin_input=None),
+                cwd=Path("/tmp"),
+                provider="codex",
+                timeout_seconds=60,
+                timeout_label="Test",
+            )
+
+        assert result.status == "success"
+        assert "No final text response was returned" in result.result_text
+
 
 class TestEnrichInstruction:
     def test_appends_memory_instructions(self) -> None:

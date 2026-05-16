@@ -68,7 +68,7 @@ Both implement `BotProtocol`. Adding a new transport requires only a new factory
 4. create/start main `AgentStack`
 5. wait for main readiness (`_main_ready`)
 6. load/start sub-agents from `agents.json`
-7. start `SharedKnowledgeSync`
+7. shared-memory context is read dynamically at prompt-build time; there is no per-agent shared-memory mirror phase
 8. start `agents.json` watcher
 9. block on main completion and return its exit code
 
@@ -278,6 +278,12 @@ Rule sync:
 
 - recursive mtime sync for `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
 - task-folder provider rules backfilled by `ensure_task_rule_files(...)`
+
+## Shared Memory Notes
+
+- `SHAREDMEMORY.md` is a global cross-agent alert channel, not a durable memory dump.
+- Runtime prompt assembly reads shared memory dynamically; agents should not rely on it being copied into local `MAINMEMORY.md`.
+- Watcher-side guardrails warn on oversized content and secret-like lines, but remain advisory for backward compatibility.
 
 ## Multi-Agent Notes
 

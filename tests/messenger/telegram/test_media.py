@@ -19,6 +19,7 @@ def _make_message(
     document: bool = False,
     video: bool = False,
     audio: bool = False,
+    animation: bool = False,
     sticker: bool = False,
     video_note: bool = False,
     caption: str | None = None,
@@ -41,6 +42,7 @@ def _make_message(
     msg.document = None
     msg.video = None
     msg.audio = None
+    msg.animation = None
     msg.sticker = None
     msg.video_note = None
 
@@ -75,6 +77,13 @@ def _make_message(
         a.file_name = "song.mp3"
         a.mime_type = "audio/mpeg"
         msg.audio = a
+
+    if animation:
+        a = MagicMock()
+        a.file_unique_id = "anim1"
+        a.file_name = "clip.gif"
+        a.mime_type = "image/gif"
+        msg.animation = a
 
     if sticker:
         s = MagicMock()
@@ -131,6 +140,11 @@ class TestHasMedia:
         from ductor_bot.messenger.telegram.media import has_media
 
         assert has_media(_make_message(video_note=True)) is True
+
+    def test_animation(self) -> None:
+        from ductor_bot.messenger.telegram.media import has_media
+
+        assert has_media(_make_message(animation=True)) is True
 
 
 # ---------------------------------------------------------------------------

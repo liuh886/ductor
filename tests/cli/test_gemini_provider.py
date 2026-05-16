@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from ductor_bot.cli.base import CLIConfig
+from ductor_bot.orchestrator.capabilities.models import CapabilityExecutionPlan, SelectedSkill
 
 if TYPE_CHECKING:
     import pytest
@@ -137,6 +139,39 @@ class TestBuildCommand:
         assert "-p" not in cmd
         assert "--prompt" not in cmd
 
+    def test_omits_directory_context_when_plan_disables_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(
+            monkeypatch,
+            capability_plan=CapabilityExecutionPlan(
+                provider="gemini",
+                include_directories=False,
+            ),
+        )
+        cmd = cli._build_command()
+        assert "--include-directories" not in cmd
+
+    def test_filters_container_only_include_directories_on_host_fast_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(
+            monkeypatch,
+            docker_container="ductor-sandbox",
+            cli_parameters=["--include-directories", "/mnt", "--foo", "bar"],
+            capability_plan=CapabilityExecutionPlan(
+                provider="gemini",
+                include_directories=False,
+                runtime_profile="chat_light",
+            ),
+        )
+
+        cmd = cli._build_command(use_host_exec=True)
+
+        assert "/mnt" not in cmd
+        assert "--foo" in cmd
+        assert "bar" in cmd
+
 
 class TestPrepareEnv:
     def test_prepends_cli_parent_when_cli_path_is_absolute(
@@ -194,6 +229,90 @@ class TestPrepareEnv:
             env = cli._prepare_env()
 
         assert env["GEMINI_API_KEY"] == "cfg-key-123"
+
+    def test_prepare_env_uses_isolated_runtime_with_selected_skills(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source_home = tmp_path / "source-home"
+        source_dotgemini = source_home / ".gemini"
+        source_dotgemini.mkdir(parents=True)
+        (source_dotgemini / "settings.json").write_text(
+            '{"security":{"auth":{"selectedType":"oauth-personal"}}}',
+            encoding="utf-8",
+        )
+        skill_dir = tmp_path / "skills" / "brainstorming"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: brainstorming\n---\n", encoding="utf-8")
+        fake_paths = type("P", (), {"ductor_home": tmp_path / "ductor-home"})()
+        monkeypatch.setattr("ductor_bot.cli.gemini_provider.resolve_paths", lambda: fake_paths)
+        cli = _make_cli(
+            monkeypatch,
+            capability_plan=CapabilityExecutionPlan(
+                provider="gemini",
+                include_directories=False,
+                selected_skills=(
+                    SelectedSkill(name="brainstorming", source_path=str(skill_dir)),
+                ),
+            ),
+        )
+
+        with patch.dict("os.environ", {"GEMINI_CLI_HOME": str(source_home)}, clear=False):
+            env = cli._prepare_env()
+
+        runtime_home = Path(env["GEMINI_CLI_HOME"])
+        assert runtime_home.exists()
+        assert (runtime_home / ".gemini" / "settings.json").is_file()
+        assert (runtime_home / ".gemini" / "skills" / "brainstorming" / "SKILL.md").is_file()
+
+    def test_chat_light_uses_host_fast_path_even_when_docker_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(
+            monkeypatch,
+            docker_container="ductor-sandbox",
+            capability_plan=CapabilityExecutionPlan(
+                provider="gemini",
+                include_directories=False,
+                runtime_profile="chat_light",
+            ),
+        )
+
+        cmd = cli._build_command(use_host_exec=cli._should_use_host_fast_path())
+        exec_cmd, cwd, env = cli._resolve_exec(
+            cmd,
+            None,
+            use_host_exec=cli._should_use_host_fast_path(),
+        )
+
+        assert exec_cmd[0] == "/usr/bin/gemini"
+        assert cwd is not None
+        assert env is not None
+
+    def test_bot4_assistant_never_uses_host_fast_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(
+            monkeypatch,
+            agent_name="bot4-assistant",
+            docker_container="ductor-sandbox",
+            capability_plan=CapabilityExecutionPlan(
+                provider="gemini",
+                include_directories=False,
+                runtime_profile="chat_light",
+            ),
+        )
+
+        cmd = cli._build_command(use_host_exec=cli._should_use_host_fast_path())
+        exec_cmd, cwd, env = cli._resolve_exec(
+            cmd,
+            None,
+            use_host_exec=cli._should_use_host_fast_path(),
+        )
+
+        assert exec_cmd[:3] == ["docker", "exec", "-i"]
+        assert "ductor-sandbox" in exec_cmd
+        assert cwd is None
+        assert env is None
 
     def test_does_not_inject_config_api_key_for_oauth_mode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -457,3 +576,20 @@ class TestLogCmd:
 
     def test_streaming_label(self) -> None:
         _log_cmd(["gemini", "--output-format", "stream-json"], streaming=True)
+
+    def test_redacts_secret_env_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        cmd = [
+            "docker",
+            "exec",
+            "-e",
+            "OPENAI_API_KEY=sk-secret-value",
+            "-e",
+            "GEMINI_API_KEY=gm-secret-value",
+            "gemini",
+        ]
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.gemini_provider"):
+            _log_cmd(cmd)
+        assert "OPENAI_API_KEY=<redacted>" in caplog.text
+        assert "GEMINI_API_KEY=<redacted>" in caplog.text
+        assert "sk-secret-value" not in caplog.text
+        assert "gm-secret-value" not in caplog.text

@@ -14,6 +14,7 @@ from ductor_bot.cli.base import (
     BaseCLI,
     CLIConfig,
     docker_wrap,
+    redact_command_for_logging,
 )
 from ductor_bot.cli.codex_events import (
     CodexThinkingFilter,
@@ -110,12 +111,17 @@ class CodexCLI(BaseCLI):
     def _build_resume_command(
         self, final_prompt: str, session_id: str, *, json_output: bool
     ) -> list[str]:
-        """Build command to resume an existing Codex session."""
+        """Build command to resume an existing Codex session.
+
+        Codex 0.107.0 rejects sandbox flags on ``exec resume``. Keep the
+        command to the minimal supported shape and rely on stdin for the prompt
+        on Windows to avoid command-line length limits.
+        """
         cmd = [self._cli, "exec", "resume"]
         if json_output:
             cmd.append("--json")
-        cmd += self._sandbox_flags()
-        cmd += ["--", session_id]
+        cmd.append("--skip-git-repo-check")
+        cmd.append(session_id)
         cmd.append("-" if _IS_WINDOWS else final_prompt)
         return cmd
 
@@ -159,13 +165,22 @@ class CodexCLI(BaseCLI):
         cmd.append("-" if _IS_WINDOWS else final_prompt)
         return cmd
 
+    def _stdin_prompt(self, prompt: str) -> str:
+        """Return the stdin payload used for Windows Codex invocations."""
+        if not _IS_WINDOWS:
+            return ""
+        return self._compose_prompt(prompt)
+
     def _docker_wrap(self, cmd: list[str]) -> tuple[list[str], str | None]:
         """Keep stdin open for Dockerized Codex on Windows so prompts reach the CLI."""
-        return docker_wrap(
+        exec_cmd, use_cwd = docker_wrap(
             cmd,
             self._config,
             interactive=_IS_WINDOWS,
         )
+        if self._config.docker_container:
+            exec_cmd = _codex_docker_exec_cmd(exec_cmd, self._config.docker_container)
+        return exec_cmd, use_cwd
 
     async def send(
         self,
@@ -181,13 +196,12 @@ class CodexCLI(BaseCLI):
         cmd = self._build_command(prompt, resume_session, json_output=True)
         exec_cmd, use_cwd = self._docker_wrap(cmd)
         _log_cmd(exec_cmd)
-        stdin_prompt = self._compose_prompt(prompt) if _IS_WINDOWS else prompt
         return await run_oneshot_subprocess(
             config=self._config,
             spec=SubprocessSpec(
                 exec_cmd,
                 use_cwd,
-                stdin_prompt,
+                self._stdin_prompt(prompt),
                 timeout_seconds,
                 timeout_controller,
             ),
@@ -218,11 +232,11 @@ class CodexCLI(BaseCLI):
                 for event in thinking_filter.process(raw_event):
                     state.track(event)
                     yield event
+
+        async def post_handler(result: SubprocessResult) -> AsyncGenerator[StreamEvent, None]:
             for event in thinking_filter.flush():
                 state.track(event)
                 yield event
-
-        async def post_handler(result: SubprocessResult) -> AsyncGenerator[StreamEvent, None]:
             yield _codex_final_result(
                 result,
                 state.accumulated_text,
@@ -235,7 +249,7 @@ class CodexCLI(BaseCLI):
             spec=SubprocessSpec(
                 exec_cmd,
                 use_cwd,
-                self._compose_prompt(prompt) if _IS_WINDOWS else prompt,
+                self._stdin_prompt(prompt),
                 timeout_seconds,
                 timeout_controller,
             ),
@@ -384,6 +398,25 @@ def _extract_codex_error_detail(raw: str) -> str:
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
     """Log the CLI command with truncated long values."""
-    safe_cmd = [(c[:80] + "...") if len(c) > 80 else c for c in cmd]
+    safe_cmd = redact_command_for_logging(cmd, truncate_long_options=False)
     prefix = "Codex stream cmd" if streaming else "Codex cmd"
     logger.info("%s: %s", prefix, " ".join(safe_cmd))
+
+
+def _codex_docker_exec_cmd(cmd: list[str], container_name: str) -> list[str]:
+    """Run Codex in Docker as root while preserving the node user's Codex home.
+
+    Codex CLI 0.130.0 needs root in the sandbox container to initialize its
+    in-process app-server client, but the authenticated state is mounted under
+    ``/home/node/.codex``.
+    """
+    if len(cmd) < 3 or cmd[0] != "docker" or cmd[1] != "exec" or container_name not in cmd:
+        return cmd
+
+    container_idx = cmd.index(container_name)
+    options = cmd[2:container_idx]
+    if "-u" not in options and "--user" not in options:
+        options = ["-u", "root", *options]
+
+    env_flags = ["-e", "HOME=/home/node", "-e", "CODEX_HOME=/home/node/.codex"]
+    return [*cmd[:2], *options, *env_flags, *cmd[container_idx:]]

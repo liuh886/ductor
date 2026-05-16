@@ -172,6 +172,7 @@ class NonStreamingDispatch:
     reply_to: Message | None = None
     thread_id: int | None = None
     scene_config: SceneConfig | None = None
+    timeout_seconds: float | None = None
 
 
 @dataclass(slots=True)

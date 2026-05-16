@@ -15,6 +15,7 @@ from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
 from ductor_bot.workspace.skill_sync import cleanup_ductor_links, sync_bundled_skills, sync_skills
 
 if TYPE_CHECKING:
+    from ductor_bot.bus.lock_pool import LockPool
     from ductor_bot.config import AgentConfig
     from ductor_bot.orchestrator.core import Orchestrator
 
@@ -62,6 +63,7 @@ async def create_orchestrator(
         inject_runtime_environment,
         paths,
         docker_container=docker_container,
+        docker_mounts=list(config.docker.mounts),
         agent_name=agent_name,
         transport=config.transport,
     )
@@ -72,6 +74,7 @@ async def create_orchestrator(
         docker_container=docker_container,
         agent_name=agent_name,
         interagent_port=config.interagent_port,
+        interagent_token=config.interagent_token,
     )
     orch._docker = docker_mgr
 
@@ -106,10 +109,6 @@ async def create_orchestrator(
     orch._providers._codex_cache_fn = lambda: orch._observers.codex_cache
     await orch._observers.start_all(docker_container=docker_container)
 
-    # Direct API server (WebSocket, designed for Tailscale)
-    if config.api.enabled:
-        await start_api_server(orch, config, paths)
-
     await orch._observers.start_config_reloader(
         on_hot_reload=orch._on_config_hot_reload,
         on_restart_needed=lambda fields: logger.warning(
@@ -124,6 +123,8 @@ async def start_api_server(
     orch: Orchestrator,
     config: AgentConfig,
     paths: DuctorPaths,
+    *,
+    lock_pool: LockPool | None = None,
 ) -> None:
     """Initialize and start the direct WebSocket API server."""
     try:
@@ -148,7 +149,7 @@ async def start_api_server(
     default_chat_id = config.api.chat_id or (
         config.allowed_user_ids[0] if config.allowed_user_ids else 1
     )
-    server = ApiServer(config.api, default_chat_id=default_chat_id)
+    server = ApiServer(config.api, default_chat_id=default_chat_id, lock_pool=lock_pool)
     server.set_message_handler(orch.handle_message_streaming)
     server.set_abort_handler(orch.abort)
     server.set_file_context(
@@ -158,7 +159,10 @@ async def start_api_server(
     )
     server.set_provider_info(orch._providers.build_provider_info(orch._observers.codex_cache_obs))
     server.set_active_state_getter(
-        lambda: orch._providers.resolve_runtime_target(orch._config.model)
+        lambda: (
+            orch._providers.resolve_runtime_target(orch._config.model)[1],
+            orch._providers.resolve_runtime_target(orch._config.model)[0],
+        )
     )
 
     try:

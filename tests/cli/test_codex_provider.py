@@ -220,7 +220,7 @@ class TestBuildCommand:
 
         cmd = cli._build_command("hello", resume_session="thread-abc")
 
-        assert cmd[-3:] == ["--", "thread-abc", "-"]
+        assert cmd[-2:] == ["thread-abc", "-"]
         assert "hello" not in cmd
 
     @pytest.mark.parametrize(
@@ -277,12 +277,14 @@ class TestBuildCommand:
         assert cmd[1] == "exec"
         assert cmd[2] == "resume"
         assert "--json" in cmd
-        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
-        assert "thread-abc" in cmd
-        # resume does not include --model, --color, --skip-git-repo-check
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+        assert "--sandbox" not in cmd
+        assert cmd[-2] == "thread-abc"
+        assert cmd[-1] == "hello"
+        # resume does not include sandbox/model/color flags
         assert "--model" not in cmd
         assert "--color" not in cmd
-        assert "--skip-git-repo-check" not in cmd
+        assert "--skip-git-repo-check" in cmd
 
     def test_resume_session_json_output_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
@@ -290,6 +292,8 @@ class TestBuildCommand:
         cmd = cli._build_command("hello", resume_session="th-1", json_output=False)
         assert "resume" in cmd
         assert "--json" not in cmd
+        assert cmd[-2] == "th-1"
+        assert cmd[-1] == "hello"
 
     def test_prompt_composed_in_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
@@ -307,6 +311,28 @@ class TestBuildCommand:
         final_arg = cmd[-1]
         assert "SYS" in final_arg
         assert "user msg" in final_arg
+
+    def test_windows_exec_uses_stdin_instead_of_prompt_arg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", True)
+        cli = _make_cli(monkeypatch, system_prompt="SYS", append_system_prompt="APPEND")
+        cmd = cli._build_command("user msg")
+        assert cmd[-2:] == ["--", "-"]
+        assert "user msg" not in cmd
+        assert cli._stdin_prompt("user msg") == "SYS\n\nuser msg\n\nAPPEND"
+
+    def test_windows_resume_uses_stdin_and_omits_prompt_arg(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", True)
+        cli = _make_cli(monkeypatch, system_prompt="SYS")
+        cmd = cli._build_command("user msg", resume_session="th-1")
+        assert cmd[-2:] == ["th-1", "-"]
+        assert "user msg" not in cmd
+        assert "--sandbox" not in cmd
+        assert "--skip-git-repo-check" in cmd
+        assert cli._stdin_prompt("user msg") == "SYS\n\nuser msg"
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +781,43 @@ class TestSendStreaming:
         assert tool_events[0].tool_name == "Bash"
         assert tool_events[1].tool_name == "Edit"
 
+    async def test_streaming_suppresses_pre_tool_agent_text_across_lines(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(monkeypatch)
+        lines = [
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "I should inspect files first"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.started",
+                    "item": {"type": "command_execution"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "Final answer"},
+                }
+            ),
+        ]
+        proc = _make_streaming_process(lines, returncode=0)
+
+        with patch("ductor_bot.cli.executor.asyncio") as mock_asyncio:
+            mock_asyncio.timeout = asyncio.timeout
+            mock_asyncio.subprocess = asyncio.subprocess
+            mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
+            mock_asyncio.create_task = asyncio.ensure_future
+
+            events = await _collect_events(cli.send_streaming("hello"))
+
+        text_events = [e for e in events if isinstance(e, AssistantTextDelta)]
+        assert [e.text for e in text_events] == ["Final answer"]
+
     async def test_streaming_with_thinking_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
         cli = _make_cli(monkeypatch)
         lines = [
@@ -1048,6 +1111,13 @@ class TestLogCmd:
             _log_cmd(["codex", "exec"], streaming=False)
         assert "Codex cmd" in caplog.text
 
+    def test_redacts_secret_env_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        cmd = ["docker", "exec", "-e", "OPENAI_API_KEY=sk-secret-value", "codex", "exec"]
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.codex_provider"):
+            _log_cmd(cmd)
+        assert "OPENAI_API_KEY=<redacted>" in caplog.text
+        assert "sk-secret-value" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Docker wrapping integration
@@ -1116,7 +1186,9 @@ class TestDockerIntegration:
             await cli.send("hello")
 
         exec_cmd = mock_asyncio.create_subprocess_exec.call_args.args
-        assert exec_cmd[:3] == ("docker", "exec", "-i")
+        assert exec_cmd[:5] == ("docker", "exec", "-u", "root", "-i")
+        assert "HOME=/home/node" in exec_cmd
+        assert "CODEX_HOME=/home/node/.codex" in exec_cmd
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Test that framework tools in cron_tools/ and webhook_tools/ are Zone 2."""
+"""Test that framework-managed tool directories are Zone 2."""
 
 from pathlib import Path
 
@@ -16,9 +16,10 @@ def temp_workspace(tmp_path: Path):
     # Create framework tool structure
     cron_tools = home_defaults / "workspace" / "tools" / "cron_tools"
     webhook_tools = home_defaults / "workspace" / "tools" / "webhook_tools"
+    agent_tools = home_defaults / "workspace" / "tools" / "agent_tools"
     user_tools = home_defaults / "workspace" / "tools" / "user_tools"
 
-    for d in [cron_tools, webhook_tools, user_tools]:
+    for d in [cron_tools, webhook_tools, agent_tools, user_tools]:
         d.mkdir(parents=True)
 
     return home_defaults, ductor_home
@@ -103,6 +104,27 @@ def test_user_tools_py_files_are_zone3(temp_workspace):
 
     # File should still have user's version
     assert deployed_tool.read_text() == "# user's custom version"
+
+
+def test_agent_tools_py_files_are_zone2(temp_workspace):
+    """Test that .py files in tools/agent_tools/ are always overwritten (Zone 2)."""
+    home_defaults, ductor_home = temp_workspace
+
+    agent_tools = home_defaults / "workspace" / "tools" / "agent_tools"
+    tool_file = agent_tools / "memory_atomic_op.py"
+    tool_file.write_text("# version 1")
+
+    _walk_and_copy(home_defaults, ductor_home)
+
+    deployed_tool = ductor_home / "workspace" / "tools" / "agent_tools" / "memory_atomic_op.py"
+    assert deployed_tool.exists()
+    assert deployed_tool.read_text() == "# version 1"
+
+    tool_file.write_text("# version 2 - UPDATED")
+
+    _walk_and_copy(home_defaults, ductor_home)
+
+    assert deployed_tool.read_text() == "# version 2 - UPDATED"
 
 
 def test_non_py_files_in_tool_dirs_are_zone3(temp_workspace):

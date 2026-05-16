@@ -13,6 +13,8 @@ from ductor_bot.runtime.state import RuntimeStateDB
 def _make_turn(
     chat_id: int = 100,
     *,
+    transport: str = "tg",
+    topic_id: int | None = None,
     provider: str = "claude",
     model: str = "opus",
     session_id: str = "sess-1",
@@ -30,6 +32,8 @@ def _make_turn(
         started_at=started_at or datetime.now(UTC).isoformat(),
         is_recovery=is_recovery,
         path=path,
+        transport=transport,
+        topic_id=topic_id,
     )
 
 
@@ -73,6 +77,17 @@ class TestRecoveryPlannerForeground:
         planner = RecoveryPlanner(inflight=tracker, named_sessions=[], max_age_seconds=9999)
         actions = planner.plan()
         assert actions[0].session_id == "abc-123"
+
+    def test_same_chat_multiple_topics_are_all_recoverable(self, tmp_path: Path) -> None:
+        tracker = _make_sqlite_tracker(tmp_path)
+        tracker.begin(_make_turn(chat_id=100, topic_id=10, prompt_preview="topic-10"))
+        tracker.begin(_make_turn(chat_id=100, topic_id=20, prompt_preview="topic-20"))
+
+        planner = RecoveryPlanner(inflight=tracker, named_sessions=[], max_age_seconds=9999)
+        actions = sorted(planner.plan(), key=lambda action: action.prompt_preview)
+
+        assert len(actions) == 2
+        assert [action.prompt_preview for action in actions] == ["topic-10", "topic-20"]
 
 
 class TestRecoveryPlannerNamedSessions:

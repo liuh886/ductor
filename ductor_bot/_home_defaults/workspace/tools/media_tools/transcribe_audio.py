@@ -24,6 +24,10 @@ _TELEGRAM_FILES = Path(
     os.environ.get("DUCTOR_HOME", str(Path.home() / ".ductor"))
 ).expanduser() / "workspace" / "telegram_files"
 
+def _split_command(raw: str) -> list[str]:
+    """Split a shell-style command string in a platform-safe way."""
+    return shlex.split(raw, posix=os.name != "nt")
+
 
 def _transcribe_external(path: Path) -> dict:
     """Transcribe via the ``DUCTOR_TRANSCRIBE_COMMAND`` external hook (#66).
@@ -41,7 +45,7 @@ def _transcribe_external(path: Path) -> dict:
         return {"error": "DUCTOR_TRANSCRIBE_COMMAND unset"}
 
     try:
-        argv = shlex.split(raw)
+        argv = _split_command(raw)
     except ValueError as exc:
         return {"error": f"Invalid DUCTOR_TRANSCRIBE_COMMAND: {exc}"}
     if not argv:

@@ -190,6 +190,27 @@ def _parse_message_content_block(block: Any) -> list[StreamEvent]:
     return []
 
 
+def _split_thought_and_text(text: str) -> list[StreamEvent]:
+    r"""Split a Gemini text block into ThinkingEvent + AssistantTextDelta.
+
+    Gemini CLI wraps thought parts as ``[Thought: <value>]`` optionally
+    followed by ``\n<real content>``. We emit the marker as a
+    ThinkingEvent so transports that skip thinking (Telegram by default)
+    don't leak ``[Thought: true]`` into the chat, while preserving any
+    non-thought content after the marker.
+    """
+    match = _THOUGHT_MARKER_RE.match(text)
+    if match is None:
+        return [AssistantTextDelta(type="assistant", text=text)]
+
+    marker = match.group(0)
+    remainder = text[match.end() :].lstrip("\n")
+    events: list[StreamEvent] = [ThinkingEvent(type="assistant", text=marker)]
+    if remainder:
+        events.append(AssistantTextDelta(type="assistant", text=remainder))
+    return events
+
+
 def extract_result_text(data: dict[str, Any]) -> str:
     return extract_text(data, ("result", "response", "content", "output"))
 

@@ -524,7 +524,7 @@ class MatrixBot:
         drained = self._message_queue.drain(chat_id=key.chat_id)
         orch = self._orchestrator
         if orch:
-            killed = await orch.abort(key.chat_id)
+            killed = await orch.abort(key.chat_id, topic_id=key.topic_id)
             killed += drained
             msg = t("abort_all.done", count=killed) if killed else t("abort_all.nothing")
         else:
@@ -537,7 +537,7 @@ class MatrixBot:
         """Send soft interrupt (SIGINT) to active CLI processes."""
         orch = self._orchestrator
         if orch:
-            interrupted = orch.interrupt(key.chat_id)
+            interrupted = orch.interrupt(key.chat_id, topic_id=key.topic_id)
             msg = t("interrupt.done", count=interrupted) if interrupted else t("interrupt.nothing")
             await self._send_rich(room_id, msg)
 

@@ -26,6 +26,7 @@ from ductor_bot.errors import (
 )
 from ductor_bot.infra.docker import DockerManager
 from ductor_bot.infra.inflight import InflightTracker
+from ductor_bot.orchestrator.capabilities import CapabilityPreselector
 from ductor_bot.orchestrator.directives import parse_directives
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
@@ -49,17 +50,25 @@ from ductor_bot.orchestrator.registry import CommandRegistry, OrchestratorResult
 from ductor_bot.runtime.compression.context_compressor import ContextCompressor
 from ductor_bot.runtime.compression.summary_selector import SummarySelector
 from ductor_bot.runtime.state.db import RuntimeStateDB
+from ductor_bot.runtime.state.repositories.inflight_turn_repo import InflightTurnRepository
 from ductor_bot.runtime.state.repositories.memory_fragment_repo import MemoryFragmentRepository
+from ductor_bot.runtime.state.repositories.memory_promotion_journal_repo import (
+    MemoryPromotionJournalRepository,
+)
 from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
 from ductor_bot.runtime.state.repositories.named_session_repo import NamedSessionRepository
+from ductor_bot.runtime.state.repositories.outcome_event_repo import OutcomeEventRepository
 from ductor_bot.runtime.state.repositories.process_repo import ProcessRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
+from ductor_bot.runtime.state.repositories.task_state_repo import TaskStateRepository
+from ductor_bot.runtime.state.repositories.tool_call_repo import ToolCallRepository
 from ductor_bot.security import detect_suspicious_patterns
 from ductor_bot.session import SessionKey, SessionManager
 from ductor_bot.session.manager import SessionData
 from ductor_bot.session.named import NamedSessionRegistry
 from ductor_bot.webhook.manager import WebhookManager
+from ductor_bot.workspace.path_aliases import PathAliasRegistry
 from ductor_bot.workspace.paths import DuctorPaths
 
 if TYPE_CHECKING:
@@ -116,7 +125,7 @@ class _MessageDispatch:
 class Orchestrator:
     """Routes messages through command dispatch and conversation flows."""
 
-    def __init__(  # noqa: PLR0915
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         config: AgentConfig,
         paths: DuctorPaths,
@@ -124,36 +133,63 @@ class Orchestrator:
         docker_container: str = "",
         agent_name: str = "main",
         interagent_port: int = 8799,
+        interagent_token: str = "",
     ) -> None:
         self._config = config
         self._paths: DuctorPaths = paths
         self._agent_name = agent_name
+        self._path_aliases = PathAliasRegistry(paths, agent_name=agent_name)
+        self._path_aliases.sanitize()
+        self._path_aliases.migrate_legacy_memory_aliases()
+        self._path_aliases.ensure_canonical_project_aliases()
         self._docker: DockerManager | None = None
         self._providers = ProviderManager(config)
-        runtime_db: RuntimeStateDB | None = None
+        self._capability_preselector = CapabilityPreselector(paths)
+        runtime_db = RuntimeStateDB(config.resolved_state_db_path())
+        inflight_repo = InflightTurnRepository(runtime_db)
+
         session_repo: SessionRepository | None = None
         named_session_repo: NamedSessionRepository | None = None
         message_repo: MessageRepository | None = None
         process_repo: ProcessRepository | None = None
         summary_repo: SessionSummaryRepository | None = None
         memory_fragment_repo: MemoryFragmentRepository | None = None
+        memory_promotion_journal_repo: MemoryPromotionJournalRepository | None = None
+        task_state_repo: TaskStateRepository | None = None
+        tool_call_repo: ToolCallRepository | None = None
+        outcome_event_repo: OutcomeEventRepository | None = None
         context_compressor: ContextCompressor | None = None
         if config.state_backend in {"dual", "sqlite"}:
-            runtime_db = RuntimeStateDB(config.resolved_state_db_path())
             session_repo = SessionRepository(runtime_db)
             named_session_repo = NamedSessionRepository(runtime_db)
             message_repo = MessageRepository(runtime_db)
             process_repo = ProcessRepository(runtime_db)
             summary_repo = SessionSummaryRepository(runtime_db)
-            memory_fragment_repo = MemoryFragmentRepository(runtime_db)
+            memory_promotion_journal_repo = MemoryPromotionJournalRepository(runtime_db)
+            task_state_repo = TaskStateRepository(runtime_db)
+            tool_call_repo = ToolCallRepository(runtime_db)
+            outcome_event_repo = OutcomeEventRepository(runtime_db)
+            self._capability_preselector.set_outcome_event_repo(outcome_event_repo)
+
+            shared_db = None
+            if paths.ductor_home.parent.name == "agents":
+                root_db_path = paths.ductor_home.parent.parent / "state.db"
+                shared_db = RuntimeStateDB(root_db_path)
+
+            memory_fragment_repo = MemoryFragmentRepository(runtime_db, shared_db=shared_db)
             context_compressor = ContextCompressor(
                 SummarySelector(message_repo, summary_repo)
             )
         self._runtime_db = runtime_db
         self._message_repo = message_repo
         self._process_repo = process_repo
+        self._inflight_repo = inflight_repo
         self._summary_repo = summary_repo
         self._memory_fragment_repo = memory_fragment_repo
+        self._memory_promotion_journal_repo = memory_promotion_journal_repo
+        self._task_state_repo = task_state_repo
+        self._tool_call_repo = tool_call_repo
+        self._outcome_event_repo = outcome_event_repo
         self._context_compressor = context_compressor
         self._sessions = SessionManager(paths.sessions_path, config, state_repo=session_repo)
         self._named_sessions = NamedSessionRegistry(
@@ -179,13 +215,28 @@ class Orchestrator:
                 gemini_cli_parameters=tuple(config.cli_parameters.gemini),
                 agent_name=agent_name,
                 interagent_port=interagent_port,
+                interagent_token=interagent_token,
                 transcribe_command=config.transcription.audio_command,
                 video_transcribe_command=config.transcription.video_command,
             ),
             models=self._providers.models,
             available_providers=frozenset(),
             process_registry=self._process_registry,
+            inflight_repo=inflight_repo,
         )
+
+        self._memory_flusher: MemoryFlusher | None = None
+        if config.memory_flush.enabled or config.memory_compaction.enabled:
+            self._memory_flusher = MemoryFlusher(
+                config.memory_flush,
+                self._cli_service,
+                config.memory_compaction,
+                paths,
+                message_repo=message_repo,
+                journal_repo=memory_promotion_journal_repo,
+                agent_name=agent_name,
+            )
+
         self._cron_manager = CronManager(jobs_path=paths.cron_jobs_path)
         self._webhook_manager = WebhookManager(hooks_path=paths.webhooks_path)
         self._observers = ObserverManager(config, paths)
@@ -353,7 +404,7 @@ class Orchestrator:
         return await self._handle_message_impl(dispatch)
 
     async def _handle_message_impl(self, dispatch: _MessageDispatch) -> OrchestratorResult:
-        self._process_registry.clear_abort(dispatch.key.chat_id)
+        self._process_registry.clear_abort(dispatch.key.chat_id, dispatch.key.topic_id)
         logger.info("Message received text=%s", dispatch.cmd[:80])
 
         patterns = detect_suspicious_patterns(dispatch.text)
@@ -371,7 +422,7 @@ class Orchestrator:
             logger.exception("Unexpected error in handle_message")
             return OrchestratorResult(text="An internal error occurred. Please try again.")
 
-    async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:
+    async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:  # noqa: PLR0911
         result = await self._command_registry.dispatch(
             dispatch.cmd,
             self,
@@ -409,6 +460,17 @@ class Orchestrator:
                     )
                 return await named_session_flow(self, dispatch.key, first_key, session_prompt)
 
+        registration = self._path_aliases.parse_registration(dispatch.text)
+        if registration is not None:
+            entry = await asyncio.to_thread(self._path_aliases.upsert, registration)
+            purpose = f"\n用途: {entry.purpose}" if entry.purpose else ""
+            return OrchestratorResult(
+                text=(
+                    f"已注册路径别名 `@{entry.alias}` → `{entry.path}`。"
+                    f"{purpose}\n这是正式 registry 条目, 后续各 agent 会按 registry 解析。"
+                )
+            )
+
         if directives.is_directive_only and directives.has_model:
             return OrchestratorResult(
                 text=f"Next message will use: {directives.model}\n"
@@ -416,6 +478,12 @@ class Orchestrator:
             )
 
         prompt_text = directives.cleaned or dispatch.text
+        if directives.raw_directives:
+            restored = " ".join(
+                f"@{key}" if value is None else f"@{key}={value}"
+                for key, value in directives.raw_directives.items()
+            )
+            prompt_text = f"{restored} {directives.cleaned}".strip()
 
         if dispatch.streaming:
             return await normal_streaming(
@@ -504,22 +572,23 @@ class Orchestrator:
         logger.info("Active provider session reset provider=%s model=%s", provider, model)
         return provider
 
-    async def abort(self, chat_id: int) -> int:
+    async def abort(self, chat_id: int, topic_id: int | None = None) -> int:
         """Kill all active CLI processes and background tasks for chat_id."""
-        killed = await self._process_registry.kill_all(chat_id)
+        killed = await self._process_registry.kill_all(chat_id, topic_id=topic_id)
         if self._observers.background:
-            killed += await self._observers.background.cancel_all(chat_id)
-        self._named_sessions.end_all(chat_id)
+            killed += await self._observers.background.cancel_all(chat_id, topic_id=topic_id)
+        if topic_id is None:
+            self._named_sessions.end_all(chat_id)
         return killed
 
-    def interrupt(self, chat_id: int) -> int:
+    def interrupt(self, chat_id: int, topic_id: int | None = None) -> int:
         """Send SIGINT to active CLI processes for *chat_id*.
 
         Unlike :meth:`abort` this does not kill or unregister the processes.
         It sends a soft interrupt so the CLI can cancel the current tool
         execution (equivalent to pressing ESC in the terminal).
         """
-        return self._process_registry.interrupt_all(chat_id)
+        return self._process_registry.interrupt_all(chat_id, topic_id=topic_id)
 
     async def abort_all(self) -> int:
         """Kill all active CLI processes across all chats on this agent."""

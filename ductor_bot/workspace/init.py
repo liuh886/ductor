@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -354,7 +355,9 @@ _DOCKER_NOTICE = """
 **IMPORTANT: YOU ARE RUNNING INSIDE A DOCKER CONTAINER (`{container}`).**
 
 - Your filesystem is isolated. `/ductor` is the mounted host directory `~/.ductor`.
-- You cannot see or access the host system outside this mount.
+- Additional user-approved external mounts may also be available under `/mnt/*`.
+- Available external mounts:
+{mounts}
 - Feel free to experiment -- the host is protected.
 """
 
@@ -533,6 +536,7 @@ def inject_runtime_environment(
     paths: DuctorPaths,
     *,
     docker_container: str,
+    docker_mounts: list[str] | None = None,
     agent_name: str = "main",
     transport: str = "telegram",
 ) -> None:
@@ -540,9 +544,22 @@ def inject_runtime_environment(
 
     Called once after workspace init when the Docker state and transport are known.
     """
-    env_notice = (
-        _DOCKER_NOTICE.format(container=docker_container) if docker_container else _HOST_NOTICE
-    )
+    if docker_container:
+        mount_lines: list[str] = []
+        if docker_mounts:
+            from ductor_bot.infra.docker import resolve_mount_target
+
+            used_names: set[str] = set()
+            for mount in docker_mounts:
+                pair = resolve_mount_target(mount, used_names)
+                if pair is None:
+                    continue
+                host_path, container_path = pair
+                mount_lines.append(f"- `{container_path}` maps to host directory `{host_path}`.")
+        mounts_notice = "\n".join(mount_lines) if mount_lines else "- No extra `/mnt/*` mounts are configured."
+        env_notice = _DOCKER_NOTICE.format(container=docker_container, mounts=mounts_notice)
+    else:
+        env_notice = _HOST_NOTICE
     identity_notice = _build_identity_notice(agent_name, transport)
     transport_notice = _TRANSPORT_RULES.get(transport, _TRANSPORT_TELEGRAM)
 
@@ -551,16 +568,30 @@ def inject_runtime_environment(
         if not target.exists():
             continue
         content = target.read_text(encoding="utf-8")
-        # Avoid duplicate injection on restart without workspace re-init
-        if "## Multi-Agent Identity" in content or "## Runtime Environment" in content:
-            continue
-        atomic_text_save(target, content + transport_notice + identity_notice + env_notice)
+        refreshed = _strip_runtime_sections(content)
+        if "## Multi-Agent Identity" not in refreshed:
+            refreshed += transport_notice + identity_notice
+        atomic_text_save(target, refreshed + env_notice)
     logger.info(
         "Runtime environment injected: %s agent=%s transport=%s",
         "docker" if docker_container else "host",
         agent_name,
         transport,
     )
+
+
+_MULTI_AGENT_SECTION_RE = re.compile(
+    r"\n---\n\n## Multi-Agent Identity.*?(?=\n---\n\n## Runtime Environment|\Z)",
+    re.DOTALL,
+)
+_RUNTIME_SECTION_RE = re.compile(r"\n---\n\n## Runtime Environment.*\Z", re.DOTALL)
+
+
+def _strip_runtime_sections(content: str) -> str:
+    """Remove old injected runtime sections so the latest notice can replace them."""
+    stripped = _RUNTIME_SECTION_RE.sub("", content)
+    stripped = _MULTI_AGENT_SECTION_RE.sub("", stripped)
+    return stripped.rstrip() + "\n"
 
 
 _RULE_SYNC_INTERVAL = 10.0  # seconds

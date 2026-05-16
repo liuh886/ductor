@@ -140,6 +140,27 @@ class TestSendRichButtons:
         bot.edit_message_reply_markup.assert_called_once()
         assert bot.edit_message_reply_markup.call_args.kwargs["message_id"] == 77
 
+    async def test_send_rich_button_only_still_sends_keyboard(self) -> None:
+        from ductor_bot.messenger.telegram.sender import send_rich
+
+        bot = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.message_id = 88
+        bot.send_message = AsyncMock(return_value=sent_msg)
+        bot.edit_message_reply_markup = AsyncMock()
+
+        await send_rich(bot, 1, "[button:Yes] [button:No]")
+
+        bot.send_message.assert_called_once()
+        sent_text = bot.send_message.call_args.kwargs["text"]
+        assert sent_text
+        assert "[button:" not in sent_text
+        bot.edit_message_reply_markup.assert_called_once()
+        markup = bot.edit_message_reply_markup.call_args.kwargs["reply_markup"]
+        assert len(markup.inline_keyboard) == 1
+        assert markup.inline_keyboard[0][0].text == "Yes"
+        assert markup.inline_keyboard[0][1].text == "No"
+
 
 class TestSendFile:
     """Test individual file sending."""
@@ -433,6 +454,25 @@ class TestForumTopicSupport:
         bot.send_document = AsyncMock()
         await send_rich(bot, 1, f"Here <file:{doc}>", SendRichOpts(thread_id=55))
         assert bot.send_document.call_args.kwargs["message_thread_id"] == 55
+
+    async def test_send_rich_file_only_keeps_reply_context(self, tmp_path: Path) -> None:
+        from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich
+
+        doc = tmp_path / "data.csv"
+        doc.write_text("a,b")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_document = AsyncMock()
+        await send_rich(
+            bot,
+            1,
+            f"<file:{doc}>",
+            SendRichOpts(reply_to_message_id=99, allowed_roots=[tmp_path]),
+        )
+
+        params = bot.send_document.call_args.kwargs["reply_parameters"]
+        assert params.message_id == 99
 
     async def test_send_file_passes_thread_id_to_document(self, tmp_path: Path) -> None:
         from ductor_bot.messenger.telegram.sender import send_file

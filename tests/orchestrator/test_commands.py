@@ -6,14 +6,17 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from ductor_bot.cli.auth import AuthResult, AuthStatus
+from ductor_bot.config import AgentConfig
 from ductor_bot.orchestrator.commands import (
     cmd_cron,
     cmd_diagnose,
     cmd_memory,
     cmd_model,
+    cmd_reset,
     cmd_status,
 )
 from ductor_bot.orchestrator.core import Orchestrator
+from ductor_bot.runtime.memory import MemoryFragment
 from ductor_bot.session.key import SessionKey
 
 # -- cmd_model (wizard + direct switch) --
@@ -40,7 +43,16 @@ async def test_model_direct_switch(orch: Orchestrator) -> None:
     assert "opus" in result.text
     assert "sonnet" in result.text
     assert orch._config.model == "sonnet"
-    kill_mock.assert_called_once_with(1)
+    kill_mock.assert_awaited_once_with(1, topic_id=None)
+
+
+async def test_model_direct_switch_in_topic_kills_only_current_topic(orch: Orchestrator) -> None:
+    kill_mock = AsyncMock(return_value=0)
+    object.__setattr__(orch._process_registry, "kill_all", kill_mock)
+
+    await cmd_model(orch, SessionKey(chat_id=1, topic_id=42), "/model sonnet")
+
+    kill_mock.assert_awaited_once_with(1, topic_id=42)
 
 
 async def test_model_already_set(orch: Orchestrator) -> None:
@@ -76,7 +88,7 @@ async def test_model_same_provider_does_not_show_reset(orch: Orchestrator) -> No
     result = await cmd_model(orch, SessionKey(chat_id=1), "/model sonnet")
     assert "Session reset" not in result.text
     assert "Provider:" not in result.text
-    kill_mock.assert_called_once_with(1)
+    kill_mock.assert_awaited_once_with(1, topic_id=None)
 
 
 # -- cmd_status --
@@ -128,10 +140,52 @@ async def test_memory_shows_content(orch: Orchestrator) -> None:
     assert "My Memories" in result.text
 
 
+async def test_memory_prefers_fragment_backed_content(orch: Orchestrator) -> None:
+    state_orch = Orchestrator(
+        AgentConfig(
+            state_backend="sqlite",
+            state_db_path=str(orch.paths.ductor_home / "runtime_state.db"),
+        ),
+        orch.paths,
+    )
+    state_orch.paths.mainmemory_path.write_text("# Raw memory that should not be shown")
+    fragment_repo = getattr(state_orch, "_memory_fragment_repo", None)
+    assert fragment_repo is not None
+
+    fragment_repo.create(
+        MemoryFragment(
+            title="Shared Policy",
+            body="- Prefer fragment-backed memory",
+            source_kind="mainmemory",
+            source_path=str(state_orch.paths.mainmemory_path),
+            scope="mainmemory",
+            agent_name="main",
+            tags=["memory"],
+            importance=1.0,
+        )
+    )
+
+    result = await cmd_memory(state_orch, SessionKey(chat_id=0), "/memory")
+
+    assert "Shared Policy" in result.text
+    assert "Prefer fragment-backed memory" in result.text
+    assert "Raw memory that should not be shown" not in result.text
+
+
 async def test_memory_empty(orch: Orchestrator) -> None:
     orch.paths.mainmemory_path.write_text("")
     result = await cmd_memory(orch, SessionKey(chat_id=0), "/memory")
     assert "empty" in result.text.lower()
+
+
+async def test_reset_in_topic_kills_only_current_topic(orch: Orchestrator) -> None:
+    kill_mock = AsyncMock(return_value=0)
+    object.__setattr__(orch._process_registry, "kill_all", kill_mock)
+    object.__setattr__(orch, "reset_active_provider_session", AsyncMock(return_value="Claude"))
+
+    await cmd_reset(orch, SessionKey(chat_id=1, topic_id=33), "/new")
+
+    kill_mock.assert_awaited_once_with(1, topic_id=33)
 
 
 # -- cmd_cron --

@@ -7,7 +7,8 @@ from pathlib import Path
 from ductor_bot.runtime.memory import MemoryFragment
 from ductor_bot.runtime.state import RuntimeStateDB
 from ductor_bot.runtime.state.repositories.memory_fragment_repo import MemoryFragmentRepository
-from ductor_bot.workspace.loader import read_file, read_mainmemory
+from ductor_bot.runtime.state.repositories.task_state_repo import TaskStateRepository
+from ductor_bot.workspace.loader import load_task_state, read_file, read_mainmemory
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -53,7 +54,7 @@ def test_read_mainmemory_missing(tmp_path: Path) -> None:
     assert read_mainmemory(paths) == ""
 
 
-def test_read_mainmemory_prefers_fragments(tmp_path: Path) -> None:
+def test_read_mainmemory_refreshes_stale_fragments_from_markdown(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     repo = MemoryFragmentRepository(RuntimeStateDB(tmp_path / "state.db"))
     repo.create(
@@ -69,13 +70,15 @@ def test_read_mainmemory_prefers_fragments(tmp_path: Path) -> None:
         ),
     )
     paths.memory_system_dir.mkdir(parents=True)
-    paths.mainmemory_path.write_text("# Raw memory that should be ignored")
+    paths.mainmemory_path.write_text("# Main Memory\n\n## Updated Memory\n- Refresh from source")
 
     result = read_mainmemory(paths, fragment_repo=repo, agent_name="main")
 
-    assert "User Preferences" in result
-    assert "Prefer concise replies" in result
-    assert "Raw memory that should be ignored" not in result
+    assert "Updated Memory" in result
+    assert "Refresh from source" in result
+    assert "User Preferences" not in result
+    stored = repo.list_by_scope("mainmemory", agent_name="main")
+    assert [row["title"] for row in stored] == ["Updated Memory"]
 
 
 def test_read_mainmemory_renders_extracted_fragments_when_repo_is_empty(tmp_path: Path) -> None:
@@ -86,7 +89,7 @@ def test_read_mainmemory_renders_extracted_fragments_when_repo_is_empty(tmp_path
 
     result = read_mainmemory(paths, fragment_repo=repo, agent_name="main")
 
-    assert "## Raw memory" in result
+    assert "Raw memory" in result
     assert "- Keep this" in result
     assert "_Source:" in result
 
@@ -99,11 +102,44 @@ def test_read_mainmemory_extracts_and_persists_fragments_from_markdown(tmp_path:
 
     result = read_mainmemory(paths, fragment_repo=repo, agent_name="main")
 
-    assert "## Preferences" in result
+    assert "Preferences" in result
     assert "Keep answers short" in result
     stored = repo.list_by_scope("mainmemory", agent_name="main")
     assert len(stored) == 1
     assert stored[0]["title"] == "Preferences"
+
+
+def test_read_mainmemory_does_not_rewrite_unchanged_fragments(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    repo = MemoryFragmentRepository(RuntimeStateDB(tmp_path / "state.db"))
+    paths.memory_system_dir.mkdir(parents=True)
+    paths.mainmemory_path.write_text("# Main Memory\n\n## Preferences\n- Keep answers short")
+
+    read_mainmemory(paths, fragment_repo=repo, agent_name="main")
+    first = repo.list_by_scope("mainmemory", agent_name="main")
+
+    read_mainmemory(paths, fragment_repo=repo, agent_name="main")
+    second = repo.list_by_scope("mainmemory", agent_name="main")
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert second[0]["ulid"] == first[0]["ulid"]
+
+
+def test_read_mainmemory_clears_fragments_when_mainmemory_is_emptied(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    repo = MemoryFragmentRepository(RuntimeStateDB(tmp_path / "state.db"))
+    paths.memory_system_dir.mkdir(parents=True)
+    paths.mainmemory_path.write_text("# Main Memory\n\n## Preferences\n- Keep answers short")
+
+    read_mainmemory(paths, fragment_repo=repo, agent_name="main")
+    assert repo.list_by_scope("mainmemory", agent_name="main")
+
+    paths.mainmemory_path.write_text("")
+    result = read_mainmemory(paths, fragment_repo=repo, agent_name="main")
+
+    assert result == ""
+    assert repo.list_by_scope("mainmemory", agent_name="main") == []
 
 
 def test_read_mainmemory_includes_sharedmemory_fragments(tmp_path: Path) -> None:
@@ -121,3 +157,54 @@ def test_read_mainmemory_includes_sharedmemory_fragments(tmp_path: Path) -> None
     shared = repo.list_by_scope("sharedmemory")
     assert len(shared) == 1
     assert shared[0]["title"] == "Team Defaults"
+
+
+def test_load_task_state_prefers_runtime_task_states(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    paths.shared_tasks_path.write_text("- [ ] legacy task from TASKS", encoding="utf-8")
+    repo = TaskStateRepository(RuntimeStateDB(tmp_path / "state.db"))
+    repo.upsert(
+        task_id="task-42",
+        storage_key="tg:7:9",
+        status="RUNNING",
+        current_step=1,
+        total_steps=3,
+        step_label="implement repo",
+        context_snapshot_json={"owner": "main"},
+    )
+
+    rendered = load_task_state(paths, storage_key="tg:7:9", task_state_repo=repo)
+
+    assert "# Active Task State" in rendered
+    assert "task-42: RUNNING" in rendered
+    assert "implement repo" in rendered
+    assert "legacy task from TASKS" not in rendered
+
+
+def test_load_task_state_falls_back_to_tasks_md(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    paths.shared_tasks_path.write_text("- [ ] fallback task", encoding="utf-8")
+
+    rendered = load_task_state(paths, storage_key="tg:1")
+
+    assert "fallback task" in rendered
+
+
+def test_load_task_state_ignores_finished_rows(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.workspace.mkdir(parents=True, exist_ok=True)
+    paths.shared_tasks_path.write_text("- [ ] fallback task", encoding="utf-8")
+    repo = TaskStateRepository(RuntimeStateDB(tmp_path / "state.db"))
+    repo.upsert(
+        task_id="task-done",
+        storage_key="tg:7:9",
+        status="DONE",
+        current_step=2,
+        step_label="finished",
+    )
+
+    rendered = load_task_state(paths, storage_key="tg:7:9", task_state_repo=repo)
+
+    assert "fallback task" in rendered

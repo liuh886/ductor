@@ -29,6 +29,11 @@ _MAX_FRAMES_HARD = 16
 _FRAME_QUALITY = 2  # ffmpeg -q:v (1=best, 31=worst)
 
 
+def _split_command(raw: str) -> list[str]:
+    """Split a shell-style command string in a platform-safe way."""
+    return shlex.split(raw, posix=os.name != "nt")
+
+
 def _check_dependencies() -> str | None:
     """Return error message if ffmpeg/ffprobe are missing, else None."""
     missing = [cmd for cmd in ("ffmpeg", "ffprobe") if not shutil.which(cmd)]
@@ -163,7 +168,7 @@ def _transcribe_external(audio_path: Path) -> str | None:
     if not raw:
         return None
     try:
-        argv = shlex.split(raw)
+        argv = _split_command(raw)
     except ValueError:
         return None
     if not argv:

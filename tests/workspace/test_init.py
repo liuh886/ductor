@@ -422,6 +422,18 @@ def test_inject_docker_notice(tmp_path: Path) -> None:
     assert "DOCKER CONTAINER" in agents
 
 
+def test_inject_docker_notice_lists_mounts(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+    inject_runtime_environment(
+        paths,
+        docker_container="ductor-sandbox",
+        docker_mounts=["D:\\Documents\\zhihaol"],
+    )
+    content = (paths.workspace / "CLAUDE.md").read_text()
+    assert "/mnt/zhihaol" in content
+
+
 def test_inject_host_notice(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     init_workspace(paths)

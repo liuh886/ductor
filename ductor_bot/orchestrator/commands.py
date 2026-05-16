@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 async def cmd_reset(orch: Orchestrator, key: SessionKey, _text: str) -> OrchestratorResult:
     """Handle /new: kill processes and reset only active provider session."""
     logger.info("Reset requested")
-    await orch._process_registry.kill_all(key.chat_id)
+    await orch._process_registry.kill_all(key.chat_id, topic_id=key.topic_id)
     provider = await orch.reset_active_provider_session(key)
     return OrchestratorResult(text=new_session_text(provider))
 
@@ -58,7 +58,12 @@ async def cmd_model(orch: Orchestrator, key: SessionKey, text: str) -> Orchestra
 async def cmd_memory(orch: Orchestrator, _key: SessionKey, _text: str) -> OrchestratorResult:
     """Handle /memory."""
     logger.info("Memory requested")
-    content = await asyncio.to_thread(read_mainmemory, orch.paths)
+    content = await asyncio.to_thread(
+        read_mainmemory,
+        orch.paths,
+        fragment_repo=getattr(orch, "_memory_fragment_repo", None),
+        agent_name=orch._cli_service._config.agent_name,
+    )
     if not content.strip():
         return OrchestratorResult(
             text=fmt(

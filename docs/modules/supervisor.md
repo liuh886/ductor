@@ -24,7 +24,7 @@ In-process multi-agent supervisor (`AgentSupervisor`) for main agent + optional 
 4. create/start main `AgentStack`
 5. wait for main startup readiness (`_main_ready`) before sub-agent startup; the timeout uses a 120s base and is extended dynamically when Docker extras increase sandbox setup/build time
 6. load + start sub-agents from `agents.json`
-7. start `SharedKnowledgeSync` (`SHAREDMEMORY.md` -> agent memories)
+7. start `SharedKnowledgeSync` (`SHAREDMEMORY.md` watcher/auditor)
 8. start `agents.json` watcher
 9. wait for main agent completion and return its exit code
 

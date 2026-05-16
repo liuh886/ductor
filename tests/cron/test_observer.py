@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -400,6 +401,28 @@ class TestCronObserverExecution:
         job = mgr.get_job("failing")
         assert job is not None
         assert job.last_run_status == "error:exit_1"
+
+    async def test_failure_logs_stderr_preview_at_warning(self, tmp_path: Path, caplog) -> None:
+        paths = _make_paths(tmp_path)
+        mgr = _make_manager(paths)
+        mgr.add_job(_make_job("failing"))
+        (paths.cron_tasks_dir / "failing").mkdir()
+
+        observer = _make_observer(paths, mgr)
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"fatal cron stderr"))
+
+        with (
+            time_machine.travel(datetime(2026, 1, 15, 14, 0, tzinfo=UTC)),
+            patch("ductor_bot.cron.execution.which", return_value="/usr/bin/claude"),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            caplog.at_level(logging.WARNING),
+        ):
+            await observer._execute_job("failing", "Do stuff", "failing")
+
+        assert "fatal cron stderr" in caplog.text
 
     async def test_uses_config_model(self, tmp_path: Path) -> None:
         """CLI command includes --model from AgentConfig."""

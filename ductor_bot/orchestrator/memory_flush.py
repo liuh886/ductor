@@ -1,12 +1,11 @@
-"""Pre-compaction silent memory flush + LLM-driven compaction (#77, #80).
+"""Pre-compaction silent memory candidate flush + retained compaction helper (#77, #80).
 
 When the CLI emits ``CompactBoundaryEvent`` mid-stream, this helper runs a
-silent follow-up turn that instructs the agent to APPEND durable facts to
-``memory_system/MAINMEMORY.md`` so the post-compaction context retains what
-the user just told us (#77). When the resulting file grows past
-``trigger_lines``, a second silent turn chains in to rewrite the file
-densely -- preserving recent entries verbatim and compressing older
-clusters into one dense semantic entry each (#80).
+silent follow-up turn that asks the agent for JSON memory candidates, then
+stores valid rows in ``memory_promotion_journal``. It does not directly edit
+prompt-facing memory files.
+When the retained MAINMEMORY.md grows past ``trigger_lines``, a second silent
+turn can still ask the active agent to compact it.
 
 Design notes:
 - Boundary detection is additive: unsubscribed callers see no change.
@@ -27,12 +26,20 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.types import AgentRequest
 from ductor_bot.errors import CLIError
+from ductor_bot.runtime.memory.synthesis_producer import (
+    build_memory_synthesis_prompt,
+    write_synthesis_candidates,
+)
 from ductor_bot.workspace.loader import read_mainmemory
 
 if TYPE_CHECKING:
     from ductor_bot.bus.lock_pool import LockPool
     from ductor_bot.cli.service import CLIService
     from ductor_bot.config import MemoryCompactionConfig, MemoryFlushConfig
+    from ductor_bot.runtime.state.repositories.memory_promotion_journal_repo import (
+        MemoryPromotionJournalRepository,
+    )
+    from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
     from ductor_bot.session import SessionKey
     from ductor_bot.session.manager import SessionData
     from ductor_bot.workspace.paths import DuctorPaths
@@ -43,7 +50,7 @@ logger = logging.getLogger(__name__)
 class MemoryFlusher:
     """Tracks pre-compaction boundary events and runs silent flush + compact turns."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         config: MemoryFlushConfig,
         cli_service: CLIService,
@@ -51,12 +58,18 @@ class MemoryFlusher:
         paths: DuctorPaths,
         *,
         lock_pool: LockPool | None = None,
+        message_repo: MessageRepository | None = None,
+        journal_repo: MemoryPromotionJournalRepository | None = None,
+        agent_name: str = "main",
     ) -> None:
         self._config = config
         self._cli = cli_service
         self._compaction = compaction_config
         self._paths = paths
         self._lock_pool = lock_pool
+        self._message_repo = message_repo
+        self._journal_repo = journal_repo
+        self._agent_name = agent_name
         self._boundary_seen: set[SessionKey] = set()
         self._last_flushed: dict[SessionKey, float] = {}
 
@@ -97,7 +110,7 @@ class MemoryFlusher:
         return line_count >= self._compaction.trigger_lines
 
     async def maybe_flush(self, key: SessionKey, session: SessionData) -> None:
-        """Run the silent flush turn if due, and compaction if file is large."""
+        """Run the silent candidate flush turn if due."""
         if not self.should_flush(key):
             return
         await self.flush(key, session)
@@ -105,15 +118,20 @@ class MemoryFlusher:
             await self.compact(key, session)
 
     async def flush(self, key: SessionKey, session: SessionData) -> None:
-        """Run a silent flush turn resuming the current session."""
+        """Run a silent candidate flush turn resuming the current session."""
         session_id = session.session_id
         if not session_id:
             logger.debug("Memory flush skipped chat=%d: no resume session_id", key.chat_id)
             self._boundary_seen.discard(key)
             return
 
+        prompt, source_window = build_memory_synthesis_prompt(
+            self._message_repo,
+            key.storage_key,
+            limit=20,
+        )
         request = AgentRequest(
-            prompt=self._config.flush_prompt,
+            prompt=prompt,
             chat_id=key.chat_id,
             topic_id=key.topic_id,
             transport=key.transport,
@@ -123,7 +141,23 @@ class MemoryFlusher:
         logger.info("Memory flush firing chat=%d session=%s", key.chat_id, session_id[:8])
         try:
             async with self._session_lock(key):
-                await self._cli.execute(request)
+                response = await self._cli.execute(request)
+            if not response.is_error:
+                summary = write_synthesis_candidates(
+                    response.result,
+                    journal_repo=self._journal_repo,
+                    session_storage_key=key.storage_key,
+                    source_window=source_window,
+                    agent_name=self._agent_name,
+                    producer="memory_flush",
+                )
+                logger.info(
+                    "Memory flush candidates chat=%d created=%d skipped=%d error=%s",
+                    key.chat_id,
+                    summary.created,
+                    summary.skipped,
+                    summary.error,
+                )
         except (CLIError, RuntimeError, OSError) as exc:
             logger.warning("Memory flush failed chat=%d: %s", key.chat_id, exc)
         finally:

@@ -8,7 +8,7 @@ from ductor_bot.config import AgentConfig, TimeoutConfig, deep_merge_config, res
 class TestTimeoutConfigDefaults:
     def test_default_values(self) -> None:
         cfg = TimeoutConfig()
-        assert cfg.normal == 600.0
+        assert cfg.normal == 1200.0
         assert cfg.background == 1800.0
         assert cfg.subagent == 3600.0
         assert cfg.warning_intervals == [60.0, 10.0]
@@ -75,7 +75,7 @@ class TestDeepMergeWithTimeouts:
     def test_old_config_without_timeouts_gets_defaults(self) -> None:
         old_config: dict[str, object] = {
             "provider": "claude",
-            "cli_timeout": 600.0,
+            "cli_timeout": 1200.0,
         }
         defaults = AgentConfig().model_dump()
         merged, changed = deep_merge_config(old_config, defaults)

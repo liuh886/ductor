@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from ductor_bot.orchestrator.capabilities.models import CapabilityExecutionPlan
+
 if TYPE_CHECKING:
     from ductor_bot.cli.timeout_controller import TimeoutController
 
@@ -52,14 +54,15 @@ class AgentRequest:
     append_system_prompt: str | None = None
     model_override: str | None = None
     provider_override: str | None = None
+    transport: str = "tg"
     chat_id: int = 0
     topic_id: int | None = None
-    transport: str = "tg"
     process_label: str = "main"
     resume_session: str | None = None
     continue_session: bool = False
     timeout_seconds: float | None = None
     timeout_controller: TimeoutController | None = None
+    capability_plan: CapabilityExecutionPlan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,3 +80,8 @@ class AgentResponse:
     timed_out: bool = False
     duration_ms: float | None = None
     stream_fallback: bool = False
+    outcome: str = "success"
+    failure_class: str = ""
+    empty_result: bool = False
+    recovery_attempts: int = 0
+    recovery_reason: str = ""

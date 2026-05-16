@@ -13,10 +13,16 @@ from typing import TYPE_CHECKING
 from ductor_bot.background.models import BackgroundResult, BackgroundSubmit, BackgroundTask
 from ductor_bot.i18n import t
 from ductor_bot.infra.task_runner import run_oneshot_task
+from ductor_bot.text.response_format import (
+    ensure_text_response,
+    session_error_text,
+    timeout_error_text,
+)
 
 if TYPE_CHECKING:
     from ductor_bot.cli.param_resolver import TaskExecutionConfig
     from ductor_bot.cli.service import CLIService
+    from ductor_bot.cli.types import AgentResponse
     from ductor_bot.workspace.paths import DuctorPaths
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,7 @@ class BackgroundObserver:
             submitted_at=time.monotonic(),
             session_name=sub.session_name,
             resume_session_id=sub.resume_session_id,
+            silent=sub.silent,
         )
         atask = asyncio.create_task(self._run(bg_task, exec_config))
         bg_task.asyncio_task = atask
@@ -93,11 +100,13 @@ class BackgroundObserver:
             tasks = [t for t in tasks if t.chat_id == chat_id]
         return tasks
 
-    async def cancel_all(self, chat_id: int) -> int:
+    async def cancel_all(self, chat_id: int, topic_id: int | None = None) -> int:
         count = 0
         cancelled: list[asyncio.Task[None]] = []
         for task in list(self._tasks.values()):
-            if task.chat_id == chat_id and task.asyncio_task and not task.asyncio_task.done():
+            matches_chat = task.chat_id == chat_id
+            matches_topic = topic_id is None or task.thread_id == topic_id
+            if matches_chat and matches_topic and task.asyncio_task and not task.asyncio_task.done():
                 task.asyncio_task.cancel()
                 cancelled.append(task.asyncio_task)
                 count += 1
@@ -146,6 +155,7 @@ class BackgroundObserver:
                     elapsed_seconds=elapsed,
                     provider=bg_task.provider,
                     model=bg_task.model,
+                    silent=bg_task.silent,
                 )
             )
         except asyncio.CancelledError:
@@ -163,6 +173,7 @@ class BackgroundObserver:
                         elapsed_seconds=elapsed,
                         provider=bg_task.provider,
                         model=bg_task.model,
+                        silent=bg_task.silent,
                     )
                 )
             raise
@@ -182,6 +193,7 @@ class BackgroundObserver:
                         elapsed_seconds=elapsed,
                         provider=bg_task.provider,
                         model=bg_task.model,
+                        silent=bg_task.silent,
                     )
                 )
 
@@ -211,6 +223,7 @@ class BackgroundObserver:
                 status = "error:cli"
                 if response.timed_out:
                     status = "error:timeout"
+            result_text = self._render_named_session_result(bg_task, response)
 
             await self._deliver(
                 BackgroundResult(
@@ -219,13 +232,14 @@ class BackgroundObserver:
                     message_id=bg_task.message_id,
                     thread_id=bg_task.thread_id,
                     prompt_preview=bg_task.prompt[:60],
-                    result_text=response.result or "",
+                    result_text=result_text,
                     status=status,
                     elapsed_seconds=elapsed,
                     provider=bg_task.provider,
                     model=bg_task.model,
                     session_name=bg_task.session_name,
                     session_id=response.session_id or "",
+                    silent=bg_task.silent,
                 )
             )
         except asyncio.CancelledError:
@@ -244,6 +258,7 @@ class BackgroundObserver:
                         provider=bg_task.provider,
                         model=bg_task.model,
                         session_name=bg_task.session_name,
+                        silent=bg_task.silent,
                     )
                 )
             raise
@@ -266,8 +281,17 @@ class BackgroundObserver:
                         provider=bg_task.provider,
                         model=bg_task.model,
                         session_name=bg_task.session_name,
+                        silent=bg_task.silent,
                     )
                 )
+
+    def _render_named_session_result(self, bg_task: BackgroundTask, response: AgentResponse) -> str:
+        """Return a user-facing result for named-session tasks, even on empty CLI output."""
+        if response.is_error:
+            if response.timed_out:
+                return timeout_error_text(bg_task.model or bg_task.provider, self._timeout_seconds)
+            return session_error_text(bg_task.model or bg_task.provider, response.result or "")
+        return ensure_text_response(response.result)
 
     async def _deliver(self, result: BackgroundResult) -> None:
         if self._on_result is None:

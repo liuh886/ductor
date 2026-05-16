@@ -32,6 +32,7 @@ sigkill = "De uitvoering werd onderbroken. Stuur hetzelfde verzoek opnieuw."
 not_found = "Sessie '{name}' niet gevonden."
 ended = "Sessie '{name}' is beëindigd. Start een nieuwe met /session."
 still_running = "Sessie '{name}' is nog bezig. Wachten of /stop gebruiken om te annuleren."
+recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
 
 # -- Stop/onderbreking -------------------------------------------------------------
 

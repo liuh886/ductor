@@ -73,8 +73,7 @@ def test_resolve_global_only(base_config: AgentConfig, codex_cache: CodexModelCa
     assert result.cli_parameters == []
     assert result.permission_mode == "normal"
     assert result.working_dir == "~/ductor"
-    assert result.file_access == "all"
-
+    assert result.file_access == "workspace"
 
 def test_resolve_with_task_overrides(
     base_config: AgentConfig, codex_cache: CodexModelCache

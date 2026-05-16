@@ -13,6 +13,7 @@ from shutil import which
 from typing import TYPE_CHECKING, ClassVar
 
 from ductor_bot.config import DockerConfig
+from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 from ductor_bot.workspace.paths import DuctorPaths
 
 if TYPE_CHECKING:
@@ -23,6 +24,43 @@ logger = logging.getLogger(__name__)
 _DUCTOR_MOUNT = "/ductor"
 _CONTAINER_WS = f"{_DUCTOR_MOUNT}/workspace"
 _MOUNT_PREFIX = "/mnt"
+_REDACTED_DOCKER_ENV_KEYS = frozenset(
+    {
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "PPLX_API_KEY",
+        "TAVILY_API_KEY",
+        "XAI_API_KEY",
+        "SKILLSMP_API_KEY",
+        "OBSIDIAN_GATEWAY_KEY",
+        "DUCTOR_INTERAGENT_TOKEN",
+    }
+)
+
+
+def _redact_docker_run_cmd(args: list[str]) -> str:
+    """Render docker args with secret-bearing environment values redacted."""
+    redacted: list[str] = []
+    idx = 0
+    while idx < len(args):
+        part = args[idx]
+        redacted.append(part)
+        if part == "-e" and idx + 1 < len(args):
+            key_value = args[idx + 1]
+            key, sep, _value = key_value.partition("=")
+            if sep and (
+                key in _REDACTED_DOCKER_ENV_KEYS
+                or any(token in key.lower() for token in ("token", "secret", "password", "key"))
+            ):
+                redacted.append(f"{key}=<redacted>")
+            else:
+                redacted.append(key_value)
+            idx += 2
+            continue
+        idx += 1
+    return " ".join(redacted)
 
 
 def _needs_uid_mapping() -> bool:
@@ -372,7 +410,7 @@ class DockerManager:
         cmd.append(image)
 
         logger.info("Starting Docker container '%s' from image '%s'", name, image)
-        logger.debug("docker run cmd: %s", " ".join(cmd))
+        logger.debug("docker run cmd: %s", _redact_docker_run_cmd(cmd))
         rc, output = await self._exec(*cmd)
         if rc != 0:
             logger.error("docker run failed:\n%s", output[-2000:])
@@ -386,7 +424,20 @@ class DockerManager:
         from ductor_bot.infra.env_secrets import load_env_secrets
 
         flags: list[str] = []
+        allowed = {
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_GENAI_USE_GCA",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            "OPENAI_API_KEY",
+            "OBSIDIAN_GATEWAY_URL",
+            "OBSIDIAN_GATEWAY_KEY",
+        }
         for key, value in load_env_secrets(self._paths.env_file).items():
+            if key not in allowed:
+                continue
             if key not in os.environ:
                 flags += ["-e", f"{key}={value}"]
         return flags
@@ -408,6 +459,7 @@ class DockerManager:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                creationflags=_CREATION_FLAGS,
             )
             assert proc.stdout is not None
             async with asyncio.timeout(deadline_seconds):
@@ -445,6 +497,7 @@ class DockerManager:
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                creationflags=_CREATION_FLAGS,
             )
             async with asyncio.timeout(deadline_seconds):
                 stdout, _ = await proc.communicate()

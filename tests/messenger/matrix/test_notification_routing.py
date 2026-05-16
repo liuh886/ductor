@@ -161,8 +161,8 @@ async def test_matrix_startup_wires_notify_upgrade_on_update(
     def _is_upgradeable() -> bool:
         return True
 
-    monkeypatch.setattr(startup_module, "consume_restart_marker", lambda **_kw: False)
     monkeypatch.setattr(startup_module, "consume_restart_sentinel", lambda **_kw: None)
+    monkeypatch.setattr(startup_module, "_consume_restart_marker", lambda **_kw: False)
 
     import ductor_bot.infra.install as install_mod
     import ductor_bot.infra.updater as updater_mod

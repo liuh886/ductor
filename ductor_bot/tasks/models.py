@@ -31,6 +31,7 @@ class TaskSubmit:
     message_id: int
     thread_id: int | None
     parent_agent: str
+    transport: str = "tg"
     name: str = ""
     provider_override: str = ""
     model_override: str = ""
@@ -50,6 +51,7 @@ class TaskEntry:
     provider: str
     model: str
     status: str  # "running" | "done" | "failed" | "cancelled" | "waiting"
+    transport: str = "tg"
     session_id: str = ""
     created_at: float = field(default_factory=time.time)
     completed_at: float = 0.0
@@ -57,8 +59,16 @@ class TaskEntry:
     error: str = ""
     result_preview: str = ""
     question_count: int = 0
+    follow_up_count: int = 0
     num_turns: int = 0
     last_question: str = ""
+    last_follow_up: str = ""
+    evaluation_status: str = ""
+    evaluation_notes: str = ""
+    outcome: str = ""
+    failure_class: str = ""
+    empty_result: bool = False
+    recovery_count: int = 0
     original_prompt: str = ""
     thinking: str = ""
     tasks_dir: str = ""  # Agent's tasks directory (for per-agent folder resolution)
@@ -70,6 +80,7 @@ class TaskEntry:
             "task_id": self.task_id,
             "chat_id": self.chat_id,
             "parent_agent": self.parent_agent,
+            "transport": self.transport,
             "name": self.name,
             "prompt_preview": self.prompt_preview,
             # #90: original_prompt MUST round-trip so that a restart mid-task
@@ -87,8 +98,16 @@ class TaskEntry:
             "error": self.error,
             "result_preview": self.result_preview,
             "question_count": self.question_count,
+            "follow_up_count": self.follow_up_count,
             "num_turns": self.num_turns,
             "last_question": self.last_question,
+            "last_follow_up": self.last_follow_up,
+            "evaluation_status": self.evaluation_status,
+            "evaluation_notes": self.evaluation_notes,
+            "outcome": self.outcome,
+            "failure_class": self.failure_class,
+            "empty_result": self.empty_result,
+            "recovery_count": self.recovery_count,
             "thinking": self.thinking,
             "tasks_dir": self.tasks_dir,
             "priority": self.priority,
@@ -103,6 +122,7 @@ class TaskEntry:
             task_id=d["task_id"],
             chat_id=d["chat_id"],
             parent_agent=d.get("parent_agent", "main"),
+            transport=d.get("transport", "tg"),
             name=d.get("name", ""),
             prompt_preview=d.get("prompt_preview", ""),
             provider=d.get("provider", ""),
@@ -115,10 +135,18 @@ class TaskEntry:
             error=d.get("error", ""),
             result_preview=d.get("result_preview", ""),
             question_count=d.get("question_count", 0),
+            follow_up_count=d.get("follow_up_count", 0),
             num_turns=d.get("num_turns", 0),
             last_question=d.get("last_question", ""),
             # #90: .get(..., "") default preserves backward-compat for tasks.json
             # files written before the original_prompt field was persisted.
+            last_follow_up=d.get("last_follow_up", ""),
+            evaluation_status=d.get("evaluation_status", ""),
+            evaluation_notes=d.get("evaluation_notes", ""),
+            outcome=d.get("outcome", ""),
+            failure_class=d.get("failure_class", ""),
+            empty_result=d.get("empty_result", False),
+            recovery_count=d.get("recovery_count", 0),
             original_prompt=d.get("original_prompt", ""),
             thinking=d.get("thinking", ""),
             tasks_dir=d.get("tasks_dir", ""),
@@ -155,3 +183,9 @@ class TaskResult:
     task_folder: str = ""
     original_prompt: str = ""
     thread_id: int | None = None
+    follow_up_count: int = 0
+    evaluation_status: str = ""
+    outcome: str = ""
+    failure_class: str = ""
+    empty_result: bool = False
+    recovery_count: int = 0

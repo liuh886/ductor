@@ -296,7 +296,7 @@ async def test_switch_model_basic(orch: Orchestrator) -> None:
     assert "Session reset" not in result
     assert "Resuming session" not in result
     assert orch._config.model == "sonnet"
-    mock_kill.assert_called_once_with(1)
+    mock_kill.assert_awaited_once_with(1, topic_id=None)
     mock_reset.assert_not_called()
 
 
@@ -309,6 +309,15 @@ async def test_switch_model_opus_1m_persists(orch: Orchestrator) -> None:
     saved = json.loads(orch.paths.config_path.read_text(encoding="utf-8"))
     assert saved["model"] == "opus[1m]"
     assert saved["provider"] == "claude"
+
+
+async def test_switch_model_in_topic_kills_only_current_topic(orch: Orchestrator) -> None:
+    mock_kill = AsyncMock(return_value=0)
+    object.__setattr__(orch._process_registry, "kill_all", mock_kill)
+
+    await switch_model(orch, SessionKey(chat_id=1, topic_id=9), "sonnet")
+
+    mock_kill.assert_awaited_once_with(1, topic_id=9)
 
 
 async def test_switch_model_already_set(orch: Orchestrator) -> None:

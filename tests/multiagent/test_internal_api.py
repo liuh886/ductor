@@ -11,6 +11,12 @@ from ductor_bot.multiagent.bus import InterAgentBus
 from ductor_bot.multiagent.health import AgentHealth
 from ductor_bot.multiagent.internal_api import InternalAgentAPI, _normalise_transport
 
+_TOKEN = "test-internal-token"
+
+
+def _auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_TOKEN}"}
+
 
 @pytest.fixture
 def bus() -> InterAgentBus:
@@ -19,7 +25,7 @@ def bus() -> InterAgentBus:
 
 @pytest.fixture
 def api(bus: InterAgentBus) -> InternalAgentAPI:
-    return InternalAgentAPI(bus, port=0)
+    return InternalAgentAPI(bus, port=0, auth_token=_TOKEN)
 
 
 @pytest.fixture
@@ -48,6 +54,7 @@ class TestHandleSend:
         resp = await client.post(
             "/interagent/send",
             json={"from": "sender", "to": "target", "message": "Hello"},
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         data = await resp.json()
@@ -58,6 +65,7 @@ class TestHandleSend:
         resp = await client.post(
             "/interagent/send",
             json={"from": "sender"},
+            headers=_auth_headers(),
         )
         assert resp.status == 400
         data = await resp.json()
@@ -68,7 +76,7 @@ class TestHandleSend:
         resp = await client.post(
             "/interagent/send",
             data=b"not json",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_auth_headers()},
         )
         assert resp.status == 400
 
@@ -76,6 +84,7 @@ class TestHandleSend:
         resp = await client.post(
             "/interagent/send",
             json={"from": "sender", "to": "nonexistent", "message": "Hello"},
+            headers=_auth_headers(),
         )
         data = await resp.json()
         assert data["success"] is False
@@ -96,6 +105,7 @@ class TestHandleSendAsync:
         resp = await client.post(
             "/interagent/send_async",
             json={"from": "sender", "to": "target", "message": "Hello"},
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         data = await resp.json()
@@ -111,6 +121,7 @@ class TestHandleSendAsync:
         resp = await client.post(
             "/interagent/send_async",
             json={"from": "sender", "to": "nonexistent", "message": "Hello"},
+            headers=_auth_headers(),
         )
         data = await resp.json()
         assert data["success"] is False
@@ -120,6 +131,7 @@ class TestHandleSendAsync:
         resp = await client.post(
             "/interagent/send_async",
             json={"from": "sender"},
+            headers=_auth_headers(),
         )
         assert resp.status == 400
 
@@ -145,6 +157,7 @@ class TestNewSessionFlag:
                 "message": "Hello",
                 "new_session": True,
             },
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         stack.bot.orchestrator.handle_interagent_message.assert_awaited_once_with(
@@ -166,6 +179,7 @@ class TestNewSessionFlag:
         resp = await client.post(
             "/interagent/send",
             json={"from": "sender", "to": "target", "message": "Hello"},
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         stack.bot.orchestrator.handle_interagent_message.assert_awaited_once_with(
@@ -192,6 +206,7 @@ class TestNewSessionFlag:
                 "message": "Hello",
                 "new_session": True,
             },
+            headers=_auth_headers(),
         )
         assert resp.status == 200
         data = await resp.json()
@@ -202,7 +217,7 @@ class TestHandleList:
     """Test GET /interagent/agents."""
 
     async def test_list_empty(self, client: TestClient) -> None:
-        resp = await client.get("/interagent/agents")
+        resp = await client.get("/interagent/agents", headers=_auth_headers())
         assert resp.status == 200
         data = await resp.json()
         assert data["agents"] == []
@@ -211,7 +226,7 @@ class TestHandleList:
         bus.register("main", MagicMock())
         bus.register("sub1", MagicMock())
 
-        resp = await client.get("/interagent/agents")
+        resp = await client.get("/interagent/agents", headers=_auth_headers())
         data = await resp.json()
         assert set(data["agents"]) == {"main", "sub1"}
 
@@ -220,7 +235,7 @@ class TestHandleHealth:
     """Test GET /interagent/health."""
 
     async def test_health_no_ref(self, client: TestClient) -> None:
-        resp = await client.get("/interagent/health")
+        resp = await client.get("/interagent/health", headers=_auth_headers())
         data = await resp.json()
         assert data["agents"] == {}
 
@@ -229,7 +244,7 @@ class TestHandleHealth:
         h.mark_running()
         api.set_health_ref({"main": h})
 
-        resp = await client.get("/interagent/health")
+        resp = await client.get("/interagent/health", headers=_auth_headers())
         data = await resp.json()
         assert "main" in data["agents"]
         assert data["agents"]["main"]["status"] == "running"
@@ -240,7 +255,7 @@ class TestHandleHealth:
         h.mark_crashed("OOM")
         api.set_health_ref({"sub1": h})
 
-        resp = await client.get("/interagent/health")
+        resp = await client.get("/interagent/health", headers=_auth_headers())
         data = await resp.json()
         assert data["agents"]["sub1"]["status"] == "crashed"
         assert data["agents"]["sub1"]["last_crash_error"] == "OOM"
@@ -261,3 +276,9 @@ class TestLifecycle:
             started = await api.start()
 
         assert started is False
+
+
+class TestAuth:
+    async def test_missing_token_rejected(self, client: TestClient) -> None:
+        resp = await client.get("/interagent/health")
+        assert resp.status == 401

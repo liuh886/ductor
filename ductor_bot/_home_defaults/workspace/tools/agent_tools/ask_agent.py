@@ -28,6 +28,14 @@ import urllib.request
 import urllib.error
 
 
+def _auth_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("DUCTOR_INTERAGENT_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def main() -> None:
     args = sys.argv[1:]
     new_session = False
@@ -54,7 +62,7 @@ def main() -> None:
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=_auth_headers(),
         method="POST",
     )
 

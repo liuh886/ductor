@@ -35,10 +35,11 @@ def _make_paths(tmp_path: Path) -> DuctorPaths:
     )
 
 
-def _make_skill(base: Path, name: str) -> Path:
+def _make_skill(base: Path, name: str, *, status: str | None = None) -> Path:
     d = base / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(f"# {name}")
+    content = f"# {name}" if status is None else f"---\nstatus: {status}\n---\n\n# {name}"
+    (d / "SKILL.md").write_text(content, encoding="utf-8")
     return d
 
 
@@ -64,11 +65,67 @@ def test_discover_real_dirs(tmp_path: Path) -> None:
 
 def test_discover_skips_internal_dirs(tmp_path: Path) -> None:
     base = tmp_path / "skills"
-    for name in (".system", ".claude", ".git", ".venv", "__pycache__", "node_modules"):
+    for name in (
+        ".system",
+        ".claude",
+        ".git",
+        ".venv",
+        ".candidates",
+        "__pycache__",
+        "node_modules",
+    ):
         (base / name).mkdir(parents=True)
     _make_skill(base, "real-skill")
     result = _discover_skills(base)
     assert list(result.keys()) == ["real-skill"]
+
+
+def test_discover_skips_sync_excluded_skill_names(tmp_path: Path) -> None:
+    base = tmp_path / "skills"
+    for name in (
+        "brainstorming.bak",
+        "other.bak",
+        "dummy-skill",
+        "frontend-design-vipul",
+        "gstack",
+        "as-debugging-and-error-recovery",
+        "as-planning-and-task-breakdown",
+        "as-spec-driven-development",
+        "as-using-agent-skills",
+        "systematic-debugging-obra",
+        "using-superpowers",
+        "writing-plans",
+        "skill-creator",
+        "markitdown-converter",
+        "skill_generated_example_123",
+    ):
+        _make_skill(base, name)
+    _make_skill(base, "real-skill")
+
+    result = _discover_skills(base)
+
+    assert list(result.keys()) == ["real-skill"]
+
+
+def test_discover_skips_hidden_candidate_dir_skills(tmp_path: Path) -> None:
+    base = tmp_path / "skills"
+    _make_skill(base / ".candidates", "hidden-candidate")
+    _make_skill(base, "real-skill")
+
+    result = _discover_skills(base)
+
+    assert list(result.keys()) == ["real-skill"]
+
+
+def test_discover_skips_candidate_and_suppressed_status(tmp_path: Path) -> None:
+    base = tmp_path / "skills"
+    _make_skill(base, "candidate-skill", status="candidate")
+    _make_skill(base, "suppressed-skill", status="suppressed")
+    _make_skill(base, "active-skill")
+
+    result = _discover_skills(base)
+
+    assert set(result) == {"active-skill"}
 
 
 def test_discover_includes_valid_symlinks(tmp_path: Path) -> None:
@@ -100,6 +157,14 @@ def test_discover_ignores_plain_files(tmp_path: Path) -> None:
     _make_skill(base, "real-skill")
     result = _discover_skills(base)
     assert list(result.keys()) == ["real-skill"]
+
+
+def test_sync_skills_excludes_gemini_by_default(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    paths.skills_dir.mkdir(parents=True, exist_ok=True)
+    with patch("ductor_bot.workspace.skill_sync._cli_skill_dirs", return_value={}) as mock_dirs:
+        sync_skills(paths)
+    mock_dirs.assert_called_once_with(include_gemini=False)
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +532,7 @@ async def test_watch_cancellation(tmp_path: Path) -> None:
 def test_skills_dir_property(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     assert paths.skills_dir == paths.workspace / "skills"
+    assert paths.skill_candidates_dir == paths.skills_dir / ".candidates"
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +730,24 @@ def test_bundled_skips_files(tmp_path: Path) -> None:
     sync_bundled_skills(paths)
 
     assert not (paths.skills_dir / "CLAUDE.md").is_symlink()
+
+
+def test_bundled_skips_sync_excluded_skill_names(tmp_path: Path) -> None:
+    paths = _make_paths(tmp_path)
+    for name in ("dummy-skill", "skill_generated_example_123", "systematic-debugging-obra", "writing-plans", "gstack", "other.bak"):
+        _make_skill(paths.bundled_skills_dir, name)
+    _make_skill(paths.bundled_skills_dir, "real-skill")
+    paths.skills_dir.mkdir(parents=True)
+
+    sync_bundled_skills(paths)
+
+    assert not (paths.skills_dir / "dummy-skill").exists()
+    assert not (paths.skills_dir / "skill_generated_example_123").exists()
+    assert not (paths.skills_dir / "systematic-debugging-obra").exists()
+    assert not (paths.skills_dir / "writing-plans").exists()
+    assert not (paths.skills_dir / "gstack").exists()
+    assert not (paths.skills_dir / "other.bak").exists()
+    assert (paths.skills_dir / "real-skill").exists()
 
 
 def test_bundled_no_dir_noop(tmp_path: Path) -> None:
