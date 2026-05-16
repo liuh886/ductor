@@ -20,9 +20,9 @@ STATE_KEYWORDS = [
     r"retry count"
 ]
 
-def main():
-    db_path = Path(os.path.expanduser("~/.ductor/state.db"))
-    main_mem_path = Path(os.path.expanduser("~/.ductor/workspace/memory_system/MAINMEMORY.md"))
+def main() -> None:
+    db_path = Path("~/.ductor/state.db").expanduser()
+    main_mem_path = Path("~/.ductor/workspace/memory_system/MAINMEMORY.md").expanduser()
 
     if not main_mem_path.exists():
         print(f"MAINMEMORY.md not found at {main_mem_path}. Skipping.")

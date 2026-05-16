@@ -132,6 +132,30 @@ async def test_directive_with_text(orch: Orchestrator) -> None:
     assert request.prompt.startswith("Hello")
 
 
+async def test_alias_registration_is_handled_before_model_call(orch: Orchestrator) -> None:
+    result = await orch.handle_message(
+        SessionKey(chat_id=1),
+        "请帮我把 @hk 指向 zhihaol/100_Project/2604_HK 路径,这个路径用于讨论香港的就业机会,香港优才计划",
+    )
+
+    assert "已注册路径别名" in result.text
+    assert "@hk" in result.text
+    assert "2604_HK" in result.text
+    entry = orch._path_aliases.get("hk")  # type: ignore[attr-defined]
+    assert entry is not None
+    assert entry.path == "zhihaol/100_Project/2604_HK"
+
+
+async def test_leading_alias_is_not_stripped_as_unknown_directive(orch: Orchestrator) -> None:
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await orch.handle_message(SessionKey(chat_id=1), "@hk 最近怎么样")
+
+    request = mock_execute.call_args[0][0]
+    assert request.prompt.startswith("@hk 最近怎么样")
+
+
 # -- streaming --
 
 

@@ -261,10 +261,10 @@ class TestBuildCommand:
         assert "--sandbox" not in cmd
         assert cmd[-2] == "thread-abc"
         assert cmd[-1] == "hello"
-        # resume does not include sandbox/model/color/skip-git flags
+        # resume does not include sandbox/model/color flags
         assert "--model" not in cmd
         assert "--color" not in cmd
-        assert "--skip-git-repo-check" not in cmd
+        assert "--skip-git-repo-check" in cmd
 
     def test_resume_session_json_output_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("ductor_bot.cli.codex_provider._IS_WINDOWS", False)
@@ -311,6 +311,7 @@ class TestBuildCommand:
         assert cmd[-1] == "th-1"
         assert "user msg" not in cmd
         assert "--sandbox" not in cmd
+        assert "--skip-git-repo-check" in cmd
         assert cli._stdin_prompt("user msg") == "SYS\n\nuser msg"
 
 
@@ -1044,7 +1045,9 @@ class TestDockerIntegration:
             await cli.send("hello")
 
         exec_cmd = mock_asyncio.create_subprocess_exec.call_args.args
-        assert exec_cmd[:3] == ("docker", "exec", "-i")
+        assert exec_cmd[:5] == ("docker", "exec", "-u", "root", "-i")
+        assert "HOME=/home/node" in exec_cmd
+        assert "CODEX_HOME=/home/node/.codex" in exec_cmd
 
 
 # ---------------------------------------------------------------------------

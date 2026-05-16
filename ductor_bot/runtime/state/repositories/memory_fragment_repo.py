@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from ductor_bot.runtime.memory import MemoryConflict, govern_fragments
 from ductor_bot.runtime.memory.extractor import MemoryFragment
@@ -23,7 +25,7 @@ class MemoryFragmentRepository:
         """Insert a fragment row and return its ID."""
         with self._db.connect() as conn:
             cursor = self._insert_fragment(conn, fragment)
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
 
     def get(self, fragment_id: int) -> dict[str, object] | None:
         """Load a fragment row by ID."""
@@ -96,10 +98,10 @@ class MemoryFragmentRepository:
                 source_path=str(row.get("source_path", "")),
                 scope=str(row.get("scope", "")),
                 agent_name=str(row.get("agent_name", "")),
-                tags=list(row.get("tags_json", [])),
-                importance=float(row.get("importance", 0.0)),
-                created_at=float(row.get("created_at", 0.0)),
-                updated_at=float(row.get("updated_at", 0.0)),
+                tags=list(cast("Sequence[str]", row.get("tags_json", []))),
+                importance=float(cast("float | int | str", row.get("importance", 0.0))),
+                created_at=float(cast("float | int | str", row.get("created_at", 0.0))),
+                updated_at=float(cast("float | int | str", row.get("updated_at", 0.0))),
             )
             for row in rows
         ]
@@ -141,7 +143,7 @@ class MemoryFragmentRepository:
     @staticmethod
     def _row_to_dict(row: object) -> dict[str, object]:
         """Convert a SQLite row to a plain dict."""
-        payload = dict(row)
+        payload = dict(cast("Mapping[str, object]", row))
         payload["tags_json"] = json.loads(str(payload.get("tags_json", "[]")))
         return payload
 

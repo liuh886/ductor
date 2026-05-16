@@ -23,7 +23,7 @@ def reverse_sync_source(
         return False
 
     try:
-        content = _render_fragments_to_markdown(fragments)
+        content = _render_fragments_to_markdown(fragments, source_path=source_path)
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_text(content, encoding="utf-8")
         logger.info("Reverse synced %s", source_path)
@@ -34,10 +34,11 @@ def reverse_sync_source(
         return True
 
 
-def _render_fragments_to_markdown(fragments: Iterable[dict[str, object]]) -> str:
+def _render_fragments_to_markdown(fragments: Iterable[dict[str, object]], source_path: Path | None = None) -> str:
     """Render fragment rows back into Markdown while preserving file structure when possible."""
     fragment_list = list(fragments)
-    source_path = _resolve_source_path(fragment_list)
+    if source_path is None:
+        source_path = _resolve_source_path(fragment_list)
     existing = ""
     if source_path is not None and source_path.exists():
         try:

@@ -58,7 +58,11 @@ def test_docker_wrap_injects_secrets(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     env_file = tmp_path / ".env"
-    env_file.write_text("GEMINI_API_KEY=sk-test\n")
+    env_file.write_text(
+        "GEMINI_API_KEY=sk-test\n"
+        "OBSIDIAN_GATEWAY_URL=http://host.docker.internal:8888\n"
+        "OBSIDIAN_GATEWAY_KEY=vault-key\n"
+    )
 
     config = CLIConfig(
         working_dir=str(workspace),
@@ -73,6 +77,32 @@ def test_docker_wrap_injects_secrets(tmp_path: Path) -> None:
     assert cwd is None  # Docker mode
     assert "-e" in cmd
     assert "GEMINI_API_KEY=sk-test" in cmd
+    assert "OBSIDIAN_GATEWAY_URL=http://host.docker.internal:8888" in cmd
+    assert "OBSIDIAN_GATEWAY_KEY=vault-key" in cmd
+
+
+def test_docker_wrap_injects_obsidian_gateway_for_all_providers(tmp_path: Path) -> None:
+    """Obsidian bridge access is provider-agnostic runtime context."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "OBSIDIAN_GATEWAY_URL=http://host.docker.internal:8888\n"
+        "OBSIDIAN_GATEWAY_KEY=vault-key\n"
+    )
+
+    clear_cache()
+    with patch.dict("os.environ", {}, clear=True):
+        for provider in ("claude", "codex", "gemini"):
+            config = CLIConfig(
+                working_dir=str(workspace),
+                docker_container="test-container",
+                provider=provider,
+            )
+            cmd, _ = docker_wrap([provider], config)
+
+            assert "OBSIDIAN_GATEWAY_URL=http://host.docker.internal:8888" in cmd
+            assert "OBSIDIAN_GATEWAY_KEY=vault-key" in cmd
 
 
 def test_docker_wrap_does_not_override_host_env(tmp_path: Path) -> None:

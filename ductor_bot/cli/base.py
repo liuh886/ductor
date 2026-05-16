@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.stream_events import StreamEvent
 from ductor_bot.cli.types import CLIResponse
+from ductor_bot.orchestrator.capabilities.models import CapabilityExecutionPlan
 
 if TYPE_CHECKING:
     from ductor_bot.cli.process_registry import ProcessRegistry
@@ -97,6 +98,7 @@ class CLIConfig:
     process_label: str = "main"
     # Gemini-specific auth fallback:
     gemini_api_key: str | None = None
+    capability_plan: CapabilityExecutionPlan | None = None
     # Extra CLI parameters (provider-specific):
     cli_parameters: list[str] = field(default_factory=list)
     # Transport identification (for routing results back):
@@ -125,6 +127,12 @@ _SCOPED_SECRET_KEYS: dict[str, frozenset[str]] = {
     "codex": frozenset({"OPENAI_API_KEY"}),
     "claude": frozenset(),
 }
+_COMMON_RUNTIME_SECRET_KEYS = frozenset(
+    {
+        "OBSIDIAN_GATEWAY_URL",
+        "OBSIDIAN_GATEWAY_KEY",
+    }
+)
 
 
 def redact_command_for_logging(
@@ -140,7 +148,7 @@ def redact_command_for_logging(
         if part == "-e" and idx + 1 < len(cmd):
             safe.append(part)
             key_value = cmd[idx + 1]
-            key, sep, value = key_value.partition("=")
+            key, sep, _value = key_value.partition("=")
             if sep and _should_redact_env_key(key):
                 safe.append(f"{key}={_REDACTED_ENV_DISPLAY}")
             elif truncate_long_options and len(key_value) > 80:
@@ -177,7 +185,7 @@ def _append_env_flag(env_flags: list[str], key: str, value: str | int) -> None:
 
 def _provider_secret_env(provider: str, secret_env: dict[str, str]) -> dict[str, str]:
     """Return the subset of secrets needed by one provider process."""
-    allowed = _SCOPED_SECRET_KEYS.get(provider, frozenset())
+    allowed = _SCOPED_SECRET_KEYS.get(provider, frozenset()) | _COMMON_RUNTIME_SECRET_KEYS
     return {key: value for key, value in secret_env.items() if key in allowed}
 
 

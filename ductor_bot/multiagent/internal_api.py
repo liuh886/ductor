@@ -310,7 +310,7 @@ class InternalAgentAPI:
 
         return web.json_response({"success": True, "task_id": task_id})
 
-    async def _handle_task_resume(self, request: web.Request) -> web.Response:
+    async def _handle_task_resume(self, request: web.Request) -> web.Response:  # noqa: PLR0911
         """POST /tasks/resume — resume a completed task with a follow-up.
 
         Expects JSON: ``{"task_id": "...", "prompt": "...", "from": "agent"}``

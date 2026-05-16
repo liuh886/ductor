@@ -140,6 +140,26 @@ class TestFindGeminiCliJs:
         ):
             assert find_gemini_cli_js() == str(index_js)
 
+    def test_found_from_windows_bundle_layout(self, tmp_path: Path) -> None:
+        appdata = tmp_path / "AppData" / "Roaming"
+        cli = appdata / "npm" / "gemini.cmd"
+        cli.parent.mkdir(parents=True)
+        cli.write_text("@echo off\n")
+
+        bundle_js = (
+            appdata / "npm" / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
+        )
+        bundle_js.parent.mkdir(parents=True)
+        bundle_js.write_text("// bundled entry")
+
+        with (
+            patch("ductor_bot.cli.gemini_utils.which", return_value=None),
+            patch("ductor_bot.cli.gemini_utils.Path.home", return_value=tmp_path),
+            patch("ductor_bot.cli.gemini_utils.is_windows", return_value=True),
+            patch.dict("os.environ", {"APPDATA": str(appdata)}, clear=False),
+        ):
+            assert find_gemini_cli_js() == str(bundle_js)
+
 
 class TestDiscoverGeminiModels:
     def test_from_file(self, tmp_path: Path) -> None:

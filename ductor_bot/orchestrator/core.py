@@ -26,6 +26,7 @@ from ductor_bot.errors import (
 )
 from ductor_bot.infra.docker import DockerManager
 from ductor_bot.infra.inflight import InflightTracker
+from ductor_bot.orchestrator.capabilities import CapabilityPreselector
 from ductor_bot.orchestrator.directives import parse_directives
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
@@ -50,17 +51,23 @@ from ductor_bot.runtime.compression.summary_selector import SummarySelector
 from ductor_bot.runtime.state.db import RuntimeStateDB
 from ductor_bot.runtime.state.repositories.inflight_turn_repo import InflightTurnRepository
 from ductor_bot.runtime.state.repositories.memory_fragment_repo import MemoryFragmentRepository
+from ductor_bot.runtime.state.repositories.memory_promotion_journal_repo import (
+    MemoryPromotionJournalRepository,
+)
 from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
 from ductor_bot.runtime.state.repositories.named_session_repo import NamedSessionRepository
+from ductor_bot.runtime.state.repositories.outcome_event_repo import OutcomeEventRepository
 from ductor_bot.runtime.state.repositories.process_repo import ProcessRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
 from ductor_bot.runtime.state.repositories.task_state_repo import TaskStateRepository
+from ductor_bot.runtime.state.repositories.tool_call_repo import ToolCallRepository
 from ductor_bot.security import detect_suspicious_patterns
 from ductor_bot.session import SessionKey, SessionManager
 from ductor_bot.session.manager import SessionData
 from ductor_bot.session.named import NamedSessionRegistry
 from ductor_bot.webhook.manager import WebhookManager
+from ductor_bot.workspace.path_aliases import PathAliasRegistry
 from ductor_bot.workspace.paths import DuctorPaths
 
 if TYPE_CHECKING:
@@ -113,7 +120,7 @@ class _MessageDispatch:
 class Orchestrator:
     """Routes messages through command dispatch and conversation flows."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         config: AgentConfig,
         paths: DuctorPaths,
@@ -126,8 +133,13 @@ class Orchestrator:
         self._config = config
         self._paths: DuctorPaths = paths
         self._agent_name = agent_name
+        self._path_aliases = PathAliasRegistry(paths, agent_name=agent_name)
+        self._path_aliases.sanitize()
+        self._path_aliases.migrate_legacy_memory_aliases()
+        self._path_aliases.ensure_canonical_project_aliases()
         self._docker: DockerManager | None = None
         self._providers = ProviderManager(config)
+        self._capability_preselector = CapabilityPreselector(paths)
         runtime_db = RuntimeStateDB(config.resolved_state_db_path())
         inflight_repo = InflightTurnRepository(runtime_db)
 
@@ -137,7 +149,10 @@ class Orchestrator:
         process_repo: ProcessRepository | None = None
         summary_repo: SessionSummaryRepository | None = None
         memory_fragment_repo: MemoryFragmentRepository | None = None
+        memory_promotion_journal_repo: MemoryPromotionJournalRepository | None = None
         task_state_repo: TaskStateRepository | None = None
+        tool_call_repo: ToolCallRepository | None = None
+        outcome_event_repo: OutcomeEventRepository | None = None
         context_compressor: ContextCompressor | None = None
         if config.state_backend in {"dual", "sqlite"}:
             session_repo = SessionRepository(runtime_db)
@@ -145,7 +160,11 @@ class Orchestrator:
             message_repo = MessageRepository(runtime_db)
             process_repo = ProcessRepository(runtime_db)
             summary_repo = SessionSummaryRepository(runtime_db)
+            memory_promotion_journal_repo = MemoryPromotionJournalRepository(runtime_db)
             task_state_repo = TaskStateRepository(runtime_db)
+            tool_call_repo = ToolCallRepository(runtime_db)
+            outcome_event_repo = OutcomeEventRepository(runtime_db)
+            self._capability_preselector.set_outcome_event_repo(outcome_event_repo)
 
             shared_db = None
             if paths.ductor_home.parent.name == "agents":
@@ -162,7 +181,10 @@ class Orchestrator:
         self._inflight_repo = inflight_repo
         self._summary_repo = summary_repo
         self._memory_fragment_repo = memory_fragment_repo
+        self._memory_promotion_journal_repo = memory_promotion_journal_repo
         self._task_state_repo = task_state_repo
+        self._tool_call_repo = tool_call_repo
+        self._outcome_event_repo = outcome_event_repo
         self._context_compressor = context_compressor
         self._sessions = SessionManager(paths.sessions_path, config, state_repo=session_repo)
         self._named_sessions = NamedSessionRegistry(
@@ -205,6 +227,9 @@ class Orchestrator:
                 self._cli_service,
                 config.memory_compaction,
                 paths,
+                message_repo=message_repo,
+                journal_repo=memory_promotion_journal_repo,
+                agent_name=agent_name,
             )
 
         self._cron_manager = CronManager(jobs_path=paths.cron_jobs_path)
@@ -374,7 +399,7 @@ class Orchestrator:
             logger.exception("Unexpected error in handle_message")
             return OrchestratorResult(text="An internal error occurred. Please try again.")
 
-    async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:
+    async def _route_message(self, dispatch: _MessageDispatch) -> OrchestratorResult:  # noqa: PLR0911
         result = await self._command_registry.dispatch(
             dispatch.cmd,
             self,
@@ -404,6 +429,17 @@ class Orchestrator:
                     )
                 return await named_session_flow(self, dispatch.key, first_key, session_prompt)
 
+        registration = self._path_aliases.parse_registration(dispatch.text)
+        if registration is not None:
+            entry = await asyncio.to_thread(self._path_aliases.upsert, registration)
+            purpose = f"\n用途: {entry.purpose}" if entry.purpose else ""
+            return OrchestratorResult(
+                text=(
+                    f"已注册路径别名 `@{entry.alias}` → `{entry.path}`。"
+                    f"{purpose}\n这是正式 registry 条目, 后续各 agent 会按 registry 解析。"
+                )
+            )
+
         if directives.is_directive_only and directives.has_model:
             return OrchestratorResult(
                 text=f"Next message will use: {directives.model}\n"
@@ -411,6 +447,12 @@ class Orchestrator:
             )
 
         prompt_text = directives.cleaned or dispatch.text
+        if directives.raw_directives:
+            restored = " ".join(
+                f"@{key}" if value is None else f"@{key}={value}"
+                for key, value in directives.raw_directives.items()
+            )
+            prompt_text = f"{restored} {directives.cleaned}".strip()
 
         if dispatch.streaming:
             return await normal_streaming(

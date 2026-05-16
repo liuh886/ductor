@@ -63,6 +63,7 @@ async def create_orchestrator(
         inject_runtime_environment,
         paths,
         docker_container=docker_container,
+        docker_mounts=list(config.docker.mounts),
         agent_name=agent_name,
         transport=config.transport,
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,10 @@ import pytest
 from ductor_bot.cli.types import AgentResponse
 from ductor_bot.config import AgentConfig
 from ductor_bot.runtime.state.db import RuntimeStateDB
+from ductor_bot.runtime.state.repositories.memory_promotion_journal_repo import (
+    MemoryPromotionJournalRepository,
+)
+from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.scripts import memory_synthesis
 from ductor_bot.session.manager import ProviderSessionData, SessionData
@@ -42,6 +47,8 @@ async def test_run_synthesis_uses_configured_docker_container(
     home.mkdir()
     db_path = home / "state.db"
     _seed_session(db_path, chat_id=123)
+    db = RuntimeStateDB(db_path)
+    message_id = MessageRepository(db).append("tg:123", "user", "I prefer terse answers.")
 
     config = AgentConfig(
         ductor_home=str(home),
@@ -54,7 +61,21 @@ async def test_run_synthesis_uses_configured_docker_container(
 
     class _FakeCLIService:
         async def execute(self, _request: object) -> AgentResponse:
-            return AgentResponse(result="maintenance ok")
+            return AgentResponse(
+                result=json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "target_scope": "mainmemory",
+                                "title": "Answer style",
+                                "body": "- Prefers terse answers.",
+                                "tags": ["preference"],
+                                "source_message_ids": [message_id],
+                            }
+                        ]
+                    }
+                )
+            )
 
     class _FakeOrchestrator:
         def __init__(
@@ -83,6 +104,11 @@ async def test_run_synthesis_uses_configured_docker_container(
     assert exit_code == 0
     assert seen["docker_container"] == "ductor-sandbox"
     assert "Memory synthesis completed for chat_id=123" in output
+    assert "created=1 skipped=0" in output
+    assert "Prefers terse answers" not in output
+    pending = MemoryPromotionJournalRepository(db).list_pending(target_scope="mainmemory")
+    assert len(pending) == 1
+    assert pending[0]["title"] == "Answer style"
 
 
 @pytest.mark.asyncio
@@ -129,5 +155,5 @@ async def test_run_synthesis_prints_failure_instead_of_success_on_error(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "Memory synthesis failed for chat_id=123" in output
-    assert "provider failed" in output
+    assert "provider failed" not in output
     assert "Memory synthesis completed for chat_id=123" not in output

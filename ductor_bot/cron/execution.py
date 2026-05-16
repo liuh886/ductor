@@ -16,6 +16,7 @@ from ductor_bot.cli.gemini_utils import find_gemini_cli
 from ductor_bot.cli.param_resolver import TaskExecutionConfig
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 from ductor_bot.infra.process_tree import force_kill_process_tree
+from ductor_bot.text.response_format import ensure_text_response
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,16 @@ def parse_result(provider: str, stdout: bytes) -> str:
 def indent(text: str, prefix: str) -> str:
     """Indent every line of *text* with *prefix*."""
     return "\n".join(prefix + line for line in text.splitlines())
+
+
+def _fallback_error_text(status: str, stderr: bytes) -> str:
+    """Return a compact user-facing fallback when one-shot execution has no stdout result."""
+    raw = stderr.decode(errors="replace").strip()
+    if raw:
+        first_line = next((line.strip() for line in raw.splitlines() if line.strip()), "")
+        if first_line:
+            return f"[{status}] {first_line[:300]}"
+    return f"[{status}] CLI exited without a final text response."
 
 
 # -- Private builders --
@@ -250,9 +261,14 @@ async def execute_one_shot(
 
     returncode = proc.returncode
     status = "success" if returncode == 0 else f"error:exit_{returncode}"
+    result_text = parse_result(provider, stdout)
+    if status == "success":
+        result_text = ensure_text_response(result_text)
+    elif not result_text.strip():
+        result_text = _fallback_error_text(status, stderr)
     return OneShotExecutionResult(
         status=status,
-        result_text=parse_result(provider, stdout),
+        result_text=result_text,
         stdout=stdout,
         stderr=stderr,
         returncode=returncode,

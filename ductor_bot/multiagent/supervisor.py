@@ -19,6 +19,7 @@ from ductor_bot.multiagent.registry import AgentRegistry
 from ductor_bot.multiagent.stack import AgentStack
 from ductor_bot.runtime.state import (
     MessageRepository,
+    OutcomeEventRepository,
     ProcessRepository,
     RuntimeStateDB,
     TaskRepository,
@@ -154,6 +155,7 @@ class AgentSupervisor:
             task_state_repo = None
             message_repo: MessageRepository | None = None
             process_repo: ProcessRepository | None = None
+            outcome_event_repo: OutcomeEventRepository | None = None
             if self._main_config.state_backend in {"dual", "sqlite"}:
                 runtime_db = RuntimeStateDB(self._main_config.resolved_state_db_path())
                 task_repo = TaskRepository(runtime_db)
@@ -164,6 +166,7 @@ class AgentSupervisor:
                 task_state_repo = TaskStateRepository(runtime_db)
                 message_repo = MessageRepository(runtime_db)
                 process_repo = ProcessRepository(runtime_db)
+                outcome_event_repo = OutcomeEventRepository(runtime_db)
             registry = TaskRegistry(
                 registry_path=self._main_paths.tasks_registry_path,
                 tasks_dir=self._main_paths.tasks_dir,
@@ -181,6 +184,7 @@ class AgentSupervisor:
                 cli_service=None,  # Set per-agent in _post_startup
                 process_repo=process_repo,
                 message_repo=message_repo,
+                outcome_event_repo=outcome_event_repo,
                 config=self._main_config.tasks,
                 process_registry=self._task_process_registry,
             )

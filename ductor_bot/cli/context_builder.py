@@ -44,7 +44,7 @@ class ContextBuilder:
     def __init__(self, budget: ContextBudget | None = None) -> None:
         self.budget = budget or ContextBudget()
 
-    def build_request(
+    def build_request(  # noqa: PLR0913
         self,
         *,
         user_prompt: str,
@@ -58,27 +58,27 @@ class ContextBuilder:
         provider: str,
     ) -> AgentRequest:
         """Constructs an AgentRequest while respecting the budget for each component.
-        
+
         Note: Current implementation uses character-count estimation (1 token ~ 4 chars).
         Future versions will plug in real tiktoken/provider-specific counters.
         """
         from ductor_bot.cli.types import AgentRequest
 
-        # 1. Assemble System Prompt (Index & Soul)
+        # 1. Assemble System Prompt (Identity-adjacent operational notes + memory)
         system_parts = []
         if soul:
-            system_parts.append(soul)
+            limited_soul = self._truncate_to_budget(soul, max(512, self.budget.index_tokens // 4))
+            system_parts.append(f"# Operational Notes\n{limited_soul}")
 
         if main_memory:
-            # Apply Index Budget
             limited_mem = self._truncate_to_budget(main_memory, self.budget.index_tokens)
-            system_parts.append(f"# MAIN MEMORY (SOPs)\n{limited_mem}")
+            system_parts.append(f"# Memory Context\n{limited_mem}")
 
-        # 2. Assemble Task State (L3 logic)
+        # 2. Assemble Task State (situation/state context)
         state_parts = []
         if task_state:
             limited_state = self._truncate_to_budget(task_state, self.budget.state_tokens)
-            state_parts.append(f"[TASK_STATE_SNAPSHOT]\n{limited_state}")
+            state_parts.append(f"[SITUATION_CONTEXT]\n{limited_state}")
 
         # 3. Assemble RAG Context (L5 logic)
         rag_text = ""

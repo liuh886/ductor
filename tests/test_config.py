@@ -40,6 +40,10 @@ def test_agent_config_defaults() -> None:
     assert cfg.gemini_api_key is None
     assert cfg.role == ""
     assert cfg.role_description == ""
+    assert cfg.style_policy == ""
+    assert cfg.direct_answer_policy == ""
+    assert cfg.routing_policy == ""
+    assert cfg.forbidden_modes == []
     assert cfg.telegram_token == ""
     assert cfg.allowed_user_ids == []
 

@@ -38,16 +38,16 @@ _ROLE_BOOTSTRAP_BY_AGENT: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "seismic-bot": {
         "about": (
-            "- Role: specialized signal-detection and change-monitoring agent.",
-            "- Default stance: highlight anomalies, structural shifts, and time-sensitive developments.",
+            "- Role: geophysics company CEO and business lead.",
+            "- Default stance: evaluate geophysics, seismic, and subsurface work through business value, delivery capability, and long-horizon positioning.",
         ),
         "facts": (
-            "- Preserve recurring domains, watchlists, and alert-worthy patterns the user cares about.",
-            "- Track what counts as noise vs. a real signal for the user.",
+            "- Preserve durable customer patterns, project types, commercial opportunities, and capability gaps relevant to the business.",
+            "- Track how technical strengths map into winning bids, trusted delivery, and repeatable revenue.",
         ),
         "decisions": (
-            "- Prefer fewer, higher-confidence alerts over broad low-signal summaries.",
-            "- When uncertain, compare against prior baselines before escalating a change.",
+            "- Prefer business judgment with clear tradeoffs over narrow technical commentary.",
+            "- Route deep technical analysis, research collection, or document production to specialists when that improves speed or quality.",
         ),
     },
 }
@@ -102,8 +102,10 @@ def repair_all(ductor_home: Path) -> list[RepairResult]:
     results = [repair_memory_home(ductor_home, agent_name="main")]
     agents_dir = ductor_home / "agents"
     if agents_dir.exists():
-        for agent_dir in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
-            results.append(repair_memory_home(agent_dir, agent_name=agent_dir.name))
+        results.extend(
+            repair_memory_home(agent_dir, agent_name=agent_dir.name)
+            for agent_dir in sorted(p for p in agents_dir.iterdir() if p.is_dir())
+        )
     return results
 
 
@@ -194,6 +196,7 @@ def _configured_role_bootstrap(
         ),
         "decisions": (
             "- Prefer role-specific, reusable memory over transient turn-by-turn details.",
+            "- Use subagents or routing for work that is multi-step, cross-functional, or better handled by a specialist.",
         ),
     }
 

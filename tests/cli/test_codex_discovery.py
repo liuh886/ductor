@@ -53,6 +53,25 @@ _MODEL_LIST_RESPONSE = json.dumps(
 )
 
 _STDOUT = f"{_INIT_RESPONSE}\n{_MODEL_LIST_RESPONSE}\n"
+_DEBUG_MODELS_RESPONSE = json.dumps(
+    {
+        "models": [
+            {
+                "slug": "gpt-5.4",
+                "display_name": "gpt-5.4",
+                "description": "Strong model for everyday coding.",
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": [
+                    {"effort": "low"},
+                    {"effort": "medium"},
+                    {"effort": "high"},
+                    {"effort": "xhigh"},
+                ],
+                "priority": 1,
+            }
+        ]
+    }
+)
 
 
 def _mock_process(stdout: str = _STDOUT, returncode: int = 0) -> AsyncMock:
@@ -128,6 +147,34 @@ async def test_discover_models_invalid_json() -> None:
     ):
         models = await discover_codex_models()
     assert models == []
+
+
+async def test_discover_models_logs_stdout_preview_on_missing_response(caplog) -> None:
+    proc = _mock_process(stdout='{"id":1,"result":{"ok":true}}\n')
+    with (
+        patch("ductor_bot.cli.codex_discovery.which", return_value="/usr/bin/codex"),
+        patch("asyncio.create_subprocess_exec", return_value=proc),
+        caplog.at_level("WARNING"),
+    ):
+        models = await discover_codex_models()
+
+    assert models == []
+    assert 'No model/list response found in codex app-server output: {"id":1,"result":{"ok":true}}' in caplog.text
+
+
+async def test_discover_models_falls_back_to_debug_models() -> None:
+    app_proc = _mock_process(stdout='{"id":1,"result":{"ok":true}}\n')
+    debug_proc = _mock_process(stdout=_DEBUG_MODELS_RESPONSE)
+    with (
+        patch("ductor_bot.cli.codex_discovery.which", return_value="/usr/bin/codex"),
+        patch("asyncio.create_subprocess_exec", side_effect=[app_proc, debug_proc]),
+    ):
+        models = await discover_codex_models()
+
+    assert len(models) == 1
+    assert models[0].id == "gpt-5.4"
+    assert models[0].supported_efforts == ("low", "medium", "high", "xhigh")
+    assert models[0].default_effort == "medium"
 
 
 async def test_discover_models_spawn_error() -> None:

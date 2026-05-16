@@ -13,10 +13,16 @@ from typing import TYPE_CHECKING
 from ductor_bot.background.models import BackgroundResult, BackgroundSubmit, BackgroundTask
 from ductor_bot.i18n import t
 from ductor_bot.infra.task_runner import run_oneshot_task
+from ductor_bot.text.response_format import (
+    ensure_text_response,
+    session_error_text,
+    timeout_error_text,
+)
 
 if TYPE_CHECKING:
     from ductor_bot.cli.param_resolver import TaskExecutionConfig
     from ductor_bot.cli.service import CLIService
+    from ductor_bot.cli.types import AgentResponse
     from ductor_bot.workspace.paths import DuctorPaths
 
 logger = logging.getLogger(__name__)
@@ -217,6 +223,7 @@ class BackgroundObserver:
                 status = "error:cli"
                 if response.timed_out:
                     status = "error:timeout"
+            result_text = self._render_named_session_result(bg_task, response)
 
             await self._deliver(
                 BackgroundResult(
@@ -225,7 +232,7 @@ class BackgroundObserver:
                     message_id=bg_task.message_id,
                     thread_id=bg_task.thread_id,
                     prompt_preview=bg_task.prompt[:60],
-                    result_text=response.result or "",
+                    result_text=result_text,
                     status=status,
                     elapsed_seconds=elapsed,
                     provider=bg_task.provider,
@@ -277,6 +284,14 @@ class BackgroundObserver:
                         silent=bg_task.silent,
                     )
                 )
+
+    def _render_named_session_result(self, bg_task: BackgroundTask, response: AgentResponse) -> str:
+        """Return a user-facing result for named-session tasks, even on empty CLI output."""
+        if response.is_error:
+            if response.timed_out:
+                return timeout_error_text(bg_task.model or bg_task.provider, self._timeout_seconds)
+            return session_error_text(bg_task.model or bg_task.provider, response.result or "")
+        return ensure_text_response(response.result)
 
     async def _deliver(self, result: BackgroundResult) -> None:
         if self._on_result is None:

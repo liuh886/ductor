@@ -47,6 +47,7 @@ class RuntimeStateDB:
             conn.executescript(load_schema_sql())
             self._ensure_session_lineage_columns(conn)
             self._ensure_messages_features(conn)
+            self._ensure_tool_calls_features(conn)
             self._ensure_memory_fragments_ulid(conn)
             self._ensure_memory_fragments_timestamps(conn)
             self._ensure_inflight_turns_storage_key(conn)
@@ -144,6 +145,28 @@ class RuntimeStateDB:
             FROM messages
             """
         )
+
+    @staticmethod
+    def _ensure_tool_calls_features(conn: sqlite3.Connection) -> None:
+        """Add observability columns to tool_calls if missing."""
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(tool_calls)").fetchall()
+        }
+        if "outcome" not in existing:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN outcome TEXT NOT NULL DEFAULT 'success'"
+            )
+        if "attempt" not in existing:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1"
+            )
+        if "details_json" not in existing:
+            conn.execute(
+                "ALTER TABLE tool_calls ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "finished_at" not in existing:
+            conn.execute("ALTER TABLE tool_calls ADD COLUMN finished_at REAL")
 
     @staticmethod
     def _ensure_inflight_turns_storage_key(conn: sqlite3.Connection) -> None:

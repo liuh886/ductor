@@ -424,7 +424,10 @@ def _gemini_exec_names() -> tuple[str, ...]:
 
 
 def _gemini_index_from_node_modules_root(node_modules_root: Path) -> Path:
-    return node_modules_root / "@google" / "gemini-cli" / "dist" / "index.js"
+    legacy = node_modules_root / "@google" / "gemini-cli" / "dist" / "index.js"
+    if legacy.is_file():
+        return legacy
+    return node_modules_root / "@google" / "gemini-cli" / "bundle" / "gemini.js"
 
 
 def _gemini_index_candidates_from_cli_path(cli_path: Path) -> tuple[Path, ...]:
@@ -435,15 +438,22 @@ def _gemini_index_candidates_from_cli_path(cli_path: Path) -> tuple[Path, ...]:
     gemini_cli_root = _find_gemini_cli_package_root(cli_path)
     if gemini_cli_root is not None:
         candidates.append(gemini_cli_root / "dist" / "index.js")
+        candidates.append(gemini_cli_root / "bundle" / "gemini.js")
 
     # NVM layout: bin/gemini -> two parents up is the node version dir.
     node_version_dir = cli_path.parent.parent
     candidates.append(
         node_version_dir / "lib" / "node_modules" / "@google" / "gemini-cli" / "dist" / "index.js"
     )
+    candidates.append(
+        node_version_dir / "lib" / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
+    )
     # npm global Windows/flat layout
     candidates.append(
         cli_path.parent / "node_modules" / "@google" / "gemini-cli" / "dist" / "index.js"
+    )
+    candidates.append(
+        cli_path.parent / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
     )
 
     seen: set[Path] = set()

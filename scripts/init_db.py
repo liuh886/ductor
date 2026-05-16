@@ -1,14 +1,13 @@
 """Initialize or update the runtime SQLite database schema."""
 
-import os
 from contextlib import closing
 from pathlib import Path
 
 from ductor_bot.runtime.state.db import RuntimeStateDB
 
 
-def main():
-    db_path = Path(os.path.expanduser("~/.ductor/state.db"))
+def main() -> None:
+    db_path = Path("~/.ductor/state.db").expanduser()
     print(f"Initializing database at: {db_path}")
 
     db = RuntimeStateDB(db_path)

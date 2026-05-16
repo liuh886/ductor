@@ -36,6 +36,8 @@ class TestTaskEntry:
         assert restored.question_count == 2
         assert restored.follow_up_count == 0
         assert restored.evaluation_status == ""
+        assert restored.outcome == ""
+        assert restored.empty_result is False
 
     def test_from_dict_defaults(self) -> None:
         d = {"task_id": "x", "chat_id": 1}
@@ -46,6 +48,7 @@ class TestTaskEntry:
         assert entry.question_count == 0
         assert entry.follow_up_count == 0
         assert entry.evaluation_status == ""
+        assert entry.outcome == ""
 
     def test_to_dict_includes_original_prompt(self) -> None:
         entry = TaskEntry(
@@ -134,6 +137,8 @@ class TestTaskResult:
         assert result.error == ""
         assert result.follow_up_count == 0
         assert result.evaluation_status == ""
+        assert result.outcome == ""
+        assert result.empty_result is False
 
     def test_thread_id_default(self) -> None:
         result = TaskResult(

@@ -396,6 +396,7 @@ class CLIService:
                 chat_id=request.chat_id,
                 topic_id=request.topic_id,
                 process_label=request.process_label,
+                capability_plan=request.capability_plan,
                 cli_parameters=self._config.cli_parameters_for_provider(provider),
                 agent_name=self._config.agent_name,
                 interagent_port=self._config.interagent_port,
@@ -423,6 +424,20 @@ def _cli_response_to_agent_response(
     stream_fallback: bool = False,
 ) -> AgentResponse:
     """Convert internal CLIResponse to public AgentResponse."""
+    stripped = resp.result.strip()
+    empty_result = not stripped
+    if resp.timed_out:
+        outcome = "timeout"
+        failure_class = "timeout"
+    elif resp.is_error:
+        outcome = "error"
+        failure_class = "cli_error"
+    elif empty_result:
+        outcome = "empty_result"
+        failure_class = "empty_result"
+    else:
+        outcome = "success"
+        failure_class = ""
     return AgentResponse(
         result=resp.result,
         returncode=resp.returncode,
@@ -435,6 +450,9 @@ def _cli_response_to_agent_response(
         timed_out=resp.timed_out,
         duration_ms=resp.duration_ms,
         stream_fallback=stream_fallback,
+        outcome=outcome,
+        failure_class=failure_class,
+        empty_result=empty_result,
     )
 
 

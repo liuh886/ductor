@@ -108,6 +108,7 @@ class CodexCLI(BaseCLI):
         cmd = [self._cli, "exec", "resume"]
         if json_output:
             cmd.append("--json")
+        cmd.append("--skip-git-repo-check")
         cmd.append(session_id)
         if not _IS_WINDOWS:
             cmd.append(final_prompt)
@@ -159,11 +160,14 @@ class CodexCLI(BaseCLI):
 
     def _docker_wrap(self, cmd: list[str]) -> tuple[list[str], str | None]:
         """Keep stdin open for Dockerized Codex on Windows so prompts reach the CLI."""
-        return docker_wrap(
+        exec_cmd, use_cwd = docker_wrap(
             cmd,
             self._config,
             interactive=_IS_WINDOWS,
         )
+        if self._config.docker_container:
+            exec_cmd = _codex_docker_exec_cmd(exec_cmd, self._config.docker_container)
+        return exec_cmd, use_cwd
 
     async def send(
         self,
@@ -312,3 +316,22 @@ def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
     safe_cmd = redact_command_for_logging(cmd, truncate_long_options=False)
     prefix = "Codex stream cmd" if streaming else "Codex cmd"
     logger.info("%s: %s", prefix, " ".join(safe_cmd))
+
+
+def _codex_docker_exec_cmd(cmd: list[str], container_name: str) -> list[str]:
+    """Run Codex in Docker as root while preserving the node user's Codex home.
+
+    Codex CLI 0.130.0 needs root in the sandbox container to initialize its
+    in-process app-server client, but the authenticated state is mounted under
+    ``/home/node/.codex``.
+    """
+    if len(cmd) < 3 or cmd[0] != "docker" or cmd[1] != "exec" or container_name not in cmd:
+        return cmd
+
+    container_idx = cmd.index(container_name)
+    options = cmd[2:container_idx]
+    if "-u" not in options and "--user" not in options:
+        options = ["-u", "root", *options]
+
+    env_flags = ["-e", "HOME=/home/node", "-e", "CODEX_HOME=/home/node/.codex"]
+    return [*cmd[:2], *options, *env_flags, *cmd[container_idx:]]

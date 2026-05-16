@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,9 +33,41 @@ _IS_WINDOWS = sys.platform == "win32"
 _SKIP_DIRS: frozenset[str] = frozenset(
     {".claude", ".system", ".git", ".venv", "__pycache__", "node_modules"}
 )
+_EXCLUDED_SKILL_NAMES: frozenset[str] = frozenset(
+    {
+        "brainstorming.bak",
+        "dummy-skill",
+        "frontend-design-vipul",
+        "gstack",
+        "as-debugging-and-error-recovery",
+        "as-planning-and-task-breakdown",
+        "as-spec-driven-development",
+        "as-using-agent-skills",
+        "systematic-debugging-obra",
+        "systematic-debugging",
+        "using-superpowers",
+        "brainstorming",
+        "dispatching-parallel-agents",
+        "executing-plans",
+        "finishing-a-development-branch",
+        "receiving-code-review",
+        "requesting-code-review",
+        "subagent-driven-development",
+        "test-driven-development",
+        "using-git-worktrees",
+        "verification-before-completion",
+        "writing-plans",
+        "writing-skills",
+        "skill-creator",
+        "markitdown-converter",
+    }
+)
+_EXCLUDED_SKILL_PREFIXES: tuple[str, ...] = ("skill_",)
 
 _SKILL_SYNC_INTERVAL = 30.0
 _MANAGED_MARKER = ".ductor_managed"
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+_INACTIVE_SKILL_STATUSES = frozenset({"candidate", "suppressed"})
 
 
 def _is_under(child: Path, parent: Path) -> bool:
@@ -62,7 +95,9 @@ def _discover_skills(base: Path) -> dict[str, Path]:
         return {}
     skills: dict[str, Path] = {}
     for entry in sorted(base.iterdir()):
-        if entry.name.startswith(".") or entry.name in _SKIP_DIRS:
+        if _should_skip_skill_entry(entry):
+            continue
+        if _skill_status(entry) in _INACTIVE_SKILL_STATUSES:
             continue
         if entry.is_symlink():
             if entry.exists():
@@ -73,7 +108,37 @@ def _discover_skills(base: Path) -> dict[str, Path]:
     return skills
 
 
-def _cli_skill_dirs() -> dict[str, Path]:
+def _should_skip_skill_entry(entry: Path) -> bool:
+    name = entry.name
+    return (
+        name.startswith(".")
+        or name.endswith(".bak")
+        or name in _SKIP_DIRS
+        or name in _EXCLUDED_SKILL_NAMES
+        or any(name.startswith(prefix) for prefix in _EXCLUDED_SKILL_PREFIXES)
+    )
+
+
+def _skill_status(skill_dir: Path) -> str | None:
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    frontmatter_match = _FRONTMATTER_RE.match(content)
+    if not frontmatter_match:
+        return None
+    for raw_line in frontmatter_match.group(1).splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip().lower() == "status":
+            return value.strip().strip("'\"").lower()
+    return None
+
+
+def _cli_skill_dirs(*, include_gemini: bool = True) -> dict[str, Path]:
     """Return skill directories for installed CLIs.
 
     Only includes CLIs whose home directory exists on disk.
@@ -86,9 +151,10 @@ def _cli_skill_dirs() -> dict[str, Path]:
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     if codex_home.is_dir():
         dirs["codex"] = codex_home / "skills"
-    gemini_home = Path.home() / ".gemini"
-    if gemini_home.is_dir():
-        dirs["gemini"] = gemini_home / "skills"
+    if include_gemini:
+        gemini_home = Path.home() / ".gemini"
+        if gemini_home.is_dir():
+            dirs["gemini"] = gemini_home / "skills"
     return dirs
 
 
@@ -300,7 +366,12 @@ def _link_skill_everywhere(
             logger.warning("Failed to sync skill %s in %s", skill_name, loc_name, exc_info=True)
 
 
-def sync_skills(paths: DuctorPaths, *, docker_active: bool = False) -> None:
+def sync_skills(
+    paths: DuctorPaths,
+    *,
+    docker_active: bool = False,
+    include_gemini: bool = False,
+) -> None:
     """Multi-way skill directory sync: ductor workspace <-> CLI skill dirs.
 
     Syncs between ductor workspace, ~/.claude/skills, ~/.codex/skills,
@@ -314,7 +385,7 @@ def sync_skills(paths: DuctorPaths, *, docker_active: bool = False) -> None:
     - Existing valid symlinks pointing elsewhere are left alone.
     - Internal directories (.system, .claude, .git, .venv) are skipped.
     """
-    cli_dirs = _cli_skill_dirs()
+    cli_dirs = _cli_skill_dirs(include_gemini=include_gemini)
     all_dirs: dict[str, Path] = {"ductor": paths.skills_dir, **cli_dirs}
 
     registries = {name: _discover_skills(d) for name, d in all_dirs.items()}
@@ -348,7 +419,7 @@ def _iter_bundled_entries(paths: DuctorPaths) -> list[tuple[Path, Path]]:
     target_dir.mkdir(parents=True, exist_ok=True)
     pairs: list[tuple[Path, Path]] = []
     for entry in sorted(bundled.iterdir()):
-        if not entry.is_dir() or entry.name.startswith(".") or entry.name in _SKIP_DIRS:
+        if not entry.is_dir() or _should_skip_skill_entry(entry):
             continue
         pairs.append((entry, target_dir / entry.name))
     return pairs
@@ -426,6 +497,7 @@ async def watch_skill_sync(
     paths: DuctorPaths,
     *,
     docker_active: bool = False,
+    include_gemini: bool = False,
     interval: float = _SKILL_SYNC_INTERVAL,
 ) -> None:
     """Continuously sync skill directories across all agents.
@@ -436,6 +508,11 @@ async def watch_skill_sync(
     while True:
         await asyncio.sleep(interval)
         try:
-            await asyncio.to_thread(sync_skills, paths, docker_active=docker_active)
+            await asyncio.to_thread(
+                sync_skills,
+                paths,
+                docker_active=docker_active,
+                include_gemini=include_gemini,
+            )
         except Exception:
             logger.exception("Skill sync failed")

@@ -1,7 +1,5 @@
 """Tests for the SQLite runtime-state kernel."""
 
-# ruff: noqa: INP001
-
 from __future__ import annotations
 
 import sqlite3
@@ -29,8 +27,61 @@ def test_runtime_state_db_creates_schema_and_wal(tmp_path: Path) -> None:
     assert "messages" in tables
     assert "processes" in tables
     assert "tool_calls" in tables
+    assert "outcome_events" in tables
+    assert "memory_promotion_journal" in tables
     assert mode is not None
     assert str(mode[0]).lower() == "wal"
+
+    with db.connect() as conn:
+        outcome_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(outcome_events)").fetchall()
+        }
+        indexes = {
+            str(row["name"]) for row in conn.execute("PRAGMA index_list(outcome_events)").fetchall()
+        }
+
+    assert {
+        "session_storage_key",
+        "task_id",
+        "process_id",
+        "provider",
+        "model",
+        "flow",
+        "failure_class",
+        "empty_result",
+        "recovery_count",
+        "duration_ms",
+        "confidence",
+    }.issubset(outcome_columns)
+    assert "idx_outcome_events_learning" in indexes
+    assert "idx_outcome_events_session" in indexes
+
+    with db.connect() as conn:
+        journal_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memory_promotion_journal)").fetchall()
+        }
+        journal_indexes = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA index_list(memory_promotion_journal)").fetchall()
+        }
+
+    assert {
+        "session_storage_key",
+        "source_message_ids_json",
+        "agent_name",
+        "target_scope",
+        "title",
+        "body",
+        "tags_json",
+        "status",
+        "verification_json",
+        "promoted_fragment_ulid",
+        "created_at",
+        "updated_at",
+    }.issubset(journal_columns)
+    assert "idx_memory_promotion_journal_pending" in journal_indexes
+    assert "idx_memory_promotion_journal_idempotency" in journal_indexes
 
 
 def test_runtime_state_db_connection_uses_row_factory(tmp_path: Path) -> None:
@@ -68,8 +119,7 @@ def test_runtime_state_db_adds_session_lineage_columns_to_existing_db(tmp_path: 
 
     with db.connect() as conn:
         columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
         }
 
     assert "lineage_id" in columns
@@ -218,12 +268,9 @@ def test_runtime_state_db_migrates_legacy_inflight_turns_table(tmp_path: Path) -
 
     with db.connect() as conn:
         columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(inflight_turns)").fetchall()
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(inflight_turns)").fetchall()
         }
-        row = conn.execute(
-            "SELECT storage_key, payload_json FROM inflight_turns"
-        ).fetchone()
+        row = conn.execute("SELECT storage_key, payload_json FROM inflight_turns").fetchone()
 
     assert columns == {"storage_key", "payload_json", "updated_at"}
     assert row is not None

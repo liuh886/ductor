@@ -1,10 +1,11 @@
-import os
 import sqlite3
+import sys
+from pathlib import Path
 
 db_path = r"C:\Users\ZOZN109\.ductor\state.db"
-if not os.path.exists(db_path):
+if not Path(db_path).exists():
     print(f"Database not found at {db_path}")
-    exit(1)
+    sys.exit(1)
 
 conn = sqlite3.connect(db_path)
 cursor = conn.cursor()

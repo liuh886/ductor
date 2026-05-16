@@ -86,7 +86,7 @@ def test_repair_memory_home_bootstraps_empty_template_from_shared(tmp_path: Path
     assert result.action == "bootstrap_from_shared"
     assert result.fragment_count > 0
     updated = mm.read_text(encoding="utf-8")
-    assert "signal-detection and change-monitoring agent" in updated
+    assert "geophysics company CEO and business lead" in updated
     assert _START_MARKER in updated
     assert _END_MARKER in updated
     assert "Shared Cross-Agent Alerts" in updated

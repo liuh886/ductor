@@ -50,6 +50,10 @@ class TaskEntry:
     last_follow_up: str = ""
     evaluation_status: str = ""
     evaluation_notes: str = ""
+    outcome: str = ""
+    failure_class: str = ""
+    empty_result: bool = False
+    recovery_count: int = 0
     original_prompt: str = ""
     thinking: str = ""
     tasks_dir: str = ""  # Agent's tasks directory (for per-agent folder resolution)
@@ -79,6 +83,10 @@ class TaskEntry:
             "last_follow_up": self.last_follow_up,
             "evaluation_status": self.evaluation_status,
             "evaluation_notes": self.evaluation_notes,
+            "outcome": self.outcome,
+            "failure_class": self.failure_class,
+            "empty_result": self.empty_result,
+            "recovery_count": self.recovery_count,
             "original_prompt": self.original_prompt,
             "thinking": self.thinking,
             "tasks_dir": self.tasks_dir,
@@ -112,6 +120,10 @@ class TaskEntry:
             last_follow_up=d.get("last_follow_up", ""),
             evaluation_status=d.get("evaluation_status", ""),
             evaluation_notes=d.get("evaluation_notes", ""),
+            outcome=d.get("outcome", ""),
+            failure_class=d.get("failure_class", ""),
+            empty_result=d.get("empty_result", False),
+            recovery_count=d.get("recovery_count", 0),
             original_prompt=d.get("original_prompt", ""),
             thinking=d.get("thinking", ""),
             tasks_dir=d.get("tasks_dir", ""),
@@ -149,3 +161,7 @@ class TaskResult:
     thread_id: int | None = None
     follow_up_count: int = 0
     evaluation_status: str = ""
+    outcome: str = ""
+    failure_class: str = ""
+    empty_result: bool = False
+    recovery_count: int = 0

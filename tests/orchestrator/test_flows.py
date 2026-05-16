@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ductor_bot.cli.types import AgentResponse
+from ductor_bot.cli.types import AgentRequest, AgentResponse
 from ductor_bot.config import AgentConfig
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import (
@@ -21,10 +23,18 @@ from ductor_bot.orchestrator.flows import (
     normal,
     normal_streaming,
 )
+from ductor_bot.orchestrator.memory_flush import MemoryFlusher
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.runtime.memory import MemoryFragment
-from ductor_bot.session import SessionData
+from ductor_bot.runtime.state import (
+    MemoryPromotionJournalRepository,
+    MessageRepository,
+    OutcomeEventRepository,
+    RuntimeStateDB,
+)
+from ductor_bot.session import ProviderSessionData, SessionData
 from ductor_bot.session.key import SessionKey
+from ductor_bot.workspace.path_aliases import AliasRegistration
 from ductor_bot.workspace.paths import DuctorPaths
 
 
@@ -43,6 +53,29 @@ def _mock_response(**kwargs: object) -> AgentResponse:
         "total_tokens": 500,
     }
     defaults.update(kwargs)
+    result = str(defaults.get("result", "") or "")
+    timed_out = bool(defaults.get("timed_out", False))
+    is_error = bool(defaults.get("is_error", False))
+    if "empty_result" not in defaults:
+        defaults["empty_result"] = not result.strip()
+    if "failure_class" not in defaults:
+        if timed_out:
+            defaults["failure_class"] = "timeout"
+        elif is_error:
+            defaults["failure_class"] = "cli_error"
+        elif not result.strip():
+            defaults["failure_class"] = "empty_result"
+        else:
+            defaults["failure_class"] = ""
+    if "outcome" not in defaults:
+        if timed_out:
+            defaults["outcome"] = "timeout"
+        elif is_error:
+            defaults["outcome"] = "error"
+        elif not result.strip():
+            defaults["outcome"] = "empty_result"
+        else:
+            defaults["outcome"] = "success"
     return AgentResponse(**defaults)  # type: ignore[arg-type]
 
 
@@ -114,6 +147,8 @@ async def test_normal_new_session_injects_mainmemory(orch: Orchestrator) -> None
 async def test_normal_appends_agent_role_prompt(orch: Orchestrator) -> None:
     orch._config.role = "writer"
     orch._config.role_description = "Draft polished long-form content."
+    orch._config.style_policy = "Lead with structure and concise recommendations."
+    orch._config.forbidden_modes = ["Do not explain internal tools unless blocked."]
     mock_execute = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute", mock_execute)
 
@@ -121,9 +156,105 @@ async def test_normal_appends_agent_role_prompt(orch: Orchestrator) -> None:
 
     request = mock_execute.call_args[0][0]
     assert request.append_system_prompt is not None
-    assert "## Agent Role" in request.append_system_prompt
+    assert "## Role Identity" in request.append_system_prompt
     assert "writer" in request.append_system_prompt
     assert "Draft polished long-form content." in request.append_system_prompt
+    assert "## Routing Policy" in request.append_system_prompt
+    assert "## Operational Policy" in request.append_system_prompt
+    assert "Do not explain internal tools unless blocked." in request.append_system_prompt
+
+
+async def test_normal_injects_path_alias_context(orch: Orchestrator) -> None:
+    orch.paths.mainmemory_path.write_text("# Main Memory\n", encoding="utf-8")
+    orch.paths.sharedmemory_path.write_text("# Shared Memory\n", encoding="utf-8")
+    orch._path_aliases.upsert(  # type: ignore[attr-defined]
+        AliasRegistration(
+            alias="hk",
+            path="zhihaol/100_Project/2604_HK",
+            purpose="香港就业机会与优才计划",
+        )
+    )
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await normal(orch, SessionKey(chat_id=1), "@hk 最近有什么机会")
+
+    request = mock_execute.call_args[0][0]
+    assert request.append_system_prompt is not None
+    assert "## Path Alias Context" in request.append_system_prompt
+    assert "@hk" in request.append_system_prompt
+    assert "zhihaol/100_Project/2604_HK" in request.append_system_prompt
+
+
+async def test_normal_injects_project_state_protocol_for_project_alias(orch: Orchestrator) -> None:
+    project_root = orch.paths.ductor_home / "projects" / "2604_HK"
+    project_root.mkdir(parents=True, exist_ok=True)
+    orch.paths.mainmemory_path.write_text("# Main Memory\n", encoding="utf-8")
+    orch.paths.sharedmemory_path.write_text("# Shared Memory\n", encoding="utf-8")
+    orch._path_aliases.upsert(  # type: ignore[attr-defined]
+        AliasRegistration(
+            alias="p-hk",
+            path=str(project_root),
+            purpose="香港就业机会与优才计划",
+        )
+    )
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await normal(orch, SessionKey(chat_id=1), "@p-hk 请先设计整体方案")
+
+    request = mock_execute.call_args[0][0]
+    assert request.append_system_prompt is not None
+    assert "## Project State Protocol" in request.append_system_prompt
+    assert "DESIGN.md frontmatter is the project identity card" in request.append_system_prompt
+    assert (project_root / "DESIGN.md").exists()
+    assert (project_root / "TASKS.md").exists()
+    assert (project_root / "EVALUATE.md").exists()
+
+
+async def test_prepare_normal_logs_capability_plan(orch: Orchestrator, caplog: pytest.LogCaptureFixture) -> None:
+    orch.paths.sharedmemory_path.write_text("# Shared Memory\n", encoding="utf-8")
+    orch._path_aliases.upsert(  # type: ignore[attr-defined]
+        AliasRegistration(
+            alias="p-hk",
+            path="zhihaol/100_Project/2604_HK",
+            purpose="香港就业机会与优才计划",
+        )
+    )
+
+    with caplog.at_level("INFO"):
+        await _prepare_normal(orch, SessionKey(chat_id=1), "@p-hk 请先设计整体方案")
+
+    assert "Capability plan provider=claude" in caplog.text
+    assert "phase=design" in caplog.text
+    assert "project=p-hk" in caplog.text
+
+
+async def test_prepare_normal_skips_gemini_resume_when_context_changes(
+    orch: Orchestrator,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    orch._config.docker.enabled = True
+    session = await orch._sessions.reset_session(
+        SessionKey(chat_id=1),
+        provider="gemini",
+        model="gemini-3-flash-preview",
+    )
+    session.session_id = "sess-gemini-1"
+    session.message_count = 1
+    session.provider_sessions["gemini"].resume_context = "stale-context"
+    await orch._sessions.update_session(session)
+
+    with caplog.at_level("INFO"):
+        request, _ = await _prepare_normal(
+            orch,
+            SessionKey(chat_id=1),
+            "你好",
+            model_override="gemini-3-flash-preview",
+        )
+
+    assert request.resume_session is None
+    assert "Gemini resume skipped" in caplog.text
 
 
 async def test_normal_propagates_transport_from_session_key(orch: Orchestrator) -> None:
@@ -198,7 +329,9 @@ async def test_normal_resume_session_no_append(orch: Orchestrator) -> None:
 
     second_call = mock_execute.call_args_list[1]
     request = second_call[0][0]
-    assert request.append_system_prompt is None
+    assert request.append_system_prompt is not None
+    assert "## Routing Policy" in request.append_system_prompt
+    assert "## Active Agent Roster" not in request.append_system_prompt
     assert request.resume_session is not None
 
 
@@ -440,6 +573,63 @@ async def test_normal_records_runtime_state(workspace: tuple[DuctorPaths, AgentC
     assert messages[1]["source"] == "normal_result"
 
 
+async def test_normal_records_chat_turn_outcome_without_prompt_or_result(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    paths.skills_dir.mkdir(parents=True, exist_ok=True)
+    skill_dir = paths.skills_dir / "routing-feedback"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: routing-feedback\ndescription: route feedback evidence\n---\n",
+        encoding="utf-8",
+    )
+    prompt = "secret full user prompt use routing-feedback"
+    result_body = "secret full assistant result"
+    object.__setattr__(
+        orch._cli_service,
+        "execute",
+        AsyncMock(return_value=_mock_response(result=result_body)),
+    )
+
+    result = await normal(
+        orch,
+        SessionKey(chat_id=1),
+        prompt,
+        model_override="gemini-3-pro-preview",
+    )
+
+    assert result.text == result_body
+    repo = OutcomeEventRepository(orch._runtime_db)
+    events = repo.list_unlearned()
+    assert len(events) == 1
+    event = events[0]
+    assert event["source_type"] == "chat_turn"
+    assert event["event_type"] == "chat_turn"
+    assert event["session_storage_key"] == "tg:1"
+    assert event["flow"] == "normal"
+    assert event["outcome"] == "success"
+    assert event["status"] == "completed"
+    payload = event["payload_json"]
+    assert payload["input_chars"] == len(prompt)
+    assert payload["result_chars"] == len(result_body)
+    assert prompt not in str(payload)
+    assert result_body not in str(payload)
+    assert "prompt" not in payload
+    assert "result" not in payload
+    plan_summary = payload["capability_plan"]
+    assert plan_summary["runtime_profile"] == "chat_light"
+    assert plan_summary["phase"] == "intake"
+    assert plan_summary["role"] == "orchestrator"
+    assert plan_summary["include_directories"] is False
+    assert {"name": "routing-feedback", "activation_kind": "direct"} in plan_summary[
+        "selected_skills"
+    ]
+    assert "skills:" in " ".join(plan_summary["rationale"])
+    assert "source_path" not in str(plan_summary)
+
+
 async def test_streaming_records_runtime_state(workspace: tuple[DuctorPaths, AgentConfig]) -> None:
     paths, _config = workspace
     orch = _make_state_orch(paths)
@@ -460,6 +650,108 @@ async def test_streaming_records_runtime_state(workspace: tuple[DuctorPaths, Age
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[0]["source"] == "normal_stream_prompt"
     assert messages[1]["source"] == "normal_stream_result"
+
+
+async def test_streaming_records_chat_turn_outcome_without_prompt_or_result(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    prompt = "streaming secret prompt"
+    result_body = "streaming secret result"
+    object.__setattr__(
+        orch._cli_service,
+        "execute_streaming",
+        AsyncMock(return_value=_mock_response(result=result_body)),
+    )
+
+    result = await normal_streaming(orch, SessionKey(chat_id=1), prompt)
+
+    assert result.text == result_body
+    repo = OutcomeEventRepository(orch._runtime_db)
+    events = repo.list_unlearned()
+    assert len(events) == 1
+    event = events[0]
+    assert event["source_type"] == "chat_turn"
+    assert event["event_type"] == "chat_turn"
+    assert event["flow"] == "normal_streaming"
+    payload = event["payload_json"]
+    assert payload["input_chars"] == len(prompt)
+    assert payload["result_chars"] == len(result_body)
+    assert prompt not in str(payload)
+    assert result_body not in str(payload)
+    assert "prompt" not in payload
+    assert "result" not in payload
+
+
+async def test_normal_records_empty_result_outcome(workspace: tuple[DuctorPaths, AgentConfig]) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    object.__setattr__(
+        orch._cli_service,
+        "execute",
+        AsyncMock(
+            return_value=AgentResponse(
+                result="",
+                session_id="sess-empty",
+                total_tokens=0,
+                cost_usd=0.0,
+                outcome="empty_result",
+                failure_class="empty_result",
+                empty_result=True,
+            )
+        ),
+    )
+
+    result = await normal(orch, SessionKey(chat_id=1), "Hello empty runtime")
+
+    assert result.text == ""
+    assert orch._message_repo is not None
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert messages[1]["content_json"]["outcome"] == "empty_result"
+    assert messages[1]["content_json"]["empty_result"] is True
+
+
+async def test_streaming_records_tool_outcomes_and_recovery_trace(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, _config = workspace
+    orch = _make_state_orch(paths)
+    responses = iter(
+        [
+            _mock_response(is_error=True, result="killed", returncode=-9),
+            _mock_response(result="Recovered stream"),
+        ]
+    )
+
+    async def _execute_streaming(
+        _request: AgentRequest,
+        *,
+        on_text_delta: AsyncMock | None = None,  # noqa: ARG001
+        on_tool_activity: AsyncMock | None = None,
+        on_system_status: AsyncMock | None = None,  # noqa: ARG001
+        on_compact_boundary: AsyncMock | None = None,  # noqa: ARG001
+    ) -> AgentResponse:
+        response = next(responses)
+        if on_tool_activity is not None:
+            await on_tool_activity("Read" if response.is_error else "Edit")
+        return response
+
+    object.__setattr__(orch._cli_service, "execute_streaming", AsyncMock(side_effect=_execute_streaming))
+
+    result = await normal_streaming(orch, SessionKey(chat_id=1), "Hello tool recovery")
+
+    assert result.text == "Recovered stream"
+    assert orch._tool_call_repo is not None
+    tool_calls = orch._tool_call_repo.list_by_session("tg:1")
+    assert [call["tool_name"] for call in tool_calls] == ["Read", "Edit"]
+    assert tool_calls[0]["outcome"] == "error"
+    assert tool_calls[0]["details_json"]["recovery_planned"] is True
+    assert tool_calls[1]["outcome"] == "recovered"
+    assert tool_calls[1]["details_json"]["recovery_reason"] == "sigkill"
+    assert orch._message_repo is not None
+    messages = orch._message_repo.list_by_session("tg:1")
+    assert any(message["source"] == "normal_streaming_recovery" for message in messages)
 
 
 async def test_normal_resume_prompt_includes_compressed_context(
@@ -857,7 +1149,7 @@ async def test_update_session_changes_session_id(orch: Orchestrator) -> None:
         cost_usd=0.01,
         total_tokens=100,
     )
-    await _update_session(orch, session, response)
+    await _update_session(orch, session, response, AgentRequest(prompt="hi"))
     assert session.session_id == "new-sess"
 
 
@@ -870,7 +1162,7 @@ async def test_update_session_preserves_same_session_id(orch: Orchestrator) -> N
         cost_usd=0.01,
         total_tokens=100,
     )
-    await _update_session(orch, session, response)
+    await _update_session(orch, session, response, AgentRequest(prompt="hi"))
     assert session.session_id == "same-sess"
 
 
@@ -883,14 +1175,14 @@ async def test_update_session_no_session_id_in_response(orch: Orchestrator) -> N
         cost_usd=0.0,
         total_tokens=0,
     )
-    await _update_session(orch, session, response)
+    await _update_session(orch, session, response, AgentRequest(prompt="hi"))
     assert session.session_id == "original"
 
 
 async def test_update_session_triggers_memory_synthesis_with_real_tools(
     orch: Orchestrator,
 ) -> None:
-    """Memory synthesis should resume the current session and use real workspace tools."""
+    """Memory synthesis should resume the session and produce journal candidates."""
     session = SessionData(
         session_id="sess-maint-12345678",
         chat_id=1,
@@ -908,19 +1200,107 @@ async def test_update_session_triggers_memory_synthesis_with_real_tools(
     bg.submit = MagicMock(return_value="bg-task-1")
     orch._observers.background = bg
     orch._observers.codex_cache = None
+    object.__setattr__(
+        orch._cli_service,
+        "execute",
+        AsyncMock(return_value=AgentResponse(result='{"candidates":[]}')),
+    )
 
-    await _update_session(orch, session, response)
+    await _update_session(orch, session, response, AgentRequest(prompt="hi"))
+    await asyncio.sleep(0)
 
-    bg.submit.assert_called_once()
-    sub = bg.submit.call_args[0][0]
-    assert sub.resume_session_id == "sess-maint-12345678"
-    assert sub.session_name.startswith("memory_synthesis_")
-    assert sub.silent is True
-    assert "python3 tools/agent_tools/search_past_sessions.py" in sub.prompt
-    assert "python3 tools/agent_tools/memory_atomic_op.py" in sub.prompt
-    assert "workspace/memory_system/MAINMEMORY.md" in sub.prompt
-    assert "patch_memory_fragment" not in sub.prompt
-    assert "delete_memory_fragment" not in sub.prompt
+    bg.submit.assert_not_called()
+    request = orch._cli_service.execute.call_args[0][0]
+    assert request.resume_session == "sess-maint-12345678"
+    assert request.process_label == "memory_synthesis:1"
+    assert "memory_promotion_journal" in request.prompt
+    assert "JSON object" in request.prompt
+    assert "Do not edit MAINMEMORY.md" in request.prompt
+    assert "memory_atomic_op.py" not in request.prompt
+    assert "edit_shared_knowledge.py" not in request.prompt
+    assert "patch_memory_fragment" not in request.prompt
+    assert "delete_memory_fragment" not in request.prompt
+
+
+async def test_memory_flusher_flush_writes_pending_candidate(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    paths = DuctorPaths(home)
+    db = RuntimeStateDB(home / "state.db")
+    messages = MessageRepository(db)
+    journal = MemoryPromotionJournalRepository(db)
+    message_id = messages.append("tg:1", "user", "I prefer concise progress updates.")
+    cli = MagicMock()
+    cli.execute = AsyncMock(
+        return_value=AgentResponse(
+            result=(
+                '{"candidates":[{"target_scope":"mainmemory","title":"Progress updates",'
+                '"body":"- Prefers concise progress updates.","tags":["preference"],'
+                f'"source_message_ids":[{message_id}]'
+                "}]} "
+            )
+        )
+    )
+    config = AgentConfig()
+    flusher = MemoryFlusher(
+        config.memory_flush,
+        cli,
+        config.memory_compaction,
+        paths,
+        message_repo=messages,
+        journal_repo=journal,
+    )
+
+    await flusher.flush(
+        SessionKey(chat_id=1),
+        SessionData(
+            chat_id=1,
+            provider="claude",
+            model="opus",
+            provider_sessions={"claude": ProviderSessionData(session_id="sid-live")},
+        ),
+    )
+
+    pending = journal.list_pending(target_scope="mainmemory")
+    assert len(pending) == 1
+    assert pending[0]["title"] == "Progress updates"
+    request = cli.execute.call_args[0][0]
+    assert "memory_promotion_journal" in request.prompt
+    assert "memory_atomic_op.py" not in request.prompt
+
+
+async def test_memory_flusher_maybe_flush_does_not_compact(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    paths = DuctorPaths(home)
+    db = RuntimeStateDB(home / "state.db")
+    messages = MessageRepository(db)
+    journal = MemoryPromotionJournalRepository(db)
+    messages.append("tg:1", "user", "Nothing durable.")
+    cli = MagicMock()
+    cli.execute = AsyncMock(return_value=AgentResponse(result='{"candidates":[]}'))
+    config = AgentConfig()
+    flusher = MemoryFlusher(
+        config.memory_flush,
+        cli,
+        config.memory_compaction,
+        paths,
+        message_repo=messages,
+        journal_repo=journal,
+    )
+    flusher.compact = AsyncMock()  # type: ignore[method-assign]
+    key = SessionKey(chat_id=1)
+    flusher.mark_boundary(key)
+
+    await flusher.maybe_flush(
+        key,
+        SessionData(
+            chat_id=1,
+            provider="claude",
+            model="opus",
+            provider_sessions={"claude": ProviderSessionData(session_id="sid-live")},
+        ),
+    )
+
+    flusher.compact.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

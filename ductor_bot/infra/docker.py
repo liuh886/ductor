@@ -432,6 +432,8 @@ class DockerManager:
             "GOOGLE_GENAI_USE_GCA",
             "GOOGLE_GENAI_USE_VERTEXAI",
             "OPENAI_API_KEY",
+            "OBSIDIAN_GATEWAY_URL",
+            "OBSIDIAN_GATEWAY_KEY",
         }
         for key, value in load_env_secrets(self._paths.env_file).items():
             if key not in allowed:

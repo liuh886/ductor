@@ -110,7 +110,7 @@ class TestMainmemoryReminder:
 
     def test_suffix_contains_key_phrases(self) -> None:
         assert "MAINMEMORY.md" in MAINMEMORY_REMINDER.suffix
-        assert "MEMORY CHECK" in MAINMEMORY_REMINDER.suffix
+        assert "Memory Check" in MAINMEMORY_REMINDER.suffix
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ async def test_hook_injects_into_prompt_on_6th_message(orch: Orchestrator) -> No
 
     sixth_call = mock_execute.call_args_list[5]
     request = sixth_call[0][0]
-    assert "MEMORY CHECK" in request.prompt
+    assert "Memory Check" in request.prompt
     assert "memory_system/MAINMEMORY.md" in request.prompt
 
 
@@ -163,7 +163,7 @@ async def test_hook_not_injected_before_6th(orch: Orchestrator) -> None:
     for i in range(5):
         await normal(orch, SessionKey(chat_id=1), f"msg-{i}")
         request = mock_execute.call_args_list[i][0][0]
-        assert "MEMORY CHECK" not in request.prompt
+        assert "Memory Check" not in request.prompt
 
 
 async def test_hook_resets_on_new_session(orch: Orchestrator) -> None:
@@ -183,4 +183,4 @@ async def test_hook_resets_on_new_session(orch: Orchestrator) -> None:
     # (DELEGATION_BRIEF fires on new session, but that's expected and correct)
     await normal(orch, SessionKey(chat_id=1), "after-reset")
     last_request = mock_execute.call_args[0][0]
-    assert "MEMORY CHECK" not in last_request.prompt
+    assert "Memory Check" not in last_request.prompt

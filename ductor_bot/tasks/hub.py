@@ -19,6 +19,11 @@ from ductor_bot.runtime.skills.extractor import SkillExtractor
 from ductor_bot.runtime.state.repositories.session_summary_repo import SessionSummaryRepository
 from ductor_bot.tasks.models import TaskEntry, TaskInFlight, TaskResult, TaskSubmit
 from ductor_bot.tasks.registry import task_evaluation_status
+from ductor_bot.text.response_format import (
+    ensure_text_response,
+    session_error_text,
+    timeout_error_text,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,7 +31,11 @@ if TYPE_CHECKING:
     from ductor_bot.cli.process_registry import ProcessRegistry
     from ductor_bot.cli.service import CLIService
     from ductor_bot.config import TasksConfig
-    from ductor_bot.runtime.state import MessageRepository, ProcessRepository
+    from ductor_bot.runtime.state import (
+        MessageRepository,
+        OutcomeEventRepository,
+        ProcessRepository,
+    )
     from ductor_bot.tasks.registry import TaskRegistry
     from ductor_bot.workspace.paths import DuctorPaths
 
@@ -84,6 +93,7 @@ class TaskHub:
         cli_service: CLIService | None = None,
         process_repo: ProcessRepository | None = None,
         message_repo: MessageRepository | None = None,
+        outcome_event_repo: OutcomeEventRepository | None = None,
         config: TasksConfig,
         process_registry: ProcessRegistry | None = None,
     ) -> None:
@@ -92,6 +102,7 @@ class TaskHub:
         self._cli_service = cli_service
         self._process_repo = process_repo
         self._message_repo = message_repo
+        self._outcome_event_repo = outcome_event_repo
         self._cli_services: dict[str, CLIService] = {}
         self._agent_tasks_dirs: dict[str, Path] = {}
         self._config = config
@@ -246,6 +257,10 @@ class TaskHub:
             error="",
             result_preview="",
             last_question="",
+            outcome="",
+            failure_class="",
+            empty_result=False,
+            recovery_count=entry.recovery_count,
             follow_up_count=entry.follow_up_count + (1 if resumed_from_completed else 0),
             last_follow_up=follow_up[:200] if resumed_from_completed else entry.last_follow_up,
             evaluation_status=(
@@ -489,7 +504,7 @@ class TaskHub:
         except asyncio.CancelledError:
             pass
 
-    async def _run(
+    async def _run(  # noqa: C901
         self,
         entry: TaskEntry,
         prompt: str,
@@ -547,18 +562,29 @@ class TaskHub:
             response = await cli.execute(request)
 
             elapsed = time.monotonic() - t0
+            outcome = _response_outcome(response)
+            failure_class = _response_failure_class(response)
+            empty_result = _response_empty_result(response)
+            recovery_attempts = _response_recovery_attempts(response)
+            inflight = self._in_flight.get(entry.task_id)
             if response.timed_out:
                 status = "failed"
-                error = f"Timeout after {timeout:.0f}s"
+                error = timeout_error_text(entry.model or "task", timeout)
                 process_exit_code = 124
             elif response.is_error:
                 status = "failed"
-                error = response.result or "CLI error"
+                error = session_error_text(entry.model or "task", response.result or "")
+                process_exit_code = 1
+            elif inflight and inflight.has_pending_question:
+                status = "waiting"
+                error = ""
+                process_exit_code = 0
+            elif empty_result:
+                status = "failed"
+                error = "Task completed with an empty result"
                 process_exit_code = 1
             else:
-                # If the task asked a question during this run, mark as waiting
-                inflight = self._in_flight.get(entry.task_id)
-                status = "waiting" if inflight and inflight.has_pending_question else "done"
+                status = "done"
                 error = ""
                 process_exit_code = 0
 
@@ -574,6 +600,10 @@ class TaskHub:
                 error=error,
                 result_preview=(response.result or "")[:_RESULT_PREVIEW_LEN],
                 num_turns=total_turns,
+                outcome=outcome,
+                failure_class=failure_class,
+                empty_result=empty_result,
+                recovery_count=recovery_attempts,
                 evaluation_status=task_evaluation_status(
                     status=status,
                     follow_up_count=entry.follow_up_count,
@@ -581,7 +611,7 @@ class TaskHub:
                 evaluation_notes=entry.last_follow_up if entry.follow_up_count > 0 else "",
             )
 
-            result_text = response.result or ""
+            result_text = ensure_text_response(response.result) if status == "done" else (response.result or "")
             session_id = response.session_id or ""
 
             # Append a concise task-memory summary and artifact list for the parent.
@@ -612,10 +642,24 @@ class TaskHub:
                     "chat_id": entry.chat_id,
                     "parent_agent": entry.parent_agent,
                     "status": status,
+                    "outcome": outcome,
+                    "failure_class": failure_class,
+                    "empty_result": empty_result,
+                    "recovery_attempts": recovery_attempts,
                     "elapsed_seconds": elapsed,
                     "session_id": session_id,
                     "error": error,
                 },
+            )
+            self._record_task_run_event(
+                entry,
+                process_id=process_id,
+                response=response,
+                prompt_chars=len(prompt),
+                status=status,
+                elapsed_seconds=elapsed,
+                session_id=session_id,
+                error=error,
             )
 
             await self._deliver(
@@ -640,6 +684,10 @@ class TaskHub:
                         status=status,
                         follow_up_count=entry.follow_up_count,
                     ),
+                    outcome=outcome,
+                    failure_class=failure_class,
+                    empty_result=empty_result,
+                    recovery_count=recovery_attempts,
                 )
             )
 
@@ -655,6 +703,9 @@ class TaskHub:
                 "cancelled",
                 completed_at=time.time(),
                 elapsed_seconds=elapsed,
+                outcome="cancelled",
+                failure_class="cancelled",
+                empty_result=False,
                 evaluation_status=task_evaluation_status(
                     status="cancelled",
                     follow_up_count=entry.follow_up_count,
@@ -680,8 +731,17 @@ class TaskHub:
                             status="cancelled",
                             follow_up_count=entry.follow_up_count,
                         ),
+                        outcome="cancelled",
+                        failure_class="cancelled",
                     )
                 )
+            self._record_internal_task_run_event(
+                entry,
+                process_id=process_id,
+                status="cancelled",
+                elapsed_seconds=elapsed,
+                error="cancelled",
+            )
             raise
 
         except Exception:
@@ -695,6 +755,9 @@ class TaskHub:
                 completed_at=time.time(),
                 elapsed_seconds=elapsed,
                 error=error_msg,
+                outcome="error",
+                failure_class="internal_error",
+                empty_result=False,
                 evaluation_status=task_evaluation_status(
                     status="failed",
                     follow_up_count=entry.follow_up_count,
@@ -711,9 +774,19 @@ class TaskHub:
                     "chat_id": entry.chat_id,
                     "parent_agent": entry.parent_agent,
                     "status": "failed",
+                    "outcome": "error",
+                    "failure_class": "internal_error",
+                    "empty_result": False,
                     "elapsed_seconds": elapsed,
                     "error": error_msg,
                 },
+            )
+            self._record_internal_task_run_event(
+                entry,
+                process_id=process_id,
+                status="failed",
+                elapsed_seconds=elapsed,
+                error=error_msg,
             )
             with contextlib.suppress(Exception):
                 await self._deliver(
@@ -736,6 +809,8 @@ class TaskHub:
                             status="failed",
                             follow_up_count=entry.follow_up_count,
                         ),
+                        outcome="error",
+                        failure_class="internal_error",
                     )
                 )
         finally:
@@ -841,6 +916,105 @@ class TaskHub:
         except Exception:
             logger.exception("Failed to record task message id=%s source=%s", entry.task_id, source)
 
+    def _record_task_run_event(
+        self,
+        entry: TaskEntry,
+        *,
+        process_id: int | None,
+        response: object,
+        prompt_chars: int,
+        status: str,
+        elapsed_seconds: float,
+        session_id: str,
+        error: str,
+    ) -> None:
+        """Persist bounded task-run outcome metadata without prompt/result bodies."""
+        if self._outcome_event_repo is None:
+            return
+        source_id = f"task:{entry.task_id}:run:{entry.follow_up_count + 1}"
+        payload = {
+            "chat_id": entry.chat_id,
+            "thread_id": entry.thread_id,
+            "parent_agent": entry.parent_agent,
+            "task_name": entry.name,
+            "input_chars": prompt_chars,
+            "result_chars": len(str(getattr(response, "result", "") or "")),
+            "session_id": session_id,
+            "num_turns": getattr(response, "num_turns", 0),
+            "follow_up_count": entry.follow_up_count,
+            "question_count": entry.question_count,
+            "elapsed_seconds": elapsed_seconds,
+            "has_error": bool(error),
+        }
+        try:
+            self._outcome_event_repo.record(
+                "task_run",
+                source_id,
+                event_type="task_run",
+                session_storage_key=self._task_session_key(entry.task_id),
+                task_id=entry.task_id,
+                process_id=process_id,
+                provider=entry.provider,
+                model=entry.model,
+                flow="task",
+                outcome=_response_outcome(response),
+                failure_class=_response_failure_class(response),
+                status=status,
+                empty_result=_response_empty_result(response),
+                recovery_count=_response_recovery_attempts(response),
+                duration_ms=elapsed_seconds * 1000,
+                payload_json=payload,
+            )
+        except Exception:
+            logger.exception("Failed to record task_run outcome event id=%s", entry.task_id)
+
+    def _record_internal_task_run_event(
+        self,
+        entry: TaskEntry,
+        *,
+        process_id: int | None,
+        status: str,
+        elapsed_seconds: float,
+        error: str,
+    ) -> None:
+        """Record a task-run event for failures without a CLI response object."""
+        if self._outcome_event_repo is None:
+            return
+        source_id = f"task:{entry.task_id}:run:{entry.follow_up_count + 1}"
+        payload = {
+            "chat_id": entry.chat_id,
+            "thread_id": entry.thread_id,
+            "parent_agent": entry.parent_agent,
+            "task_name": entry.name,
+            "input_chars": 0,
+            "result_chars": 0,
+            "follow_up_count": entry.follow_up_count,
+            "question_count": entry.question_count,
+            "elapsed_seconds": elapsed_seconds,
+            "has_error": bool(error),
+            "error_chars": len(error),
+        }
+        try:
+            self._outcome_event_repo.record(
+                "task_run",
+                source_id,
+                event_type="task_run",
+                session_storage_key=self._task_session_key(entry.task_id),
+                task_id=entry.task_id,
+                process_id=process_id,
+                provider=entry.provider,
+                model=entry.model,
+                flow="task",
+                outcome="error",
+                failure_class="internal_error",
+                status=status,
+                empty_result=False,
+                duration_ms=elapsed_seconds * 1000,
+                payload_json=payload,
+            )
+        except Exception:
+            logger.exception("Failed to record internal task_run outcome event id=%s", entry.task_id)
+
     @staticmethod
     def _task_session_key(task_id: str) -> str:
         """Return the synthetic session key for task-scoped runtime messages."""
@@ -858,6 +1032,55 @@ _IGNORED_TASK_ARTIFACTS = {
     "GEMINI.md",
     "RULES.md",
 }
+
+
+def _response_empty_result(response: object) -> bool:
+    """Return True when a response produced no meaningful text."""
+    explicit = getattr(response, "empty_result", None)
+    if isinstance(explicit, bool):
+        return explicit
+    return not str(getattr(response, "result", "") or "").strip()
+
+
+def _response_outcome(response: object) -> str:  # noqa: PLR0911
+    """Normalize a task response into a bounded outcome label."""
+    explicit = getattr(response, "outcome", "")
+    if isinstance(explicit, str) and explicit:
+        if explicit == "success" and _response_empty_result(response):
+            return "empty_result"
+        if explicit == "success" and bool(getattr(response, "is_error", False)):
+            return "error"
+        if explicit == "success" and bool(getattr(response, "timed_out", False)):
+            return "timeout"
+        return explicit
+    if bool(getattr(response, "timed_out", False)):
+        return "timeout"
+    if bool(getattr(response, "is_error", False)):
+        return "error"
+    if _response_empty_result(response):
+        return "empty_result"
+    return "success"
+
+
+def _response_failure_class(response: object) -> str:
+    """Return a stable failure class for persisted task metrics."""
+    explicit = getattr(response, "failure_class", "")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    outcome = _response_outcome(response)
+    if outcome == "timeout":
+        return "timeout"
+    if outcome == "empty_result":
+        return "empty_result"
+    if outcome == "error":
+        return "cli_error"
+    return ""
+
+
+def _response_recovery_attempts(response: object) -> int:
+    """Return the bounded retry/recovery count captured on the response."""
+    attempts = getattr(response, "recovery_attempts", 0)
+    return attempts if isinstance(attempts, int) else 0
 
 
 def _package_task_result(result_text: str, taskmemory_path: Path, task_folder: Path) -> str:

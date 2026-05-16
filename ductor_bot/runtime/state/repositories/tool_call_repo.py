@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Mapping
+from typing import cast
 
 from ductor_bot.runtime.state.db import RuntimeStateDB
 
@@ -27,6 +30,9 @@ class ToolCallRepository:
         result_preview: str = "",
         latency_ms: float = 0.0,
         success: bool = True,
+        outcome: str = "success",
+        attempt: int = 1,
+        details_json: dict[str, object] | None = None,
         sensitive: bool = False,
         compressible: bool = True,
     ) -> int:
@@ -37,8 +43,8 @@ class ToolCallRepository:
                 INSERT INTO tool_calls (
                     session_storage_key, message_id, provider, tool_name,
                     tool_namespace, arguments_json, result_preview, latency_ms,
-                    success, sensitive, compressible
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    success, outcome, attempt, details_json, sensitive, compressible, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_storage_key,
@@ -50,11 +56,49 @@ class ToolCallRepository:
                     result_preview,
                     latency_ms,
                     int(success),
+                    outcome,
+                    attempt,
+                    json.dumps(details_json or {}, ensure_ascii=False),
                     int(sensitive),
                     int(compressible),
+                    time.time(),
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid or 0)
+
+    def finish(
+        self,
+        tool_call_id: int,
+        *,
+        result_preview: str = "",
+        latency_ms: float = 0.0,
+        success: bool = True,
+        outcome: str = "success",
+        details_json: dict[str, object] | None = None,
+    ) -> None:
+        """Update one tool-call row with its final observed outcome."""
+        with self._db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE tool_calls
+                SET result_preview = ?,
+                    latency_ms = ?,
+                    success = ?,
+                    outcome = ?,
+                    details_json = ?,
+                    finished_at = ?
+                WHERE id = ?
+                """,
+                (
+                    result_preview,
+                    latency_ms,
+                    int(success),
+                    outcome,
+                    json.dumps(details_json or {}, ensure_ascii=False),
+                    time.time(),
+                    tool_call_id,
+                ),
+            )
 
     def get(self, tool_call_id: int) -> dict[str, object] | None:
         """Load one tool-call row by ID."""
@@ -65,8 +109,9 @@ class ToolCallRepository:
             ).fetchone()
         if row is None:
             return None
-        payload = dict(row)
+        payload = dict(cast("Mapping[str, object]", row))
         payload["arguments_json"] = json.loads(str(payload.get("arguments_json", "{}")))
+        payload["details_json"] = json.loads(str(payload.get("details_json", "{}")))
         payload["success"] = bool(payload.get("success", 0))
         payload["sensitive"] = bool(payload.get("sensitive", 0))
         payload["compressible"] = bool(payload.get("compressible", 0))

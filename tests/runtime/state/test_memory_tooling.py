@@ -1,9 +1,8 @@
 """Tests for memory/session search tooling."""
 
-# ruff: noqa: INP001
-
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +11,9 @@ from ductor_bot._home_defaults.workspace.tools.agent_tools.search_past_sessions 
 )
 from ductor_bot.config import AgentConfig
 from ductor_bot.runtime.state.db import RuntimeStateDB
+from ductor_bot.runtime.state.repositories.memory_promotion_journal_repo import (
+    MemoryPromotionJournalRepository,
+)
 from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.scripts.memory_synthesis import _build_request, _find_latest_session, run_synthesis
@@ -143,7 +145,11 @@ def test_build_request_uses_resumed_provider_session() -> None:
     assert request.resume_session == "sid-123"
     assert request.provider_override == "claude"
     assert request.model_override == "opus"
-    assert "Prioritize the most recent 25 messages" in request.prompt
+    assert "memory_promotion_journal" in request.prompt
+    assert "JSON object" in request.prompt
+    assert "MAINMEMORY.md" in request.prompt
+    assert "Do not edit MAINMEMORY.md" in request.prompt
+    assert "memory_atomic_op.py" not in request.prompt
 
 
 async def test_run_synthesis_returns_error_when_latest_session_has_no_session_id(
@@ -176,6 +182,7 @@ async def test_run_synthesis_executes_resumed_cli_turn(tmp_path: Path) -> None:
     )
     paths = resolve_paths(ductor_home=ductor_home)
     db = RuntimeStateDB(ductor_home / "state.db")
+    message_id = MessageRepository(db).append("tg:123", "user", "Remember that I prefer bullets.")
     SessionRepository(db).upsert(
         "tg:123",
         SessionData(
@@ -190,7 +197,26 @@ async def test_run_synthesis_executes_resumed_cli_turn(tmp_path: Path) -> None:
 
     fake_orch = AsyncMock()
     fake_orch._cli_service.execute = AsyncMock(
-        return_value=type("Resp", (), {"result": "maintenance done", "is_error": False})()
+        return_value=type(
+            "Resp",
+            (),
+            {
+                "result": json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "target_scope": "mainmemory",
+                                "title": "Formatting preference",
+                                "body": "- Prefers bullets.",
+                                "tags": ["preference"],
+                                "source_message_ids": [message_id],
+                            }
+                        ]
+                    }
+                ),
+                "is_error": False,
+            },
+        )()
     )
 
     with patch("ductor_bot.scripts.memory_synthesis.Orchestrator", return_value=fake_orch):
@@ -201,4 +227,8 @@ async def test_run_synthesis_executes_resumed_cli_turn(tmp_path: Path) -> None:
     assert request.resume_session == "sid-live"
     assert request.provider_override == "claude"
     assert request.model_override == "opus"
-    assert "Prioritize the most recent 12 messages" in request.prompt
+    assert "memory_promotion_journal" in request.prompt
+    assert f"id={message_id}" in request.prompt
+    pending = MemoryPromotionJournalRepository(db).list_pending(target_scope="mainmemory")
+    assert len(pending) == 1
+    assert pending[0]["title"] == "Formatting preference"

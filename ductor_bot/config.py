@@ -374,6 +374,10 @@ class AgentConfig(BaseModel):
     language: str = "en"
     role: str = ""
     role_description: str = ""
+    style_policy: str = ""
+    direct_answer_policy: str = ""
+    routing_policy: str = ""
+    forbidden_modes: list[str] = Field(default_factory=list)
     update_check: bool = True
     group_mention_only: bool = False
     interagent_port: int = 8799

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import time_machine
@@ -12,6 +12,7 @@ import time_machine
 from ductor_bot.cli.types import AgentResponse
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import heartbeat_flow
+from ductor_bot.scripts.memory_integrity_check import MemoryAuditReport, MemoryAuditRow
 from ductor_bot.session.key import SessionKey
 
 
@@ -82,6 +83,19 @@ async def test_heartbeat_skips_new_session(orch: Orchestrator) -> None:
     """Heartbeat does nothing if there is no established session."""
     result = await heartbeat_flow(orch, SessionKey(chat_id=999))
     assert result is None
+
+
+async def test_heartbeat_without_session_does_not_run_memory_audit(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Heartbeat skips memory audit when there is no established session."""
+    audit_mock = MagicMock()
+    monkeypatch.setattr("ductor_bot.orchestrator.flows.build_integrity_report", audit_mock)
+
+    result = await heartbeat_flow(orch, SessionKey(chat_id=999))
+
+    assert result is None
+    audit_mock.assert_not_called()
 
 
 async def test_heartbeat_ok_does_not_increment_message_count(
@@ -203,6 +217,99 @@ async def test_heartbeat_skips_during_cooldown(
     assert result is None
     # CLI should NOT have been called since cooldown skipped early
     cooldown_mock.assert_not_awaited()
+
+
+async def test_heartbeat_cooldown_does_not_run_memory_audit(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Heartbeat skips memory audit while within cooldown."""
+    from ductor_bot.orchestrator.flows import normal
+
+    monkeypatch.setattr(
+        orch._cli_service, "execute", AsyncMock(return_value=_mock_response(result="Hello"))
+    )
+    await normal(orch, SessionKey(chat_id=1), "just chatting")
+
+    audit_mock = MagicMock()
+    monkeypatch.setattr("ductor_bot.orchestrator.flows.build_integrity_report", audit_mock)
+    monkeypatch.setattr(
+        orch._cli_service,
+        "execute",
+        AsyncMock(return_value=_mock_response(result="HEARTBEAT_OK")),
+    )
+
+    result = await heartbeat_flow(orch, SessionKey(chat_id=1))
+
+    assert result is None
+    audit_mock.assert_not_called()
+
+
+async def test_heartbeat_prompt_appends_memory_integrity_evidence(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Heartbeat prompt includes memory integrity evidence after cooldown."""
+    from ductor_bot.orchestrator.flows import normal
+
+    monkeypatch.setattr(
+        orch._cli_service, "execute", AsyncMock(return_value=_mock_response(result="Hello"))
+    )
+    await normal(orch, SessionKey(chat_id=1), "init")
+    report = MemoryAuditReport(
+        ductor_home=str(orch.paths.ductor_home),
+        rows=(
+            MemoryAuditRow(
+                name="main/mainmemory",
+                scope="mainmemory",
+                agent_name="main",
+                fragment_count=1,
+                conflict_count=0,
+                duplicate_groups=0,
+                file_status="EXISTS (10 bytes)",
+                runtime_read="FRAGMENTS (20 body chars)",
+                warnings=(),
+            ),
+        ),
+    )
+    audit_mock = MagicMock(return_value=report)
+    monkeypatch.setattr("ductor_bot.orchestrator.flows.build_integrity_report", audit_mock)
+
+    with _past_cooldown():
+        hb_mock = AsyncMock(return_value=_mock_response(result="HEARTBEAT_OK"))
+        monkeypatch.setattr(orch._cli_service, "execute", hb_mock)
+        await heartbeat_flow(orch, SessionKey(chat_id=1), prompt="heartbeat check")
+
+    hb_request = hb_mock.call_args[0][0]
+    assert hb_request.prompt.startswith("heartbeat check")
+    assert "## Self-Health Evidence" in hb_request.prompt
+    assert "Memory integrity: OK" in hb_request.prompt
+    audit_mock.assert_called_once_with(orch.paths.ductor_home)
+
+
+async def test_heartbeat_continues_when_memory_audit_raises(
+    orch: Orchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory audit failures are logged and do not block heartbeat."""
+    from ductor_bot.orchestrator.flows import normal
+
+    monkeypatch.setattr(
+        orch._cli_service, "execute", AsyncMock(return_value=_mock_response(result="Hello"))
+    )
+    await normal(orch, SessionKey(chat_id=1), "init")
+
+    def raise_audit(_ductor_home: object) -> MemoryAuditReport:
+        raise RuntimeError("audit failed")
+
+    monkeypatch.setattr("ductor_bot.orchestrator.flows.build_integrity_report", raise_audit)
+
+    with _past_cooldown():
+        hb_mock = AsyncMock(return_value=_mock_response(result="HEARTBEAT_OK"))
+        monkeypatch.setattr(orch._cli_service, "execute", hb_mock)
+        result = await heartbeat_flow(orch, SessionKey(chat_id=1), prompt="heartbeat check")
+
+    assert result is None
+    hb_mock.assert_awaited_once()
+    hb_request = hb_mock.call_args[0][0]
+    assert hb_request.prompt == "heartbeat check"
 
 
 async def test_heartbeat_runs_after_cooldown(

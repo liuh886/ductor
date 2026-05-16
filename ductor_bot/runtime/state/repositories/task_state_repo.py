@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+from collections.abc import Mapping
+from typing import cast
 
 from ductor_bot.runtime.state.db import RuntimeStateDB
 from ductor_bot.session import SessionKey
@@ -15,7 +18,7 @@ class TaskStateRepository:
     def __init__(self, db: RuntimeStateDB) -> None:
         self._db = db
 
-    def upsert(
+    def upsert(  # noqa: PLR0913
         self,
         *,
         task_id: str,
@@ -84,13 +87,13 @@ class TaskStateRepository:
     @staticmethod
     def _row_to_dict(row: object) -> dict[str, object]:
         """Convert a SQLite row to a plain dict."""
-        payload = dict(row)
+        payload = dict(cast("Mapping[str, object]", row))
         raw = str(payload.get("context_snapshot_json", "{}"))
         payload["context_snapshot_json"] = json.loads(raw)
         return payload
 
     @staticmethod
-    def _ensure_session_row(conn: object, storage_key: str, now: float) -> None:
+    def _ensure_session_row(conn: sqlite3.Connection, storage_key: str, now: float) -> None:
         """Insert a minimal session row so the FK on ``task_states`` is satisfied."""
         key = SessionKey.parse(storage_key)
         transport = key.transport

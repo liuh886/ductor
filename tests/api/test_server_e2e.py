@@ -414,8 +414,8 @@ class TestEncryptedMessages:
             _key: Any,
             _text: str,
             *,
-            on_text_delta: Any,
-            on_tool_activity: Any,
+            on_text_delta: Any,  # noqa: ARG001
+            on_tool_activity: Any,  # noqa: ARG001
             on_system_status: Any,
         ) -> SimpleNamespace:
             await on_system_status("thinking")

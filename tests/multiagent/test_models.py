@@ -63,6 +63,7 @@ class TestMergeSubAgentConfig:
         assert result.provider == "claude"
         assert result.model == "opus"
         assert result.cli_timeout == 600
+        assert result.permission_mode == "bypassPermissions"
 
     def test_overrides_from_sub(self) -> None:
         """Sub-agent overrides take precedence over main config."""
@@ -73,16 +74,26 @@ class TestMergeSubAgentConfig:
             provider="codex",
             model="gpt-4",
             cli_timeout=300,
+            permission_mode="normal",
             role="writer",
             role_description="Draft polished writing outputs.",
+            style_policy="Lead with structure and clarity.",
+            direct_answer_policy="Answer directly only when one pass is enough.",
+            routing_policy="Route longer work to specialists.",
+            forbidden_modes=["Do not narrate internal tools."],
         )
         result = merge_sub_agent_config(main, sub, Path("/agents/sub1"))
 
         assert result.provider == "codex"
         assert result.model == "gpt-4"
         assert result.cli_timeout == 300
+        assert result.permission_mode == "normal"
         assert result.role == "writer"
         assert result.role_description == "Draft polished writing outputs."
+        assert result.style_policy == "Lead with structure and clarity."
+        assert result.direct_answer_policy == "Answer directly only when one pass is enough."
+        assert result.routing_policy == "Route longer work to specialists."
+        assert result.forbidden_modes == ["Do not narrate internal tools."]
 
     def test_ductor_home_always_set_to_agent_home(self) -> None:
         """ductor_home is always the agent's home dir, not main's."""

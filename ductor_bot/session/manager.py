@@ -84,6 +84,7 @@ class ProviderSessionData:
     message_count: int = 0
     total_cost_usd: float = 0.0
     total_tokens: int = 0
+    resume_context: str = ""
 
 
 @dataclass(init=False)
@@ -247,6 +248,7 @@ class SessionData:
                 message_count=SessionData._safe_int(value.get("message_count", 0)),
                 total_cost_usd=SessionData._safe_float(value.get("total_cost_usd", 0.0)),
                 total_tokens=SessionData._safe_int(value.get("total_tokens", 0)),
+                resume_context=str(value.get("resume_context", "") or ""),
             )
         return out
 
@@ -545,6 +547,7 @@ class SessionManager:
                 message_count=data.message_count,
                 total_cost_usd=data.total_cost_usd,
                 total_tokens=data.total_tokens,
+                resume_context=data.resume_context,
             )
             for provider, data in provider_sessions.items()
         }
@@ -560,10 +563,13 @@ class SessionManager:
                     message_count=data.message_count,
                     total_cost_usd=data.total_cost_usd,
                     total_tokens=data.total_tokens,
+                    resume_context=data.resume_context,
                 )
                 continue
             if data.session_id:
                 existing.session_id = data.session_id
+            if data.resume_context:
+                existing.resume_context = data.resume_context
             existing.message_count = max(existing.message_count, data.message_count)
             existing.total_cost_usd = max(existing.total_cost_usd, data.total_cost_usd)
             existing.total_tokens = max(existing.total_tokens, data.total_tokens)
@@ -696,7 +702,7 @@ class SessionManager:
         logger.debug("Session fresh check: fresh=yes reason=still_valid")
         return True
 
-    async def _load(self) -> dict[str, SessionData]:
+    async def _load(self) -> dict[str, SessionData]:  # noqa: C901
         """Load sessions from JSON file.
 
         Handles migration from legacy unprefixed keys (``"12345"``,
@@ -704,7 +710,7 @@ class SessionManager:
         ``"tg:12345:99"``).
         """
 
-        def _read() -> dict[str, SessionData]:
+        def _read() -> dict[str, SessionData]:  # noqa: PLR0911
             json_sessions = self._load_sessions_from_json()
             repo_sessions = self._load_sessions_from_repo()
 

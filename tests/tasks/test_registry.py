@@ -110,6 +110,7 @@ class TestUpdateStatus:
         assert rows[0]["current_step"] == 2
         assert "Need approval?" in rows[0]["step_label"]
         assert rows[0]["context_snapshot_json"]["evaluation_status"] == "blocked_on_question"
+        assert rows[0]["context_snapshot_json"]["outcome"] == ""
 
     def test_cleanup_finished_deletes_task_state(self, tmp_path: Path) -> None:
         db = RuntimeStateDB(tmp_path / "state.db")

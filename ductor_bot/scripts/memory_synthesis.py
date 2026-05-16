@@ -1,4 +1,3 @@
-# ruff: noqa: INP001
 
 """Run an explicit memory-synthesis maintenance turn against the latest session."""
 
@@ -11,8 +10,15 @@ from ductor_bot.__main__ import load_config
 from ductor_bot.cli.types import AgentRequest
 from ductor_bot.config import AgentConfig, resolve_timeout
 from ductor_bot.orchestrator.core import Orchestrator
-from ductor_bot.orchestrator.flows import _build_memory_synthesis_prompt
+from ductor_bot.runtime.memory.synthesis_producer import (
+    build_memory_synthesis_prompt,
+    write_synthesis_candidates,
+)
 from ductor_bot.runtime.state.db import RuntimeStateDB
+from ductor_bot.runtime.state.repositories.memory_promotion_journal_repo import (
+    MemoryPromotionJournalRepository,
+)
+from ductor_bot.runtime.state.repositories.message_repo import MessageRepository
 from ductor_bot.runtime.state.repositories.session_repo import SessionRepository
 from ductor_bot.session.manager import SessionData
 from ductor_bot.workspace.paths import DuctorPaths, resolve_paths
@@ -36,11 +42,17 @@ def _find_latest_session(db: RuntimeStateDB, chat_id: int) -> SessionData | None
     return SessionRepository(db).get(str(row["storage_key"]))
 
 
-def _build_request(session: SessionData, config: AgentConfig, limit: int) -> AgentRequest:
+def _build_request(
+    session: SessionData,
+    config: AgentConfig,
+    limit: int,
+    message_repo: MessageRepository | None = None,
+) -> AgentRequest:
     """Build the maintenance request for a resumed synthesis turn."""
-    prompt = (
-        _build_memory_synthesis_prompt()
-        + f"\n- Prioritize the most recent {limit} messages in the resumed session."
+    prompt, _source_window = build_memory_synthesis_prompt(
+        message_repo,
+        session.session_key.storage_key,
+        limit=limit,
     )
     return AgentRequest(
         prompt=prompt,
@@ -74,6 +86,8 @@ async def run_synthesis(
         return 1
 
     db = RuntimeStateDB(db_path)
+    message_repo = MessageRepository(db)
+    journal_repo = MemoryPromotionJournalRepository(db)
     session = _find_latest_session(db, chat_id)
     if session is None:
         print(f"No active session found for chat_id={chat_id}.")
@@ -87,7 +101,12 @@ async def run_synthesis(
         resolved_paths,
         docker_container=docker_container,
     )
-    request = _build_request(session, resolved_config, limit)
+    request = _build_request(session, resolved_config, limit, message_repo)
+    _prompt, source_window = build_memory_synthesis_prompt(
+        message_repo,
+        session.session_key.storage_key,
+        limit=limit,
+    )
     response = await orch._cli_service.execute(request)
 
     if response.is_error:
@@ -95,16 +114,20 @@ async def run_synthesis(
             f"Memory synthesis failed for chat_id={chat_id} "
             f"(provider={session.provider}, model={session.model}, session={session.session_id})."
         )
-        if response.result.strip():
-            print(response.result)
         return 1
 
-    print(
-        f"Memory synthesis completed for chat_id={chat_id} "
-        f"(provider={session.provider}, model={session.model}, session={session.session_id})."
+    summary = write_synthesis_candidates(
+        response.result,
+        journal_repo=journal_repo,
+        session_storage_key=session.session_key.storage_key,
+        source_window=source_window,
+        agent_name="main",
+        producer="memory_synthesis_cli",
     )
-    if response.result.strip():
-        print(response.result)
+    print(
+        f"Memory synthesis completed for chat_id={chat_id}: "
+        f"created={summary.created} skipped={summary.skipped} error={summary.error}"
+    )
     return 0
 
 

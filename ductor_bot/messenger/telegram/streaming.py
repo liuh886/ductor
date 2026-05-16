@@ -148,7 +148,7 @@ class StreamEditor:
                 )
             self._last_msg = msg
             self._messages_sent += 1
-            return True
+            return True  # noqa: TRY300
         except TelegramBadRequest:
             if parse_mode is not None:
                 logger.warning("HTML send failed, falling back to plain text")

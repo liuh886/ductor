@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ductor_bot.runtime.state import MessageRepository, ProcessRepository, RuntimeStateDB
+from ductor_bot.runtime.state import (
+    MessageRepository,
+    OutcomeEventRepository,
+    ProcessRepository,
+    RuntimeStateDB,
+)
 from ductor_bot.tasks.hub import TaskHub
 from ductor_bot.tasks.models import TaskResult, TaskSubmit
 from ductor_bot.tasks.registry import TaskRegistry
@@ -42,6 +47,10 @@ def _make_cli_service(
     response.is_error = False
     response.timed_out = False
     response.num_turns = num_turns
+    response.outcome = "empty_result" if not str(result).strip() else "success"
+    response.failure_class = "empty_result" if not str(result).strip() else ""
+    response.empty_result = not str(result).strip()
+    response.recovery_attempts = 0
     cli.execute = AsyncMock(return_value=response)
     cli.resolve_provider = MagicMock(return_value=("claude", "opus"))
     return cli
@@ -76,8 +85,10 @@ def state_db(tmp_path: Path) -> RuntimeStateDB:
 
 
 @pytest.fixture
-def state_repos(state_db: RuntimeStateDB) -> tuple[ProcessRepository, MessageRepository]:
-    return ProcessRepository(state_db), MessageRepository(state_db)
+def state_repos(
+    state_db: RuntimeStateDB,
+) -> tuple[ProcessRepository, MessageRepository, OutcomeEventRepository]:
+    return ProcessRepository(state_db), MessageRepository(state_db), OutcomeEventRepository(state_db)
 
 
 class TestSubmit:
@@ -167,10 +178,10 @@ class TestRunAndDeliver:
         self,
         registry: TaskRegistry,
         tmp_path: Path,
-        state_repos: tuple[ProcessRepository, MessageRepository],
+        state_repos: tuple[ProcessRepository, MessageRepository, OutcomeEventRepository],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _, message_repo = state_repos
+        _, message_repo, _outcome_repo = state_repos
         extraction_started = asyncio.Event()
         release_extraction = asyncio.Event()
 
@@ -308,9 +319,9 @@ class TestRuntimeStatePersistence:
         self,
         registry: TaskRegistry,
         tmp_path: Path,
-        state_repos: tuple[ProcessRepository, MessageRepository],
+        state_repos: tuple[ProcessRepository, MessageRepository, OutcomeEventRepository],
     ) -> None:
-        process_repo, message_repo = state_repos
+        process_repo, message_repo, _outcome_repo = state_repos
         hub = TaskHub(
             registry,
             MagicMock(workspace=tmp_path),
@@ -340,13 +351,57 @@ class TestRuntimeStatePersistence:
 
         await hub.shutdown()
 
+    async def test_records_task_run_outcome_without_prompt_or_result(
+        self,
+        registry: TaskRegistry,
+        tmp_path: Path,
+        state_repos: tuple[ProcessRepository, MessageRepository, OutcomeEventRepository],
+    ) -> None:
+        process_repo, message_repo, outcome_repo = state_repos
+        original_prompt = "secret original task prompt"
+        result_body = "secret task result body"
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=_make_cli_service(result_body),
+            process_repo=process_repo,
+            message_repo=message_repo,
+            outcome_event_repo=outcome_repo,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock())
+
+        task_id = hub.submit(_submit(prompt=original_prompt))
+        await asyncio.sleep(0.1)
+
+        events = outcome_repo.list_unlearned()
+        assert len(events) == 1
+        event = events[0]
+        assert event["source_type"] == "task_run"
+        assert event["source_id"] == f"task:{task_id}:run:1"
+        assert event["event_type"] == "task_run"
+        assert event["task_id"] == task_id
+        assert event["session_storage_key"] == f"task:{task_id}"
+        assert event["flow"] == "task"
+        assert event["status"] == "done"
+        assert event["outcome"] == "success"
+        payload = event["payload_json"]
+        assert payload["input_chars"] > len(original_prompt)
+        assert payload["result_chars"] == len(result_body)
+        assert original_prompt not in str(payload)
+        assert result_body not in str(payload)
+        assert "prompt" not in payload
+        assert "result" not in payload
+
+        await hub.shutdown()
+
     async def test_resume_records_additional_process_and_messages(
         self,
         registry: TaskRegistry,
         tmp_path: Path,
-        state_repos: tuple[ProcessRepository, MessageRepository],
+        state_repos: tuple[ProcessRepository, MessageRepository, OutcomeEventRepository],
     ) -> None:
-        process_repo, message_repo = state_repos
+        process_repo, message_repo, _outcome_repo = state_repos
         cli = _make_cli_service("initial result")
         hub = TaskHub(
             registry,
@@ -400,7 +455,38 @@ class TestRuntimeStatePersistence:
 
         assert len(delivered) == 1
         assert delivered[0].status == "failed"
+        assert delivered[0].outcome == "error"
+        assert delivered[0].failure_class == "cli_error"
         assert "rate limit" in delivered[0].error.lower()
+
+        await hub.shutdown()
+
+    async def test_empty_result_is_not_treated_as_success(
+        self, registry: TaskRegistry, tmp_path: Path
+    ) -> None:
+        cli = _make_cli_service(result="")
+
+        delivered: list[TaskResult] = []
+        hub = TaskHub(
+            registry,
+            MagicMock(workspace=tmp_path),
+            cli_service=cli,
+            config=_make_config(),
+        )
+        hub.set_result_handler("main", AsyncMock(side_effect=delivered.append))
+
+        task_id = hub.submit(_submit())
+        await asyncio.sleep(0.1)
+
+        assert len(delivered) == 1
+        assert delivered[0].status == "failed"
+        assert delivered[0].outcome == "empty_result"
+        assert delivered[0].empty_result is True
+        entry = registry.get(task_id)
+        assert entry is not None
+        assert entry.status == "failed"
+        assert entry.outcome == "empty_result"
+        assert entry.empty_result is True
 
         await hub.shutdown()
 
@@ -656,9 +742,9 @@ class TestResumeCompression:
         self,
         registry: TaskRegistry,
         tmp_path: Path,
-        state_repos: tuple[ProcessRepository, MessageRepository],
+        state_repos: tuple[ProcessRepository, MessageRepository, OutcomeEventRepository],
     ) -> None:
-        process_repo, message_repo = state_repos
+        process_repo, message_repo, _outcome_repo = state_repos
         cli = _make_cli_service("compressed follow-up result", session_id="sess-2")
         hub = TaskHub(
             registry,
@@ -698,9 +784,9 @@ class TestResumeCompression:
         self,
         registry: TaskRegistry,
         tmp_path: Path,
-        state_repos: tuple[ProcessRepository, MessageRepository],
+        state_repos: tuple[ProcessRepository, MessageRepository, OutcomeEventRepository],
     ) -> None:
-        process_repo, message_repo = state_repos
+        process_repo, message_repo, _outcome_repo = state_repos
         cli = _make_cli_service("short history follow-up result", session_id="sess-2")
         hub = TaskHub(
             registry,

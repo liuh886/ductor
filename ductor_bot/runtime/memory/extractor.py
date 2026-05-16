@@ -36,7 +36,7 @@ def extract_markdown_fragments(
     agent_name: str = "",
 ) -> list[MemoryFragment]:
     """Split Markdown into heading-aware fragments with bullet content preserved."""
-    lines = text.splitlines()
+    lines = _strip_frontmatter(text).splitlines()
     fragments: list[MemoryFragment] = []
     current_title = "ROOT"
     current_lines: list[str] = []
@@ -102,6 +102,16 @@ def extract_markdown_fragments(
 
     flush()
     return fragments
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Strip one leading YAML frontmatter block when present."""
+    if not text.startswith("---\n"):
+        return text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return text
+    return text[end + len("\n---\n") :]
 
 
 def _extract_tags(text: str) -> list[str]:

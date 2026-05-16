@@ -105,6 +105,10 @@ class DuctorPaths:
         return self.workspace / "skills"
 
     @property
+    def skill_candidates_dir(self) -> Path:
+        return self.skills_dir / ".candidates"
+
+    @property
     def bundled_skills_dir(self) -> Path:
         """Package-internal skill directory (read-only, ships with ductor)."""
         return self.home_defaults / "workspace" / "skills"
@@ -156,12 +160,19 @@ class DuctorPaths:
     @property
     def sharedmemory_path(self) -> Path:
         """The global SHAREDMEMORY.md file.
-        
+
         Sub-agents resolve this by looking at their parent's parent (ductor_home/agents/NAME -> ductor_home).
         """
         if self.ductor_home.parent.name == "agents":
             return self.ductor_home.parent.parent / "SHAREDMEMORY.md"
         return self.ductor_home / "SHAREDMEMORY.md"
+
+    @property
+    def path_aliases_path(self) -> Path:
+        """The global path-alias registry shared across agents."""
+        if self.ductor_home.parent.name == "agents":
+            return self.ductor_home.parent.parent / "path_aliases.json"
+        return self.ductor_home / "path_aliases.json"
 
     @property
     def join_notification_path(self) -> Path:
