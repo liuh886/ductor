@@ -108,7 +108,7 @@ def test_docker_wrap_injects_secrets(tmp_path: Path) -> None:
         docker_container="test-container",
     )
     clear_cache()
-    with patch.dict("os.environ", {}, clear=False):
+    with patch.dict("os.environ", {}, clear=True):
         cmd, cwd = docker_wrap(["gemini"], config)
 
     assert cwd is None  # Docker mode
