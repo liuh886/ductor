@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.config import AgentConfig
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.workspace.init import init_workspace
 from ductor_bot.workspace.paths import DuctorPaths
+
+
+@pytest.fixture(autouse=True)
+def mock_provider_auth() -> object:
+    """Keep workspace setup deterministic and free of real CLI auth probes."""
+    authenticated = AuthResult(provider="mock", status=AuthStatus.AUTHENTICATED)
+    with patch(
+        "ductor_bot.cli.auth.check_all_auth",
+        return_value={
+            "claude": authenticated,
+            "codex": authenticated,
+            "gemini": authenticated,
+            "antigravity": authenticated,
+        },
+    ):
+        yield
 
 
 def setup_framework(fw_root: Path) -> None:

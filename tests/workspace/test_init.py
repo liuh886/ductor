@@ -4,13 +4,29 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from unittest.mock import patch
 
+import pytest
+
+from ductor_bot.cli.auth import AuthResult, AuthStatus
 from ductor_bot.workspace.init import init_workspace, inject_runtime_environment
 from ductor_bot.workspace.paths import DuctorPaths
 
-if TYPE_CHECKING:
-    import pytest
+
+@pytest.fixture(autouse=True)
+def mock_provider_auth() -> object:
+    """Keep workspace initialization tests free of real CLI auth probes."""
+    authenticated = AuthResult(provider="mock", status=AuthStatus.AUTHENTICATED)
+    with patch(
+        "ductor_bot.cli.auth.check_all_auth",
+        return_value={
+            "claude": authenticated,
+            "codex": authenticated,
+            "gemini": authenticated,
+            "antigravity": authenticated,
+        },
+    ):
+        yield
 
 
 def _setup_home_defaults(fw_root: Path) -> None:
