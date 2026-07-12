@@ -58,7 +58,10 @@ def _has_linger() -> bool:
 def _enable_linger(user: str) -> bool:
     """Enable loginctl linger for *user*, using sudo only when needed and available."""
     cmd = ["loginctl", "enable-linger", user]
-    if os.geteuid() != 0:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return False
+    if geteuid() != 0:
         if shutil.which("sudo") is None:
             return False
         cmd = ["sudo", *cmd]

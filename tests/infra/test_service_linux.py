@@ -48,7 +48,7 @@ class TestGenerateServiceUnit:
 
 class TestEnableLinger:
     @patch("ductor_bot.infra.service_linux.subprocess.run")
-    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=0)
+    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=0, create=True)
     def test_root_runs_loginctl_without_sudo(
         self,
         _euid: MagicMock,
@@ -65,7 +65,7 @@ class TestEnableLinger:
 
     @patch("ductor_bot.infra.service_linux.subprocess.run")
     @patch("ductor_bot.infra.service_linux.shutil.which", return_value="/usr/bin/sudo")
-    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=1000)
+    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=1000, create=True)
     def test_non_root_prefixes_sudo(
         self,
         _euid: MagicMock,
@@ -83,7 +83,7 @@ class TestEnableLinger:
 
     @patch("ductor_bot.infra.service_linux.subprocess.run")
     @patch("ductor_bot.infra.service_linux.shutil.which", return_value=None)
-    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=1000)
+    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=1000, create=True)
     def test_missing_sudo_degrades_gracefully(
         self,
         _euid: MagicMock,
@@ -97,7 +97,7 @@ class TestEnableLinger:
         "ductor_bot.infra.service_linux.subprocess.run",
         side_effect=FileNotFoundError("loginctl"),
     )
-    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=0)
+    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=0, create=True)
     def test_missing_loginctl_degrades_gracefully(
         self,
         _euid: MagicMock,
@@ -106,7 +106,7 @@ class TestEnableLinger:
         assert _enable_linger("root") is False
 
     @patch("ductor_bot.infra.service_linux.subprocess.run")
-    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=0)
+    @patch("ductor_bot.infra.service_linux.os.geteuid", return_value=0, create=True)
     def test_nonzero_exit_reports_failure(
         self,
         _euid: MagicMock,
