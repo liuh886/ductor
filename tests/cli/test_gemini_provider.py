@@ -141,11 +141,12 @@ class TestBuildCommand:
 
 class TestPrepareEnv:
     def test_prepends_cli_parent_when_cli_path_is_absolute(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        cli_path = tmp_path / "opt" / "node" / "v22.0.0" / "bin" / "gemini"
         monkeypatch.setattr(
             "ductor_bot.cli.gemini_provider.find_gemini_cli",
-            lambda: "/opt/node/v22.0.0/bin/gemini",
+            lambda: str(cli_path),
         )
         monkeypatch.setattr(
             "ductor_bot.cli.gemini_provider.find_gemini_cli_js",
@@ -156,7 +157,7 @@ class TestPrepareEnv:
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=False):
             env = cli._prepare_env()
 
-        assert env["PATH"].split(os.pathsep)[0] == "/opt/node/v22.0.0/bin"
+        assert env["PATH"].split(os.pathsep)[0] == str(cli_path.parent)
 
     def test_host_to_container_path_normalizes_windows_separators(
         self, monkeypatch: pytest.MonkeyPatch
