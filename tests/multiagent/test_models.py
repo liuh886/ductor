@@ -85,7 +85,7 @@ class TestMergeSubAgentConfig:
         sub = SubAgentConfig(name="sub1", telegram_token="sub-token")
         result = merge_sub_agent_config(main, sub, Path("/agents/sub1"))
 
-        assert result.ductor_home == "/agents/sub1"
+        assert result.ductor_home == str(Path("/agents/sub1"))
 
     def test_telegram_token_always_from_sub(self) -> None:
         """Telegram token always comes from sub-agent definition."""
