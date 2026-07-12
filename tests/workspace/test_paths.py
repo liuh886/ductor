@@ -70,10 +70,9 @@ def test_resolve_paths_env_vars() -> None:
 
 
 def test_resolve_paths_defaults() -> None:
-    with patch.dict(os.environ, {}, clear=True):
-        env_clean = {
-            k: v for k, v in os.environ.items() if k not in ("DUCTOR_HOME", "DUCTOR_FRAMEWORK_ROOT")
-        }
-        with patch.dict(os.environ, env_clean, clear=True):
-            paths = resolve_paths()
-            assert paths.ductor_home == (Path.home() / ".ductor").resolve()
+    env_clean = {
+        k: v for k, v in os.environ.items() if k not in ("DUCTOR_HOME", "DUCTOR_FRAMEWORK_ROOT")
+    }
+    with patch.dict(os.environ, env_clean, clear=True):
+        paths = resolve_paths()
+        assert paths.ductor_home == (Path.home() / ".ductor").resolve()
