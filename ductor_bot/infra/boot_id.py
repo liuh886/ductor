@@ -72,7 +72,10 @@ def _windows_boot_id() -> str:
         import ctypes
         import time
 
-        uptime_ms = ctypes.windll.kernel32.GetTickCount64()  # type: ignore[attr-defined]
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return ""
+        uptime_ms = windll.kernel32.GetTickCount64()
         # Round to nearest minute to avoid jitter
         uptime_minutes = int(uptime_ms / 60_000)
         boot_epoch_min = int(time.time() / 60) - uptime_minutes
