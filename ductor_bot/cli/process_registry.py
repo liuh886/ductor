@@ -84,9 +84,11 @@ class ProcessRegistry:
         entries = self._processes.get(tracked.chat_id)
         if entries is None:
             return
-        try:
-            entries.remove(tracked)
-        except ValueError:
+        for index, entry in enumerate(entries):
+            if entry is tracked:
+                entries.pop(index)
+                break
+        else:
             return
         if not entries:
             del self._processes[tracked.chat_id]
