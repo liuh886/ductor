@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ductor_bot.infra.process_tree import (
@@ -41,11 +42,10 @@ class ProcessRegistry:
         self._aborted_topics: set[tuple[int, int | None]] = set()
         self._aborted_labels: set[tuple[int, str]] = set()
         self._interrupted: set[int] = set()
-        # MED #9: serialize bulk kill operations (kill_for_task / kill_stale /
-        # kill_by_label) against each other so a concurrent ``register`` that
-        # slips in mid-iteration can't orphan subprocesses past a cancel.
-        # ``register`` itself stays lock-free — a single dict.setdefault()+
-        # list.append() pair is atomic under the GIL.
+        # Serialize cancellation rounds. ``register`` stays synchronous and
+        # lock-free, so bulk kills re-scan after every await before releasing
+        # this lock. The final empty scan and lock release contain no await,
+        # making registrations either part of this round or strictly later.
         self._kill_lock: asyncio.Lock = asyncio.Lock()
 
     def register(
@@ -58,11 +58,9 @@ class ProcessRegistry:
     ) -> TrackedProcess:
         """Register a subprocess. Returns the tracking handle.
 
-        Lock-free on purpose: ``dict.setdefault`` + ``list.append`` is atomic
-        under the GIL. Bulk kill operations (:meth:`kill_for_task`,
-        :meth:`kill_stale`, :meth:`kill_by_label`) serialize against each
-        other via :attr:`_kill_lock`, which is sufficient — a register that
-        happens between two kills simply belongs to the next cancel round.
+        Lock-free on purpose: there is no ``await`` between ``setdefault`` and
+        ``append``. Bulk cancellation methods re-scan after their await points
+        so a matching registration made during cancellation joins that round.
         """
         tracked = TrackedProcess(
             process=process,
@@ -101,11 +99,9 @@ class ProcessRegistry:
 
     async def kill_all(self, chat_id: int) -> int:
         """Kill every active process for *chat_id*. Returns count killed."""
-        self._aborted.add(chat_id)
-        entries = self._processes.pop(chat_id, [])
-        if not entries:
-            return 0
-        return await _kill_processes(entries)
+        async with self._kill_lock:
+            self._aborted.add(chat_id)
+            return await self._drain_matching_locked(lambda tracked: tracked.chat_id == chat_id)
 
     async def kill_by_chat_topic(self, chat_id: int, topic_id: int | None) -> int:
         """Kill processes belonging to *chat_id* + *topic_id*. Returns count.
@@ -116,31 +112,35 @@ class ProcessRegistry:
         /tasks, /sessions, or TaskHub.cancel() are preserved.
         """
         async with self._kill_lock:
-            entries = self._processes.get(chat_id, [])
-            targets = [
-                t
-                for t in entries
-                if t.topic_id == topic_id
-                and t.process.returncode is None
-                and not t.label.startswith(_PRESERVED_LABEL_PREFIXES)
-            ]
-            if not targets:
+
+            def matches(tracked: TrackedProcess) -> bool:
+                return (
+                    tracked.chat_id == chat_id
+                    and tracked.topic_id == topic_id
+                    and tracked.process.returncode is None
+                    and not tracked.label.startswith(_PRESERVED_LABEL_PREFIXES)
+                )
+
+            if not any(matches(tracked) for tracked in self._processes.get(chat_id, [])):
                 return 0
             self._aborted_topics.add((chat_id, topic_id))
-            target_ids = {id(t) for t in targets}
-            remaining = [t for t in entries if id(t) not in target_ids]
-            if remaining:
-                self._processes[chat_id] = remaining
-            else:
-                self._processes.pop(chat_id, None)
-        return await _kill_processes(targets)
+            return await self._drain_matching_locked(matches)
 
     async def kill_all_active(self) -> int:
         """Kill active processes across all chats. Returns total count killed."""
-        total = 0
-        for chat_id in list(self._processes):
-            total += await self.kill_all(chat_id)
-        return total
+        async with self._kill_lock:
+            total = 0
+            while self._processes:
+                for chat_id in list(self._processes):
+
+                    def matches_chat(
+                        tracked: TrackedProcess, target_chat_id: int = chat_id
+                    ) -> bool:
+                        return tracked.chat_id == target_chat_id
+
+                    self._aborted.add(chat_id)
+                    total += await self._drain_matching_locked(matches_chat)
+            return total
 
     def was_aborted(self, chat_id: int) -> bool:
         """Check whether *chat_id* has been aborted since last clear."""
@@ -181,16 +181,13 @@ class ProcessRegistry:
         """Kill processes matching *label* for *chat_id*. Returns count killed."""
         async with self._kill_lock:
             self._aborted_labels.add((chat_id, label))
-            entries = self._processes.get(chat_id, [])
-            to_kill = [e for e in entries if e.label == label and e.process.returncode is None]
-            if not to_kill:
-                return 0
-            remaining = [e for e in entries if e not in to_kill]
-            if remaining:
-                self._processes[chat_id] = remaining
-            else:
-                self._processes.pop(chat_id, None)
-            return await _kill_processes(to_kill)
+            return await self._drain_matching_locked(
+                lambda tracked: (
+                    tracked.chat_id == chat_id
+                    and tracked.label == label
+                    and tracked.process.returncode is None
+                )
+            )
 
     def clear_label_abort(self, chat_id: int, label: str) -> None:
         """Clear the abort flag for a specific label."""
@@ -258,25 +255,37 @@ class ProcessRegistry:
         processes are skipped (``returncode is not None``). Each killed entry is
         unregistered after the ladder completes.
 
-        MED #9: the collect → kill → unregister sequence runs under
-        :attr:`_kill_lock` so a subprocess that registers mid-iteration
-        cannot slip past the cancel. ``register`` remains lock-free.
+        Matching processes registered while cancellation is awaiting the kill
+        ladder are drained in the same cancellation round.
         """
         label = f"task:{task_id}"
         async with self._kill_lock:
-            targets: list[TrackedProcess] = []
-            for entries in self._processes.values():
-                for tracked in entries:
-                    if tracked.process.returncode is not None:
-                        continue
-                    if tracked.label == label:
-                        targets.append(tracked)
-            if not targets:
-                return 0
-            killed = await _kill_processes(targets)
-            for tracked in targets:
-                self.unregister(tracked)
-            return killed
+            return await self._drain_matching_locked(
+                lambda tracked: tracked.label == label and tracked.process.returncode is None
+            )
+
+    def _take_matching(self, matches: Callable[[TrackedProcess], bool]) -> list[TrackedProcess]:
+        """Detach and return all entries matching *matches*."""
+        targets: list[TrackedProcess] = []
+        for chat_id, entries in list(self._processes.items()):
+            selected = [tracked for tracked in entries if matches(tracked)]
+            if not selected:
+                continue
+            selected_ids = {id(tracked) for tracked in selected}
+            remaining = [tracked for tracked in entries if id(tracked) not in selected_ids]
+            if remaining:
+                self._processes[chat_id] = remaining
+            else:
+                self._processes.pop(chat_id, None)
+            targets.extend(selected)
+        return targets
+
+    async def _drain_matching_locked(self, matches: Callable[[TrackedProcess], bool]) -> int:
+        """Drain matching entries while the caller holds ``_kill_lock``."""
+        total = 0
+        while targets := self._take_matching(matches):
+            total += await _kill_processes(targets)
+        return total
 
 
 def _send_sigterm(entries: list[TrackedProcess]) -> int:
