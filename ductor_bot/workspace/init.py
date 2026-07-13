@@ -506,7 +506,6 @@ Python tool commands to the user — those are for YOU to use internally.
 - `python3 tools/agent_tools/ask_agent_async.py TARGET "message"` — async
 - Add `--new` before TARGET to start a fresh session (discard prior context)
 - `python3 tools/agent_tools/list_agents.py`
-- `python3 tools/agent_tools/edit_shared_knowledge.py`
 
 Responses from these tools always come back to YOU, never to the sub-agent's chat.
 Use async for tasks that may take more than a few seconds.

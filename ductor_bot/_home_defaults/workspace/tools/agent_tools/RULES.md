@@ -23,7 +23,6 @@ internal tools for agent-to-agent communication only.
 |------|---------|-------------|
 | `ask_agent.py` | Ask a sub-agent a question (sync, blocks until response) | All agents |
 | `ask_agent_async.py` | Give a sub-agent a task (async, response comes back to YOU) | All agents |
-| `edit_shared_knowledge.py` | View or edit the shared operational note | All agents |
 | `vault_search.py` | Search the read-only zhihaol vault index with source paths | All agents |
 | `create_agent.py` | Create a new sub-agent (writes to `agents.json`, auto-detected) | Main only |
 | `remove_agent.py` | Remove a sub-agent from the registry | Main only |
@@ -224,27 +223,6 @@ These sessions:
 
 When reporting async results to the user, mention the session name so they
 can follow up directly with the sub-agent if needed.
-
-## Shared Operations
-
-`SHAREDMEMORY.md` is a short cross-agent operational alert channel for ports,
-environment changes, and active incidents. It is not copied into agent prompts.
-Before cross-agent coordination or incident diagnosis, read it explicitly with
-`--show`; updates are not pushed into running provider sessions.
-
-```bash
-# View current shared knowledge
-python3 tools/agent_tools/edit_shared_knowledge.py --show
-
-# Append a fact
-python3 tools/agent_tools/edit_shared_knowledge.py --append "New shared fact"
-
-# Replace entire content
-python3 tools/agent_tools/edit_shared_knowledge.py --set "Full new content"
-```
-
-Use it only for facts that agents may need to consult during current operations.
-Durable project and domain knowledge belongs in the relevant zhihaol vault note.
 
 ## Removing Sub-Agents
 

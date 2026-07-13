@@ -122,7 +122,6 @@ def _to_container_path(host_path: Path, main_home: Path) -> str:
 def _docker_env_flags(
     config: CLIConfig,
     container_home: str,
-    container_shared: str,
 ) -> list[str]:
     """Build the ``-e KEY=VAL`` argv flags for ``docker exec``."""
     env_flags: list[str] = [
@@ -136,8 +135,6 @@ def _docker_env_flags(
         f"DUCTOR_INTERAGENT_PORT={config.interagent_port}",
         "-e",
         f"DUCTOR_HOME={container_home}",
-        "-e",
-        f"DUCTOR_SHARED_MEMORY_PATH={container_shared}",
         "-e",
         "DUCTOR_INTERAGENT_HOST=host.docker.internal",
     ]
@@ -184,7 +181,6 @@ def docker_wrap(
 
         container_cwd = _to_container_path(working_dir, main_home)
         container_home = _to_container_path(ductor_home, main_home)
-        container_shared = _to_container_path(main_home / "SHAREDMEMORY.md", main_home)
 
         # Merge user secrets from .env (low priority — never override).
         import os
@@ -209,7 +205,7 @@ def docker_wrap(
             merged_extra.update(extra_env)  # Provider-specific overrides win.
         extra_env = merged_extra or None
 
-        env_flags = _docker_env_flags(config, container_home, container_shared)
+        env_flags = _docker_env_flags(config, container_home)
         if extra_env:
             for key, value in extra_env.items():
                 env_flags += ["-e", f"{key}={value}"]

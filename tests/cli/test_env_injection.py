@@ -51,6 +51,7 @@ def test_subprocess_env_works_without_env_file(tmp_path: Path) -> None:
 
     assert env is not None
     assert "DUCTOR_AGENT_NAME" in env
+    assert "DUCTOR_SHARED_MEMORY_PATH" not in env
 
 
 def test_mimo_subprocess_env_replaces_inherited_anthropic_credentials(

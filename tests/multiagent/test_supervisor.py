@@ -339,7 +339,16 @@ class TestStopAll:
         assert stop_order.index("sub1") < stop_order.index("main")
         assert supervisor._running is False
 
-    async def test_cancellation_unblocks_start(self, supervisor: AgentSupervisor) -> None:
+    @pytest.mark.parametrize(
+        ("memory_enabled", "expected_order"),
+        [
+            (False, ["provider"]),
+            (True, ["memory-cleanup", "provider"]),
+        ],
+    )
+    async def test_cancellation_unblocks_start(
+        self, supervisor: AgentSupervisor, memory_enabled: bool, expected_order: list[str]
+    ) -> None:
         """Cancelling the supervisor.start() task (simulating SIGINT handler)
         must not hang — CancelledError must propagate from _main_done.wait()
         so the finally block in run_telegram() can call stop_all()."""
@@ -350,6 +359,7 @@ class TestStopAll:
         main_stack.is_main = True
         main_stack.paths.mainmemory_path = Path("MAINMEMORY.md")
         startup_order: list[str] = []
+        supervisor._main_config.memory_context.enabled = memory_enabled
 
         # stack.run() must block forever (simulating normal polling)
         async def _block_forever() -> int:
@@ -387,7 +397,10 @@ class TestStopAll:
             # Let start() reach _main_done.wait()
             await asyncio.sleep(0.05)
             assert not task.done()
-            assert startup_order == ["memory-cleanup", "provider"]
+            assert startup_order == expected_order
+            if not memory_enabled:
+                mock_sks_cls.assert_not_called()
+                assert supervisor._shared_knowledge is None
 
             # Simulate SIGINT: cancel the task (same as _request_shutdown)
             task.cancel()

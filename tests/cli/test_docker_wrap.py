@@ -35,8 +35,6 @@ def test_docker_wrap_with_container() -> None:
         "-e",
         "DUCTOR_HOME=/ductor",
         "-e",
-        "DUCTOR_SHARED_MEMORY_PATH=/ductor/SHAREDMEMORY.md",
-        "-e",
         "DUCTOR_INTERAGENT_HOST=host.docker.internal",
         "my-sandbox",
         "claude",
@@ -66,8 +64,6 @@ def test_docker_wrap_interactive() -> None:
         "DUCTOR_INTERAGENT_PORT=8799",
         "-e",
         "DUCTOR_HOME=/ductor",
-        "-e",
-        "DUCTOR_SHARED_MEMORY_PATH=/ductor/SHAREDMEMORY.md",
         "-e",
         "DUCTOR_INTERAGENT_HOST=host.docker.internal",
         "my-sandbox",
@@ -119,8 +115,7 @@ def test_docker_wrap_sub_agent_container_paths() -> None:
     assert result_cmd[w_idx + 1] == "/ductor/agents/test/workspace"
     # DUCTOR_HOME is the sub-agent home inside the container
     assert "DUCTOR_HOME=/ductor/agents/test" in result_cmd
-    # Shared memory is at the root
-    assert "DUCTOR_SHARED_MEMORY_PATH=/ductor/SHAREDMEMORY.md" in result_cmd
+    assert not any(item.startswith("DUCTOR_SHARED_MEMORY_PATH=") for item in result_cmd)
 
 
 def test_docker_wrap_main_agent_container_paths() -> None:
@@ -136,7 +131,7 @@ def test_docker_wrap_main_agent_container_paths() -> None:
     w_idx = result_cmd.index("-w")
     assert result_cmd[w_idx + 1] == "/ductor/workspace"
     assert "DUCTOR_HOME=/ductor" in result_cmd
-    assert "DUCTOR_SHARED_MEMORY_PATH=/ductor/SHAREDMEMORY.md" in result_cmd
+    assert not any(item.startswith("DUCTOR_SHARED_MEMORY_PATH=") for item in result_cmd)
 
 
 def test_docker_wrap_sub_agent_windows_paths_are_posix() -> None:
