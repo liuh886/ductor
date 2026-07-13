@@ -36,6 +36,15 @@ logger = logging.getLogger(__name__)
 _ToolCallback = Callable[[ToolUseEvent], Awaitable[None]]
 
 
+def _missing_final_delta(streamed_text: str, final_text: str) -> str:
+    """Return final text that was not already delivered by stream deltas."""
+    if not final_text or final_text in streamed_text:
+        return ""
+    if final_text.startswith(streamed_text):
+        return final_text[len(streamed_text) :]
+    return final_text
+
+
 class _StreamCallbacks:
     """Dispatch stream events to the appropriate callbacks."""
 
@@ -262,6 +271,14 @@ class CLIService:
                 accumulated_text += text
                 if result is not None:
                     result_event = result
+                    is_timeout = (result.result or "").startswith("__TIMEOUT__")
+                    if not result.is_error and not is_timeout:
+                        final_delta = _missing_final_delta(accumulated_text, result.result)
+                        if final_delta:
+                            text, _ = await callbacks.dispatch(
+                                AssistantTextDelta(type="assistant", text=final_delta)
+                            )
+                            accumulated_text += text
         except asyncio.CancelledError:
             raise
         except (OSError, RuntimeError, ValueError, UnicodeDecodeError):
