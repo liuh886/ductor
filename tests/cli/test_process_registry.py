@@ -100,6 +100,36 @@ async def test_kill_all_active_across_chats() -> None:
     assert reg.was_aborted(2) is True
 
 
+async def test_kill_all_drains_process_registered_during_cancel() -> None:
+    reg = ProcessRegistry()
+    first = _mock_process(pid=13)
+    racing = _mock_process(pid=14)
+    reg.register(chat_id=1, process=first, label="main", topic_id=10)
+    kill_started = asyncio.Event()
+    allow_kill_to_finish = asyncio.Event()
+    killed_pids: list[int] = []
+
+    async def kill_processes(entries: list[TrackedProcess]) -> int:
+        killed_pids.extend(entry.process.pid for entry in entries)
+        if not kill_started.is_set():
+            kill_started.set()
+            await allow_kill_to_finish.wait()
+        return len(entries)
+
+    async def register_during_cancel() -> None:
+        await kill_started.wait()
+        reg.register(chat_id=1, process=racing, label="main", topic_id=10)
+        allow_kill_to_finish.set()
+
+    with patch("ductor_bot.cli.process_registry._kill_processes", side_effect=kill_processes):
+        killed, _ = await asyncio.gather(reg.kill_all(1), register_during_cancel())
+
+    assert killed == 2
+    assert killed_pids == [13, 14]
+    assert reg.has_active(1) is False
+    assert reg.was_aborted(1) is True
+
+
 def test_multiple_chats_isolated() -> None:
     reg = ProcessRegistry()
     proc1 = _mock_process(pid=1)
@@ -277,6 +307,37 @@ class TestKillByChatTopicAbortMarker:
         assert id(task) not in remaining_ids
         assert {id(task_result), id(named_session)} <= remaining_ids
 
+    async def test_kill_by_chat_topic_drains_racing_normal_but_preserves_task(self) -> None:
+        reg = ProcessRegistry()
+        reg.register(chat_id=1, process=_mock_process(pid=98), label="main", topic_id=10)
+        racing = _mock_process(pid=99)
+        protected = _mock_process(pid=100)
+        kill_started = asyncio.Event()
+        allow_kill_to_finish = asyncio.Event()
+        killed_pids: list[int] = []
+
+        async def kill_processes(entries: list[TrackedProcess]) -> int:
+            killed_pids.extend(entry.process.pid for entry in entries)
+            if not kill_started.is_set():
+                kill_started.set()
+                await allow_kill_to_finish.wait()
+            return len(entries)
+
+        async def register_during_cancel() -> None:
+            await kill_started.wait()
+            reg.register(chat_id=1, process=racing, label="main", topic_id=10)
+            reg.register(chat_id=1, process=protected, label="task:RACING", topic_id=10)
+            allow_kill_to_finish.set()
+
+        with patch("ductor_bot.cli.process_registry._kill_processes", side_effect=kill_processes):
+            killed, _ = await asyncio.gather(
+                reg.kill_by_chat_topic(1, 10), register_during_cancel()
+            )
+
+        assert killed == 2
+        assert killed_pids == [98, 99]
+        assert reg._processes[1][0].process is protected
+
     async def test_kill_by_chat_topic_protected_only_returns_zero(self) -> None:
         reg = ProcessRegistry()
         reg.register(chat_id=1, process=_mock_process(pid=88), label="task:AAAAAAAA", topic_id=10)
@@ -412,46 +473,36 @@ async def test_kill_for_task_unregisters_killed_entry() -> None:
 
 
 async def test_kill_for_task_concurrent_register_is_safe() -> None:
-    """MED #9: racing register() vs kill_for_task() must not crash.
-
-    With the kill-lock in place, kill_for_task() takes an atomic snapshot
-    of its targets; a new register that lands mid-kill either makes it into
-    that snapshot or belongs to the next round — it never orphans the
-    subprocess and never raises.
-    """
+    """A matching registration during task cancellation joins the same drain."""
     reg = ProcessRegistry()
-
-    # Pre-existing target that kill_for_task will find in its snapshot.
     first = _mock_process(pid=200)
     reg.register(chat_id=1, process=first, label="task:XXXXXXXX")
-
-    # Racing process that tries to register under the same label.
     racing = _mock_process(pid=201)
+    kill_started = asyncio.Event()
+    allow_kill_to_finish = asyncio.Event()
+    killed_pids: list[int] = []
+
+    async def kill_processes(entries: list[TrackedProcess]) -> int:
+        killed_pids.extend(entry.process.pid for entry in entries)
+        if not kill_started.is_set():
+            kill_started.set()
+            await allow_kill_to_finish.wait()
+        return len(entries)
 
     async def _racing_register() -> None:
-        # Yield a few times so register has a chance to interleave with
-        # kill_for_task's await points.
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await kill_started.wait()
         reg.register(chat_id=1, process=racing, label="task:XXXXXXXX")
+        allow_kill_to_finish.set()
 
-    with patch(
-        "ductor_bot.cli.process_registry._kill_processes",
-        new_callable=AsyncMock,
-        return_value=1,
-    ):
+    with patch("ductor_bot.cli.process_registry._kill_processes", side_effect=kill_processes):
         killed, _ = await asyncio.gather(
             reg.kill_for_task("XXXXXXXX"),
             _racing_register(),
         )
 
-    # kill_for_task found and killed the pre-existing target cleanly.
-    assert killed == 1
-    # The racing registration either was swept by the same kill (0 left)
-    # or survived for the next round (<=1 left). Both are acceptable — the
-    # invariant is: no crash, no exception, registry is consistent.
-    remaining = reg._processes.get(1, [])
-    assert len(remaining) <= 1
+    assert killed == 2
+    assert killed_pids == [200, 201]
+    assert reg.has_active(1) is False
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX sleep binary")
