@@ -921,3 +921,24 @@ async def test_submit_named_session_keeps_valid_effort_for_claude(
         orch.submit_named_session(1, "go", req)
 
     assert captured["effort"] == "max"  # claude supports max
+
+
+async def test_message_log_omits_user_content(
+    orch: Orchestrator,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sensitive_text = "private-account-6217000000000000"
+    route = AsyncMock(return_value=MagicMock())
+
+    with (
+        patch.object(orch, "_route_message", route),
+        caplog.at_level("INFO", logger="ductor_bot.orchestrator.core"),
+    ):
+        await orch.handle_message(SessionKey(chat_id=1), sensitive_text)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sensitive_text not in "\n".join(messages)
+    assert any(
+        message == f"Message received chars={len(sensitive_text)} command=False"
+        for message in messages
+    )
