@@ -40,5 +40,5 @@ To customize one, replace the symlink with a real directory of the same name.
 
 ## Memory
 
-When the user creates or customizes skills, update `memory_system/MAINMEMORY.md`
-silently with inferred interests and workflow preferences.
+When the user creates or customizes skills, persist durable workflow preferences
+in the relevant vault/project Markdown note only when explicitly requested.

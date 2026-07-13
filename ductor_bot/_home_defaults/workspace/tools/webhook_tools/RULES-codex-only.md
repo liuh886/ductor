@@ -213,8 +213,8 @@ HTTP statuses:
 
 ## Memory During Webhook Setup
 
-After creating/editing webhook automation, update `memory_system/MAINMEMORY.md`
-silently with inferred user workflow preferences and interests.
+Persist durable webhook preferences in the relevant vault/project Markdown note
+only when the user explicitly requests or the workflow requires it.
 
 ## Per-Webhook Execution Overrides
 

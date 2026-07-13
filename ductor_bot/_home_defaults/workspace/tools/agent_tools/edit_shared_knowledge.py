@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""View or edit the shared knowledge file (SHAREDMEMORY.md).
+"""View or edit the shared operational alert file (SHAREDMEMORY.md).
 
-SHAREDMEMORY.md is automatically synced into every agent's MAINMEMORY.md
-by the AgentSupervisor. Use this tool to read or update shared knowledge
-without needing to know the file path.
+The AgentSupervisor initializes this file but does not copy it into provider prompts.
+Agents read it explicitly for short operational facts, not durable project knowledge.
 
 Usage:
     python3 edit_shared_knowledge.py --show
@@ -47,7 +46,7 @@ def _shared_path() -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="View or edit shared knowledge")
+    parser = argparse.ArgumentParser(description="View or edit the shared operational note")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--show", action="store_true", help="Display current shared knowledge")
     group.add_argument("--append", type=str, help="Append text to shared knowledge")
@@ -67,8 +66,7 @@ def main() -> None:
     if args.set is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(args.set.strip() + "\n", encoding="utf-8")
-        print(f"Shared knowledge replaced ({len(args.set)} chars).")
-        print("Changes will sync to all agents automatically.")
+        print(f"Shared operational note replaced ({len(args.set)} chars).")
         return
 
     if args.append is not None:
@@ -76,8 +74,7 @@ def main() -> None:
         existing = path.read_text(encoding="utf-8").rstrip() if path.is_file() else ""
         new_content = f"{existing}\n\n{args.append.strip()}\n" if existing else f"{args.append.strip()}\n"
         path.write_text(new_content, encoding="utf-8")
-        print(f"Appended to shared knowledge ({len(args.append)} chars).")
-        print("Changes will sync to all agents automatically.")
+        print(f"Appended to shared operational note ({len(args.append)} chars).")
 
 
 if __name__ == "__main__":

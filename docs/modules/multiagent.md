@@ -34,10 +34,10 @@ Each stack is isolated (token/workspace/sessions), but shares process/event-loop
 1. start inter-agent bus
 2. start internal API
 3. optional shared task hub
-4. create/start main stack
-5. wait for main readiness
-6. start sub-agents from `agents.json`
-7. start shared knowledge sync
+4. initialize the shared operations note
+5. create the main stack, clean its legacy projection, then start it
+6. wait for main readiness
+7. create each sub-agent, clean its legacy projection, then start it
 8. start `agents.json` watcher
 
 ## Dynamic agent changes
@@ -175,9 +175,10 @@ Priority behavior is shared across agents:
 
 ## Shared knowledge sync
 
-`SharedKnowledgeSync` watches `~/.ductor/SHAREDMEMORY.md` and mirrors content into each agent's `MAINMEMORY.md` block.
-
-Legacy HTML marker format is migrated to current block markers when rewritten.
+`SharedKnowledgeSync` keeps `~/.ductor/SHAREDMEMORY.md` as a short operational
+note. At startup, and when a new agent is created, it removes obsolete
+projection blocks from agent `MAINMEMORY.md` files. It does not run a file watcher
+or copy shared content into provider prompts; agents read the note explicitly.
 
 ## Chat and CLI commands
 

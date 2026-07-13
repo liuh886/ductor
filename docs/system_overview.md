@@ -77,7 +77,7 @@ All observer/task/inter-agent results now flow through `bus/`:
 Streaming nuance:
 
 - when the provider stream emits `CompactBoundaryEvent`, the orchestrator can mark the session for post-turn memory maintenance
-- after a successful streaming turn, `MemoryFlusher` may run a silent flush and then an LLM-driven compaction pass against `MAINMEMORY.md`
+- when explicitly enabled, a successful streaming turn may run a silent legacy-memory flush and compaction pass; local defaults keep both off
 
 Telegram ingress and `MessageBus` share one `LockPool`. `ApiServer` currently uses its own `LockPool`, so API locking is separate from the Telegram/message-bus lock domain.
 

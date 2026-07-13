@@ -205,7 +205,8 @@ class Orchestrator:
             else None
         )
         self._hook_registry = MessageHookRegistry()
-        self._hook_registry.register(MAINMEMORY_REMINDER)
+        if config.memory_context.enabled:
+            self._hook_registry.register(MAINMEMORY_REMINDER)
         self._hook_registry.register(DELEGATION_BRIEF)
         self._hook_registry.register(DELEGATION_REMINDER)
         if config.memory_reflection.enabled:

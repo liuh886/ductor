@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ductor_bot.cli.types import AgentResponse, CLIResponse
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import AgentConfig, MemoryContextConfig
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.hooks import MessageHook
 from ductor_bot.orchestrator.registry import OrchestratorResult
@@ -100,15 +100,7 @@ def _make_agent_response(
     )
 
 
-@pytest.fixture
-def orch_with_mock_cli(
-    workspace: tuple[DuctorPaths, AgentConfig],
-) -> tuple[Orchestrator, AsyncMock]:
-    """Real Orchestrator with the CLIService.execute/execute_streaming mocked.
-
-    Returns (orchestrator, mock_execute) so tests can configure return values.
-    """
-    paths, config = workspace
+def _mock_orchestrator(paths: DuctorPaths, config: AgentConfig) -> tuple[Orchestrator, AsyncMock]:
     o = Orchestrator(config, paths)
     o._providers._available_providers = frozenset({"claude"})
     o._cli_service.update_available_providers(frozenset({"claude"}))
@@ -120,6 +112,24 @@ def orch_with_mock_cli(
     object.__setattr__(o._cli_service, "execute_streaming", mock_execute_streaming)
 
     return o, mock_execute
+
+
+@pytest.fixture
+def orch_with_mock_cli(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> tuple[Orchestrator, AsyncMock]:
+    """Real Orchestrator with provider subprocess execution mocked."""
+    return _mock_orchestrator(*workspace)
+
+
+@pytest.fixture
+def orch_with_memory_context(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> tuple[Orchestrator, AsyncMock]:
+    """Mocked orchestrator with legacy MAINMEMORY compatibility enabled."""
+    paths, _config = workspace
+    config = AgentConfig(memory_context=MemoryContextConfig(enabled=True))
+    return _mock_orchestrator(paths, config)
 
 
 # ---------------------------------------------------------------------------
@@ -356,9 +366,9 @@ class TestDirectiveParsing:
 
 class TestHookApplication:
     async def test_mainmemory_hook_fires_on_6th_message(
-        self, orch_with_mock_cli: tuple[Orchestrator, AsyncMock]
+        self, orch_with_memory_context: tuple[Orchestrator, AsyncMock]
     ) -> None:
-        orch, mock_execute = orch_with_mock_cli
+        orch, mock_execute = orch_with_memory_context
 
         for i in range(6):
             mock_execute.return_value = _make_agent_response(result=f"Reply {i}")
@@ -594,9 +604,9 @@ class TestFullRoundTrip:
         assert req2.resume_session == "sess-001"
 
     async def test_new_session_injects_mainmemory(
-        self, orch_with_mock_cli: tuple[Orchestrator, AsyncMock]
+        self, orch_with_memory_context: tuple[Orchestrator, AsyncMock]
     ) -> None:
-        orch, mock_execute = orch_with_mock_cli
+        orch, mock_execute = orch_with_memory_context
 
         memory_text = "User likes Python and espresso."
         orch.paths.mainmemory_path.write_text(memory_text, encoding="utf-8")

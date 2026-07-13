@@ -149,6 +149,13 @@ class AgentSupervisor:
                 "TaskHub initialized (max_parallel=%d)", self._main_config.tasks.max_parallel
             )
 
+        # Initialize shared operations before any agent task can write legacy memory.
+        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
+
+        shared_path = self._main_paths.ductor_home / "SHAREDMEMORY.md"
+        self._shared_knowledge = SharedKnowledgeSync(shared_path, self)
+        await self._shared_knowledge.start()
+
         # 1. Start main agent
         main_stack = await AgentStack.create(
             "main",
@@ -159,6 +166,7 @@ class AgentSupervisor:
         self._health["main"] = AgentHealth(name="main")
         self._bus.register("main", main_stack)
         self._bus.set_async_result_handler("main", main_stack.bot.on_async_interagent_result)
+        await self._shared_knowledge.sync_agent(main_stack.paths.mainmemory_path)
 
         self._tasks["main"] = asyncio.create_task(
             self._supervised_run("main", main_stack),
@@ -189,17 +197,10 @@ class AgentSupervisor:
         # 3. Load and start sub-agents from agents.json
         await self._sync_sub_agents()
 
-        # 4. Start shared knowledge sync (SHAREDMEMORY.md → all agents)
-        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
-
-        shared_path = self._main_paths.ductor_home / "SHAREDMEMORY.md"
-        self._shared_knowledge = SharedKnowledgeSync(shared_path, self)
-        await self._shared_knowledge.start()
-
-        # 5. Start FileWatcher for agents.json
+        # 4. Start FileWatcher for agents.json
         await self._watcher.start()
 
-        # 6. Wait for main agent to finish — it determines the exit code
+        # 5. Wait for main agent to finish — it determines the exit code
         await self._main_done.wait()
         main_task = self._tasks.get("main")
         exit_code = 0
@@ -471,14 +472,14 @@ class AgentSupervisor:
             self._bus.register(name, stack)
             self._bus.set_async_result_handler(name, stack.bot.on_async_interagent_result)
 
+        # Clean legacy projections before the provider task can write memory.
+        if self._shared_knowledge:
+            await self._shared_knowledge.sync_agent(stack.paths.mainmemory_path)
+
         self._tasks[name] = asyncio.create_task(
             self._supervised_run(name, stack),
             name=f"agent:{name}",
         )
-
-        # Sync shared knowledge into the new agent's MAINMEMORY.md
-        if self._shared_knowledge:
-            await self._shared_knowledge.sync_agent(stack.paths.mainmemory_path)
 
         logger.info("Sub-agent '%s' started (home=%s)", name, agent_home)
 

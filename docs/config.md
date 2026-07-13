@@ -98,6 +98,7 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `memory_flush` | `MemoryFlushConfig` | see below | Silent pre-compaction memory flush after streaming compact boundaries |
 | `memory_reflection` | `MemoryReflectionConfig` | see below | Optional periodic memory reflection hook |
 | `memory_compaction` | `MemoryCompactionConfig` | see below | LLM-driven `MAINMEMORY.md` compaction policy |
+| `memory_context` | `MemoryContextConfig` | see below | Opt-in compatibility gate for automatic legacy-memory prompt injection |
 | `cleanup` | `CleanupConfig` | see below | Daily file-retention cleanup |
 | `webhooks` | `WebhookConfig` | see below | Webhook HTTP server config |
 | `api` | `ApiConfig` | see below | Direct WebSocket API server config |
@@ -331,7 +332,7 @@ When extras are configured, the supervisor startup timeout is dynamically extend
 | `cooldown_minutes` | `int` | `5` | Skip if user active recently |
 | `quiet_start` | `int` | `21` | Quiet start hour in `user_timezone` |
 | `quiet_end` | `int` | `8` | Quiet end hour in `user_timezone` |
-| `prompt` | `str` | default prompt | Multiline default prompt references `MAINMEMORY.md` and `cron_tasks/` |
+| `prompt` | `str` | default prompt | Multiline default prompt checks `cron_tasks/` and permits explicit vault search when needed |
 | `ack_token` | `str` | `"HEARTBEAT_OK"` | Suppression token |
 | `group_targets` | `list[HeartbeatTarget]` | placeholder list | Runtime default is one disabled placeholder target so new configs show the expected shape immediately |
 
@@ -354,7 +355,7 @@ Each entry in `group_targets` identifies a specific group chat (and optional top
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | `bool` | `true` | Enables the post-stream silent flush pipeline |
+| `enabled` | `bool` | `false` | Enables the post-stream silent flush pipeline; local default is off to avoid extra model turns and implicit writes |
 | `flush_prompt` | `str` | default prompt | Prompt appended as a silent follow-up turn to capture durable facts before memory compaction |
 | `dedup_seconds` | `int` | `300` | In-memory dedup window per `SessionKey` to avoid repeated flushes on back-to-back compact boundaries |
 
@@ -375,19 +376,29 @@ Runtime behavior:
 Runtime behavior:
 
 - implemented as a normal message hook, not as a background observer
-- complements the always-on `MAINMEMORY_REMINDER` hook rather than replacing it
+- independent from the legacy reminder, which is registered only when `memory_context.enabled=true`
 
 ## `MemoryCompactionConfig`
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `enabled` | `bool` | `true` | Enables LLM-driven compaction after a flush when file size threshold is exceeded |
+| `enabled` | `bool` | `false` | Enables LLM-driven compaction after a flush when file size threshold is exceeded |
 | `trigger_lines` | `int` | `70` | `MAINMEMORY.md` line-count threshold that makes compaction eligible |
 | `target_lines` | `int` | `40` | Target post-compaction size used in the prompt template |
 | `preserve_recency_days` | `int` | `14` | Recent entries to preserve verbatim during compaction |
 | `prompt` | `str` | default prompt template | Formatted at runtime with `target_lines` and `preserve_days` |
 
 Compaction runs only after a successful flush and reuses the same provider session as the user turn.
+
+## `MemoryContextConfig`
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Opts into new-session `MAINMEMORY.md` injection and the periodic reminder hook for upstream compatibility |
+
+The default continuity path is provider-native session state plus explicit,
+source-backed vault search. This switch does not enable reflection, flush, or
+compaction; those remain separate opt-in controls.
 
 ## `ImageConfig`
 

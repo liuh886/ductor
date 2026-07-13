@@ -96,6 +96,7 @@ interrupted_body = "Uma tarefa foi interrompida durante a reinicialização.\n`{
 
 [memory]
 header = "**Memória Principal**"
+disabled = "A memória automática legada está desativada. O conhecimento duradouro é consultado no vault apenas quando necessário."
 empty = "Vazia. O agente vai construir a memória conforme vocês interagem."
 empty_tip = "*Dica: Peça ao seu agente para \"lembrar\" algo para começar.*"
 filled_tip = "*Dica: O agente lê e atualiza isso automaticamente.*"

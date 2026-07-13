@@ -96,6 +96,7 @@ interrupted_body = "Une tâche a été interrompue pendant le redémarrage.\n`{p
 
 [memory]
 header = "**Mémoire principale**"
+disabled = "La mémoire automatique héritée est désactivée. Les connaissances durables sont consultées dans le vault uniquement si nécessaire."
 empty = "Vide. L'agent construira sa mémoire au fil de vos échanges."
 empty_tip = "*Astuce : Demande à ton agent de \"retenir\" quelque chose pour commencer.*"
 filled_tip = "*Astuce : L'agent lit et met à jour ceci automatiquement.*"

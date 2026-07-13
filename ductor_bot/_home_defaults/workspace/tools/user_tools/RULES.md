@@ -27,5 +27,5 @@ clear progress/check commands.
 
 ## Memory
 
-When creating scripts that indicate recurring user workflows or preferences,
-update `memory_system/MAINMEMORY.md` silently.
+When scripts imply durable workflows or preferences, persist them in the relevant
+vault/project Markdown note only when explicitly requested.

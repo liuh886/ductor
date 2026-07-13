@@ -1,8 +1,10 @@
-"""Tests for multiagent/shared_knowledge.py: marker injection and migration."""
+"""Tests for multiagent/shared_knowledge.py: legacy projection cleanup."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -11,9 +13,12 @@ from ductor_bot.multiagent.shared_knowledge import (
     _LEGACY_END,
     _LEGACY_START,
     _START_MARKER,
+    SharedKnowledgeSync,
     _find_markers,
-    _sync_agent_io,
+    _remove_agent_projection_io,
+    _strip_shared_projection,
 )
+from ductor_bot.multiagent.supervisor import AgentSupervisor
 
 
 class TestFindMarkers:
@@ -41,15 +46,21 @@ class TestFindMarkers:
     def test_returns_none_for_empty_string(self) -> None:
         assert _find_markers("") is None
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            f"{_START_MARKER}\nmissing end",
+            f"{_END_MARKER}\n{_START_MARKER}",
+            f"{_LEGACY_START}\nmissing end",
+            f"{_LEGACY_END}\n{_LEGACY_START}",
+        ],
+    )
+    def test_returns_none_for_incomplete_or_reversed_markers(self, text: str) -> None:
+        assert _find_markers(text) is None
 
-class TestSyncAgentIO:
-    """Test _sync_agent_io() file operations."""
 
-    @pytest.fixture
-    def shared_path(self, tmp_path: Path) -> Path:
-        p = tmp_path / "SHAREDMEMORY.md"
-        p.write_text("Shared content here", encoding="utf-8")
-        return p
+class TestRemoveAgentProjectionIO:
+    """Test cleanup of old SHAREDMEMORY projections in MAINMEMORY files."""
 
     @pytest.fixture
     def mainmemory_path(self, tmp_path: Path) -> Path:
@@ -58,82 +69,79 @@ class TestSyncAgentIO:
         p.write_text("# Main Memory\nAgent notes.\n", encoding="utf-8")
         return p
 
-    def test_injects_into_file_without_markers(
-        self, shared_path: Path, mainmemory_path: Path
-    ) -> None:
-        result = _sync_agent_io(shared_path, mainmemory_path)
-        assert result is True
-
-        content = mainmemory_path.read_text()
-        assert _START_MARKER in content
-        assert _END_MARKER in content
-        assert "Shared content here" in content
-        assert "# Main Memory" in content
-
-    def test_replaces_existing_markers(self, shared_path: Path, mainmemory_path: Path) -> None:
-        # First injection
-        _sync_agent_io(shared_path, mainmemory_path)
-
-        # Update shared content
-        shared_path.write_text("Updated shared content", encoding="utf-8")
-        result = _sync_agent_io(shared_path, mainmemory_path)
-        assert result is True
-
-        content = mainmemory_path.read_text()
-        assert "Updated shared content" in content
-        assert "Shared content here" not in content
-        # Only one start/end marker pair
-        assert content.count(_START_MARKER) == 1
-        assert content.count(_END_MARKER) == 1
-
-    def test_migrates_legacy_markers(self, shared_path: Path, mainmemory_path: Path) -> None:
-        """Legacy markers are replaced with new-format markers on sync."""
-        legacy_content = f"# Main Memory\n{_LEGACY_START}\nold content\n{_LEGACY_END}\n"
-        mainmemory_path.write_text(legacy_content, encoding="utf-8")
-
-        result = _sync_agent_io(shared_path, mainmemory_path)
-        assert result is True
-
-        content = mainmemory_path.read_text()
-        assert _START_MARKER in content
-        assert _END_MARKER in content
-        assert _LEGACY_START not in content
-        assert _LEGACY_END not in content
-        assert "Shared content here" in content
-
-    def test_returns_false_when_shared_missing(self, tmp_path: Path, mainmemory_path: Path) -> None:
-        missing = tmp_path / "does_not_exist.md"
-        assert _sync_agent_io(missing, mainmemory_path) is False
-
-    def test_returns_false_when_shared_empty(self, tmp_path: Path, mainmemory_path: Path) -> None:
-        empty_shared = tmp_path / "empty.md"
-        empty_shared.write_text("", encoding="utf-8")
-        assert _sync_agent_io(empty_shared, mainmemory_path) is False
-
-    def test_returns_false_when_mainmemory_missing(self, shared_path: Path, tmp_path: Path) -> None:
-        missing = tmp_path / "missing_mainmem.md"
-        assert _sync_agent_io(shared_path, missing) is False
-
-    def test_returns_false_when_content_unchanged(
-        self, shared_path: Path, mainmemory_path: Path
-    ) -> None:
-        """Second sync with same content returns False (no write)."""
-        _sync_agent_io(shared_path, mainmemory_path)
-        result = _sync_agent_io(shared_path, mainmemory_path)
+    def test_returns_false_without_projection(self, mainmemory_path: Path) -> None:
+        result = _remove_agent_projection_io(mainmemory_path)
         assert result is False
 
-    def test_preserves_content_before_and_after_markers(
-        self, shared_path: Path, mainmemory_path: Path
-    ) -> None:
-        """Content before and after markers is preserved."""
+        content = mainmemory_path.read_text(encoding="utf-8")
+        assert "# Main Memory" in content
+
+    def test_removes_existing_projection(self, mainmemory_path: Path) -> None:
         mainmemory_path.write_text(
-            f"# Before\n{_START_MARKER}\nold\n{_END_MARKER}\n# After\n",
+            f"# Main Memory\nAgent notes.\n\n{_START_MARKER}\nShared content\n{_END_MARKER}\n",
             encoding="utf-8",
         )
-        result = _sync_agent_io(shared_path, mainmemory_path)
+        result = _remove_agent_projection_io(mainmemory_path)
         assert result is True
 
-        content = mainmemory_path.read_text()
-        assert content.startswith("# Before\n")
+        content = mainmemory_path.read_text(encoding="utf-8")
+        assert "Agent notes." in content
+        assert "Shared content" not in content
+        assert _START_MARKER not in content
+        assert _END_MARKER not in content
+
+    def test_removes_legacy_markers(self, mainmemory_path: Path) -> None:
+        legacy_content = f"# Main Memory\n{_LEGACY_START}\nold content\n{_LEGACY_END}\n# After\n"
+        mainmemory_path.write_text(legacy_content, encoding="utf-8")
+
+        result = _remove_agent_projection_io(mainmemory_path)
+        assert result is True
+
+        content = mainmemory_path.read_text(encoding="utf-8")
+        assert _LEGACY_START not in content
+        assert _LEGACY_END not in content
+        assert "old content" not in content
         assert "# After" in content
-        assert "Shared content here" in content
+
+    def test_returns_false_when_mainmemory_missing(self, tmp_path: Path) -> None:
+        missing = tmp_path / "missing_mainmem.md"
+        assert _remove_agent_projection_io(missing) is False
+
+    def test_strip_projection_preserves_content_before_and_after(self) -> None:
+        text = f"# Before\n{_START_MARKER}\nold\n{_END_MARKER}\n# After\n"
+
+        updated, changed = _strip_shared_projection(text)
+
+        assert changed is True
+        assert updated == "# Before\n\n# After\n"
+
+    def test_strip_projection_preserves_malformed_content(self) -> None:
+        text = f"# Before\n{_END_MARKER}\ncontent\n{_START_MARKER}\n# After\n"
+
+        updated, changed = _strip_shared_projection(text)
+
+        assert changed is False
+        assert updated == text
+
+
+async def test_start_seeds_operations_and_cleans_projection_once(tmp_path: Path) -> None:
+    shared_path = tmp_path / "SHAREDMEMORY.md"
+    mainmemory_path = tmp_path / "agent" / "MAINMEMORY.md"
+    mainmemory_path.parent.mkdir()
+    mainmemory_path.write_text(
+        f"# Main Memory\n{_START_MARKER}\nobsolete\n{_END_MARKER}\n",
+        encoding="utf-8",
+    )
+    supervisor = cast(
+        "AgentSupervisor",
+        SimpleNamespace(
+            stacks={"worker": SimpleNamespace(paths=SimpleNamespace(mainmemory_path=mainmemory_path))}
+        ),
+    )
+    sync = SharedKnowledgeSync(shared_path, supervisor)
+
+    await sync.start()
+    await sync.stop()
+
+    assert "Shared Operations" in shared_path.read_text(encoding="utf-8")
+    assert "obsolete" not in mainmemory_path.read_text(encoding="utf-8")

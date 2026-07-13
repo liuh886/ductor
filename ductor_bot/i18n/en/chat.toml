@@ -97,6 +97,7 @@ interrupted_body = "A task was interrupted during restart.\n`{preview}`\nPlease 
 
 [memory]
 header = "**Main Memory**"
+disabled = "Legacy automatic memory is disabled. Durable knowledge is retrieved from the vault only when needed."
 empty = "Empty. The agent will build memory as you interact."
 empty_tip = "*Tip: Ask your agent to \"remember\" something to get started.*"
 filled_tip = "*Tip: The agent reads and updates this automatically.*"
