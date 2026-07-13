@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 from aiogram.types import Message
 
 if TYPE_CHECKING:
@@ -174,6 +174,127 @@ class TestEditStreamEditor:
         await editor.append_text("Retry content")
         await editor.finalize("")
         assert bot.edit_message_text.call_count >= 2
+
+    async def test_create_network_error_is_retried_on_finalize(self) -> None:
+        bot, editor = _make_editor()
+        sent_msg = MagicMock(spec=Message)
+        type(sent_msg).message_id = PropertyMock(return_value=43)
+        bot.send_message = AsyncMock(
+            side_effect=[
+                TelegramNetworkError(MagicMock(), "network down"),
+                sent_msg,
+            ]
+        )
+
+        await editor.append_text("Complete answer")
+        await editor.finalize("Complete answer")
+
+        assert editor.has_content is True
+        assert bot.send_message.await_count == 2
+
+    async def test_edit_network_error_is_retried_on_finalize(self) -> None:
+        bot, editor = _make_editor()
+        await editor.append_text("First")
+        bot.edit_message_text = AsyncMock(
+            side_effect=[TelegramNetworkError(MagicMock(), "network down"), None]
+        )
+
+        await editor.append_text(" and final")
+        await editor.finalize("First and final")
+
+        assert bot.edit_message_text.await_count == 2
+        assert "final" in bot.edit_message_text.await_args_list[-1].kwargs["text"]
+
+    async def test_network_fallback_still_delivers_complete_final_text(self) -> None:
+        bot, editor = _make_editor(max_failures=1)
+        await editor.append_text("First")
+        bot.edit_message_text = AsyncMock(
+            side_effect=TelegramNetworkError(MagicMock(), "network down")
+        )
+
+        await editor.append_text(" and final")
+        await editor.finalize("First and final")
+
+        assert editor._s.fallen_back is True
+        assert bot.send_message.await_count == 2
+        assert "First and final" in bot.send_message.await_args_list[-1].kwargs["text"]
+
+    async def test_plain_create_fallback_keeps_future_edits_plain(self) -> None:
+        bot, editor = _make_editor()
+        sent_msg = MagicMock(spec=Message)
+        type(sent_msg).message_id = PropertyMock(return_value=44)
+        bot.send_message = AsyncMock(
+            side_effect=[
+                TelegramBadRequest(MagicMock(), "can't parse entities"),
+                sent_msg,
+            ]
+        )
+
+        await editor.append_text("**Bold**")
+        plain_create = bot.send_message.await_args_list[-1]
+        assert plain_create.kwargs["parse_mode"] is None
+        assert plain_create.kwargs["text"] == "Bold"
+
+        await editor.append_text(" and final")
+        last_edit = bot.edit_message_text.await_args_list[-1]
+        assert last_edit.kwargs["parse_mode"] is None
+        assert "<b>" not in last_edit.kwargs["text"]
+
+    async def test_finalize_time_fallback_sends_complete_final_text(self) -> None:
+        bot, editor = _make_editor(edit_interval=999, max_failures=1)
+        await editor.append_text("First")
+        bot.edit_message_text = AsyncMock(
+            side_effect=TelegramBadRequest(MagicMock(), "can't parse entities")
+        )
+
+        await editor.append_text(" and final")
+        await editor.finalize("First and final")
+
+        assert editor._s.fallen_back is True
+        assert bot.send_message.await_count == 2
+        assert bot.send_message.await_args_list[-1].kwargs["text"] == "First and final"
+
+    async def test_fallback_final_requires_all_chunks_to_succeed(self) -> None:
+        bot, editor = _make_editor()
+        sent_msg = MagicMock(spec=Message)
+        type(sent_msg).message_id = PropertyMock(return_value=45)
+        await editor.append_text("Initial")
+        editor._s.fallen_back = True
+        final_text = "A" * 5000
+        bot.send_message = AsyncMock(
+            side_effect=[
+                sent_msg,
+                TelegramNetworkError(MagicMock(), "network down"),
+            ]
+        )
+
+        await editor.finalize(final_text)
+
+        assert bot.send_message.await_count == 2
+        assert editor._s.fallback_finalized is False
+
+        bot.send_message = AsyncMock(return_value=sent_msg)
+        await editor.finalize(final_text)
+
+        assert bot.send_message.await_count == 2
+        assert editor._s.fallback_finalized is True
+
+    async def test_create_retry_after_waits_and_retries_once(self) -> None:
+        bot, editor = _make_editor()
+        sent_msg = MagicMock(spec=Message)
+        type(sent_msg).message_id = PropertyMock(return_value=46)
+        retry = TelegramRetryAfter(MagicMock(), "rate limited", retry_after=3)
+        bot.send_message = AsyncMock(side_effect=[retry, sent_msg])
+
+        with patch(
+            "ductor_bot.messenger.telegram.edit_streaming.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await editor.append_text("Complete answer")
+
+        sleep.assert_awaited_once_with(3)
+        assert bot.send_message.await_count == 2
+        assert editor.has_content is True
 
     async def test_has_content_after_tool(self) -> None:
         _, editor = _make_editor()

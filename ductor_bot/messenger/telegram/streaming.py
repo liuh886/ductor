@@ -9,13 +9,14 @@ based on configuration.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import re
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 
 from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram.buttons import extract_buttons
@@ -80,6 +81,8 @@ class StreamEditor:
         self._messages_sent = 0
         self._text_messages_sent = 0
         self._last_msg: Message | None = None
+        self._transient_send_failure = False
+        self._text_delivery_failed = False
 
     @property
     def has_content(self) -> bool:
@@ -89,6 +92,8 @@ class StreamEditor:
     async def append_text(self, text: str) -> None:
         """Format chunk as HTML and send as new message."""
         if not text.strip():
+            return
+        if self._text_delivery_failed:
             return
         formatted = markdown_to_telegram_html(text)
         chunks = split_html_message(formatted)
@@ -100,6 +105,9 @@ class StreamEditor:
                 plain_offset += len(_html_to_plain_text(chunk))
                 continue
 
+            if self._transient_send_failure:
+                self._text_delivery_failed = True
+                break
             # HTML and source Markdown have different lengths, so retry the complete
             # undelivered visible suffix instead of slicing the original source chunk.
             remaining = plain_text[plain_offset:]
@@ -108,6 +116,9 @@ class StreamEditor:
                     remaining[offset : offset + TELEGRAM_MSG_LIMIT], parse_mode=None
                 ):
                     self._text_messages_sent += 1
+                else:
+                    self._text_delivery_failed = True
+                    break
             break
 
     async def append_tool(self, tool_name: str) -> None:
@@ -124,7 +135,12 @@ class StreamEditor:
     async def finalize(self, full_text: str) -> None:
         """Ensure a final body exists, then attach its button keyboard."""
         cleaned_text, markup = extract_buttons(full_text)
-        if self._text_messages_sent == 0:
+        if self._text_delivery_failed and cleaned_text.strip():
+            self._text_delivery_failed = False
+            await self.append_text(cleaned_text)
+            if self._text_delivery_failed:
+                return
+        elif self._text_messages_sent == 0:
             if self._messages_sent > 0 and cleaned_text.strip():
                 await self.append_text(cleaned_text)
             elif markup is not None:
@@ -140,7 +156,7 @@ class StreamEditor:
                 message_id=self._last_msg.message_id,
                 reply_markup=markup,
             )
-        except TelegramBadRequest:
+        except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter):
             logger.warning("Failed to attach button keyboard")
 
     async def _send(
@@ -155,16 +171,23 @@ class StreamEditor:
         if not display.strip():
             return False
 
-        try:
+        async def deliver() -> Message:
             if self._messages_sent == 0 and self._reply_to:
-                msg = await self._reply_to.answer(display, parse_mode=parse_mode)
-            else:
-                msg = await self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=display,
-                    parse_mode=parse_mode,
-                    message_thread_id=self._thread_id,
-                )
+                return await self._reply_to.answer(display, parse_mode=parse_mode)
+            return await self._bot.send_message(
+                chat_id=self._chat_id,
+                text=display,
+                parse_mode=parse_mode,
+                message_thread_id=self._thread_id,
+            )
+
+        self._transient_send_failure = False
+        try:
+            try:
+                msg = await deliver()
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after)
+                msg = await deliver()
             self._last_msg = msg
             self._messages_sent += 1
             return True  # noqa: TRY300
@@ -176,6 +199,10 @@ class StreamEditor:
                 fallback = (raw_fallback or text)[:TELEGRAM_MSG_LIMIT]
                 return await self._send(fallback, parse_mode=None)
             logger.exception("Failed to send stream chunk even as plain text")
+            return False
+        except (TelegramNetworkError, TelegramRetryAfter) as exc:
+            self._transient_send_failure = True
+            logger.warning("Telegram stream send failed: %s", exc)
             return False
 
 

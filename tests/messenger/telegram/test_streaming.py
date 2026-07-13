@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from aiogram.enums import ParseMode
 from aiogram.types import Message
@@ -383,3 +383,91 @@ class TestStreamEditorThreadId:
         await editor.append_text("First")
         await editor.append_text("Second")
         assert bot.send_message.call_args.kwargs["message_thread_id"] == 77
+
+
+class TestStreamEditorTransientFailures:
+    async def test_network_error_retries_complete_text_on_finalize(self) -> None:
+        from aiogram.exceptions import TelegramNetworkError
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        bot.send_message = AsyncMock(
+            side_effect=[
+                TelegramNetworkError(MagicMock(), "network down"),
+                sent_msg,
+            ]
+        )
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_text("Complete answer")
+        await editor.finalize("Complete answer")
+
+        assert editor.has_content is True
+        assert bot.send_message.await_count == 2
+        assert bot.send_message.await_args_list[-1].kwargs["text"] == "Complete answer"
+
+    async def test_partial_multi_chunk_failure_retries_complete_final_text(self) -> None:
+        from aiogram.exceptions import TelegramNetworkError
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        final_text = "A" * 5000
+        bot.send_message = AsyncMock(
+            side_effect=[
+                sent_msg,
+                TelegramNetworkError(MagicMock(), "network down"),
+                sent_msg,
+                sent_msg,
+            ]
+        )
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_text(final_text)
+        await editor.finalize(final_text)
+
+        assert bot.send_message.await_count == 4
+        final_calls = bot.send_message.await_args_list[-2:]
+        assert "".join(call.kwargs["text"] for call in final_calls) == final_text
+
+    async def test_retry_after_waits_and_retries_once(self) -> None:
+        from aiogram.exceptions import TelegramRetryAfter
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        retry = TelegramRetryAfter(MagicMock(), "rate limited", retry_after=10)
+        bot.send_message = AsyncMock(side_effect=[retry, sent_msg])
+
+        editor = StreamEditor(bot, chat_id=1)
+        with patch(
+            "ductor_bot.messenger.telegram.streaming.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await editor.append_text("Complete answer")
+
+        sleep.assert_awaited_once_with(10)
+        assert editor.has_content is True
+        assert bot.send_message.await_count == 2
+
+    async def test_repeated_retry_after_is_bounded(self) -> None:
+        from aiogram.exceptions import TelegramRetryAfter
+
+        bot = MagicMock()
+        retry = TelegramRetryAfter(MagicMock(), "rate limited", retry_after=10)
+        bot.send_message = AsyncMock(
+            side_effect=[
+                retry,
+                TelegramRetryAfter(MagicMock(), "still limited", retry_after=20),
+                MagicMock(spec=Message),
+            ]
+        )
+
+        editor = StreamEditor(bot, chat_id=1)
+        with patch(
+            "ductor_bot.messenger.telegram.streaming.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await editor.append_text("Complete answer")
+
+        sleep.assert_awaited_once_with(10)
+        assert editor.has_content is False
+        assert bot.send_message.await_count == 2
