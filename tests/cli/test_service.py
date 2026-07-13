@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.cli.service import CLIService, CLIServiceConfig
-from ductor_bot.cli.stream_events import StreamEvent, ToolUseEvent
+from ductor_bot.cli.stream_events import AssistantTextDelta, ResultEvent, StreamEvent, ToolUseEvent
 from ductor_bot.cli.types import AgentRequest, CLIResponse
 from ductor_bot.config import ModelRegistry
 
@@ -70,7 +70,7 @@ async def test_execute_error_response() -> None:
 async def test_execute_streaming_success() -> None:
     svc = _make_service()
 
-    from ductor_bot.cli.stream_events import AssistantTextDelta, ResultEvent, ThinkingEvent
+    from ductor_bot.cli.stream_events import ThinkingEvent
 
     async def fake_stream(*_args: Any, **_kwargs: Any) -> AsyncGenerator[StreamEvent, None]:
         yield ThinkingEvent(type="assistant", text="considering")
@@ -108,6 +108,82 @@ async def test_execute_streaming_success() -> None:
     assert resp.session_id == "sess-1"
     assert thinking == ["considering"]
     assert deltas == ["Hello ", "world!"]
+
+
+async def _execute_stream_with_final(
+    streamed_text: str,
+    final_text: str,
+    *,
+    is_error: bool = False,
+) -> tuple[list[str], str]:
+    svc = _make_service()
+
+    async def fake_stream(*_args: Any, **_kwargs: Any) -> AsyncGenerator[StreamEvent, None]:
+        if streamed_text:
+            yield AssistantTextDelta(type="assistant", text=streamed_text)
+        yield ResultEvent(type="result", result=final_text, is_error=is_error)
+
+    deltas: list[str] = []
+
+    async def on_delta(text: str) -> None:
+        deltas.append(text)
+
+    with patch("ductor_bot.cli.service.create_cli") as mock_create:
+        mock_cli = MagicMock()
+        mock_cli.send_streaming = fake_stream
+        mock_create.return_value = mock_cli
+        response = await svc.execute_streaming(
+            AgentRequest(prompt="hello", chat_id=1),
+            on_text_delta=on_delta,
+        )
+
+    return deltas, response.result
+
+
+async def test_execute_streaming_delivers_distinct_final_after_progress() -> None:
+    deltas, result = await _execute_stream_with_final(
+        "I will inspect the background result.",
+        "The checks completed successfully.",
+    )
+
+    assert deltas == [
+        "I will inspect the background result.",
+        "The checks completed successfully.",
+    ]
+    assert result == "The checks completed successfully."
+
+
+async def test_execute_streaming_delivers_only_missing_final_suffix() -> None:
+    deltas, result = await _execute_stream_with_final("Hello ", "Hello world!")
+
+    assert deltas == ["Hello ", "world!"]
+    assert result == "Hello world!"
+
+
+async def test_execute_streaming_does_not_duplicate_delivered_final() -> None:
+    deltas, result = await _execute_stream_with_final("Final answer", "Final answer")
+
+    assert deltas == ["Final answer"]
+    assert result == "Final answer"
+
+
+async def test_execute_streaming_does_not_duplicate_contained_final() -> None:
+    streamed = "Progress update.\n\nFinal answer"
+    deltas, result = await _execute_stream_with_final(streamed, "Final answer")
+
+    assert deltas == [streamed]
+    assert result == "Final answer"
+
+
+async def test_execute_streaming_does_not_inject_error_result_as_text() -> None:
+    deltas, result = await _execute_stream_with_final(
+        "Progress before failure.",
+        "Context length exceeded.",
+        is_error=True,
+    )
+
+    assert deltas == ["Progress before failure."]
+    assert result == "Context length exceeded."
 
 
 async def test_execute_streaming_fallback_on_error() -> None:
