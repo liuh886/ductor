@@ -76,6 +76,24 @@ def test_webhook_tools_py_files_are_zone2(temp_workspace):
     assert deployed_tool.read_text() == "# version 2 - UPDATED"
 
 
+def test_agent_tools_py_files_are_zone2(temp_workspace):
+    """Framework-owned agent tools are updated on workspace reinitialization."""
+    home_defaults, ductor_home = temp_workspace
+    agent_tools = home_defaults / "workspace" / "tools" / "agent_tools"
+    agent_tools.mkdir(parents=True)
+    tool_file = agent_tools / "vault_search.py"
+    tool_file.write_text("# version 1")
+
+    _walk_and_copy(home_defaults, ductor_home)
+    deployed_tool = ductor_home / "workspace" / "tools" / "agent_tools" / "vault_search.py"
+    deployed_tool.write_text("# user-modified")
+    tool_file.write_text("# version 2")
+
+    _walk_and_copy(home_defaults, ductor_home)
+
+    assert deployed_tool.read_text() == "# version 2"
+
+
 def test_user_tools_py_files_are_zone3(temp_workspace):
     """Test that .py files in tools/user_tools/ are NOT overwritten (Zone 3)."""
     home_defaults, ductor_home = temp_workspace
