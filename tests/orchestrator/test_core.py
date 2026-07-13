@@ -253,6 +253,29 @@ async def test_abort_returns_count(orch: Orchestrator) -> None:
     assert killed == 0
 
 
+def test_hot_reload_preserves_agent_identity_and_mimo_wiring(
+    workspace: tuple[DuctorPaths, AgentConfig],
+) -> None:
+    paths, config = workspace
+    orchestrator = Orchestrator(
+        config,
+        paths,
+        agent_name="writer",
+        interagent_port=9123,
+    )
+    updated = config.model_copy(deep=True)
+    updated.cli_parameters.mimo = ["--debug"]
+    updated.mimo_api_key = "mimo-key"
+
+    orchestrator._on_config_hot_reload(updated, {"cli_parameters": updated.cli_parameters})
+
+    service = orchestrator._cli_service._config
+    assert service.agent_name == "writer"
+    assert service.interagent_port == 9123
+    assert service.mimo_api_key == "mimo-key"
+    assert service.mimo_cli_parameters == ("--debug",)
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator.create() -- async factory
 # ---------------------------------------------------------------------------

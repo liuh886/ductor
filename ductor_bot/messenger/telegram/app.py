@@ -995,9 +995,12 @@ class TelegramBot:
             elif p == "grok":
                 lines.append(t("session_help.grok_single"))
                 lines.append(t("session_help.grok_model"))
-            else:
+            elif p == "gemini":
                 lines.append(t("session_help.gemini_single"))
                 lines.append(t("session_help.gemini_model"))
+            else:
+                lines.append(t("session_help.default_provider"))
+                lines.append(t("session_help.explicit"))
         else:
             lines.append(t("session_help.default_provider"))
             if "claude" in providers:
@@ -1059,7 +1062,7 @@ class TelegramBot:
                 provider_override, model_override = resolved[0], resolved[1] or None
                 prompt = rest
                 # If key was a provider name, check for optional model after it
-                if key in ("claude", "codex", "gemini", "antigravity", "grok"):
+                if key in ("claude", "codex", "gemini", "mimo", "antigravity", "grok"):
                     model_match = re.match(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s+", prompt)
                     if model_match:
                         candidate = model_match.group(1).lower()

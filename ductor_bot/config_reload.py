@@ -62,7 +62,6 @@ _HOT_RELOADABLE: frozenset[str] = frozenset(
     }
 )
 
-
 def diff_configs(old: AgentConfig, new: AgentConfig) -> dict[str, tuple[Any, Any]]:
     """Compare top-level fields. Returns ``{field: (old_val, new_val)}`` for changes."""
     old_dump = old.model_dump(mode="json")

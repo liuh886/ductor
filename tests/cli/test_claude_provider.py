@@ -46,6 +46,7 @@ def _default_non_windows_cli(monkeypatch: pytest.MonkeyPatch) -> None:
 def _make_cli(
     monkeypatch: pytest.MonkeyPatch,
     *,
+    provider: str = "claude",
     model: str = "opus",
     docker_container: str = "",
     process_registry: ProcessRegistry | None = None,
@@ -55,7 +56,7 @@ def _make_cli(
     """Create a ClaudeCodeCLI with `which` stubbed out."""
     monkeypatch.setattr("ductor_bot.cli.claude_provider.which", lambda _: "/usr/bin/claude")
     cfg = CLIConfig(
-        provider="claude",
+        provider=provider,
         model=model,
         docker_container=docker_container,
         process_registry=process_registry,
@@ -191,6 +192,49 @@ class TestBuildCommand:
         cli = _make_cli(monkeypatch, reasoning_effort="")
         cmd = cli._build_command("go")
         assert "--effort" not in cmd
+
+    def test_effort_skipped_for_mimo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cli = _make_cli(
+            monkeypatch,
+            provider="mimo",
+            model="mimo-v2.5-pro",
+            reasoning_effort="high",
+        )
+        cmd = cli._build_command("go")
+        assert "--effort" not in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "project,local"
+
+    def test_mimo_docker_env_uses_main_ductor_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (tmp_path / ".env").write_text(
+            "MIMO_API_KEY=mimo-secret\nMIMO_BASE_URL=https://mimo.example/anthropic\n",
+            encoding="utf-8",
+        )
+        cli = _make_cli(
+            monkeypatch,
+            provider="mimo",
+            model="mimo-v2.5-pro",
+            working_dir=workspace,
+            docker_container="ductor-sandbox",
+        )
+
+        with monkeypatch.context() as env:
+            env.delenv("MIMO_API_KEY", raising=False)
+            env.delenv("MIMO_BASE_URL", raising=False)
+            assert cli._mimo_docker_env() == {
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_AUTH_TOKEN": "mimo-secret",
+                "ANTHROPIC_BASE_URL": "https://mimo.example/anthropic",
+                "ANTHROPIC_MODEL": "mimo-v2.5-pro",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "mimo-v2.5-pro",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.5-pro",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.5-pro",
+            }
 
     @pytest.mark.parametrize("model", ["haiku", "sonnet", "opus"])
     def test_model_variants(self, monkeypatch: pytest.MonkeyPatch, model: str) -> None:

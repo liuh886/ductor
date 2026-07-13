@@ -107,10 +107,12 @@ class CLIServiceConfig:
     permission_mode: str
     reasoning_effort: str = "medium"
     gemini_api_key: str | None = None
+    mimo_api_key: str | None = None
     docker_container: str = ""
     claude_cli_parameters: tuple[str, ...] = ()
     codex_cli_parameters: tuple[str, ...] = ()
     gemini_cli_parameters: tuple[str, ...] = ()
+    mimo_cli_parameters: tuple[str, ...] = ()
     antigravity_cli_parameters: tuple[str, ...] = ()
     grok_cli_parameters: tuple[str, ...] = ()
     agent_name: str = "main"
@@ -125,6 +127,8 @@ class CLIServiceConfig:
             return list(self.codex_cli_parameters)
         if provider == "gemini":
             return list(self.gemini_cli_parameters)
+        if provider == "mimo":
+            return list(self.mimo_cli_parameters)
         if provider == "antigravity":
             return list(self.antigravity_cli_parameters)
         if provider == "grok":
@@ -400,6 +404,7 @@ class CLIService:
                 permission_mode=self._config.permission_mode,
                 reasoning_effort=effort,
                 gemini_api_key=self._config.gemini_api_key,
+                mimo_api_key=self._config.mimo_api_key,
                 docker_container=self._config.docker_container,
                 process_registry=self._process_registry,
                 chat_id=request.chat_id,

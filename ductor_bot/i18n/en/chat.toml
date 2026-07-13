@@ -235,6 +235,7 @@ no_auth = "No authenticated providers found.\nRun `claude auth`, `codex auth`, o
 pick_provider = "Pick a provider:"
 select_claude = "Select Claude model:"
 select_gemini = "Select Gemini model:"
+select_mimo = "Select MiMo model:"
 select_codex = "Select Codex model:"
 select_antigravity = "Select Antigravity model:"
 select_grok = "Select Grok Build model:"

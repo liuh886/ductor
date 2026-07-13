@@ -12,6 +12,7 @@ from ductor_bot.cli.auth import (
     check_claude_auth,
     check_codex_auth,
     check_gemini_auth,
+    check_mimo_auth,
     format_age,
     gemini_uses_api_key_mode,
 )
@@ -34,6 +35,46 @@ def test_auth_result_is_authenticated() -> None:
 def test_auth_result_not_authenticated() -> None:
     result = AuthResult(provider="claude", status=AuthStatus.INSTALLED)
     assert result.is_authenticated is False
+
+
+def test_check_mimo_auth_from_ductor_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    env_file = tmp_path / ".ductor" / ".env"
+    env_file.parent.mkdir()
+    env_file.write_text("MIMO_API_KEY=mimo-secret\n", encoding="utf-8")
+
+    result = check_mimo_auth()
+
+    assert result.provider == "mimo"
+    assert result.status == AuthStatus.AUTHENTICATED
+
+
+def test_check_mimo_auth_rejects_nullish_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("MIMO_API_KEY", "null")
+
+    assert check_mimo_auth().status == AuthStatus.NOT_FOUND
+
+
+def test_check_mimo_auth_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("DUCTOR_HOME", raising=False)
+    monkeypatch.delenv("MIMO_API_KEY", raising=False)
+    config_path = tmp_path / ".ductor" / "config" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('{"mimo_api_key":"config-secret"}', encoding="utf-8")
+
+    assert check_mimo_auth().status == AuthStatus.AUTHENTICATED
 
 
 def test_auth_result_age_human_none() -> None:

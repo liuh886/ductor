@@ -234,6 +234,7 @@ no_auth = "Kein Provider authentifiziert.\nFühre `claude auth`, `codex auth` au
 pick_provider = "Wähle einen Provider:"
 select_claude = "Claude-Modell auswählen:"
 select_gemini = "Gemini-Modell auswählen:"
+select_mimo = "MiMo-Modell auswählen:"
 select_codex = "Codex-Modell auswählen:"
 select_antigravity = "Antigravity-Modell auswählen:"
 select_grok = "Grok Build-Modell auswählen:"

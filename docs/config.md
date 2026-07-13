@@ -84,6 +84,7 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `project_roots` | `dict[str, str]` | `{}` | Per-topic working-directory override: maps a topic key to a directory the CLI runs in instead of the shared workspace (see below) |
 | `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for file sends and API `GET /files`; unknown values fall back to workspace-only |
 | `gemini_api_key` | `str \| None` | `None` | Config fallback key injected for Gemini API-key mode |
+| `mimo_api_key` | `str \| None` | `None` | Optional MiMo key override; normal local use reads `MIMO_API_KEY` from `~/.ductor/.env` |
 | `transport` | `str` | `"telegram"` | Messaging transport: `"telegram"` or `"matrix"` |
 | `transports` | `list[str]` | `[]` | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
 | `telegram_token` | `str` | `""` | Telegram bot token (required when `transport=telegram`) |
@@ -182,6 +183,7 @@ Notes:
 | `claude` | `list[str]` | `[]` | Extra args appended to Claude CLI command |
 | `codex` | `list[str]` | `[]` | Extra args appended to Codex CLI command |
 | `gemini` | `list[str]` | `[]` | Extra args appended to Gemini CLI command |
+| `mimo` | `list[str]` | `[]` | Extra args appended to Claude Code when routed through the MiMo gateway |
 | `antigravity` | `list[str]` | `[]` | Extra args appended to Antigravity (`agy`) CLI command |
 | `grok` | `list[str]` | `[]` | Extra args appended to Grok Build (`grok`) CLI command |
 
@@ -601,7 +603,7 @@ Restart-required top-level fields:
 
 - `transport`, `telegram_token`, `matrix`
 - `docker`, `api`, `webhooks`
-- `ductor_home`, `log_level`, `gemini_api_key`, `notifications`, `transcription`, `timeouts`, `tasks`
+- `ductor_home`, `log_level`, `gemini_api_key`, `mimo_api_key`, `notifications`, `transcription`, `timeouts`, `tasks`
 - `cron_delivery_retry`, `cron_preflight` (both start/stop or re-gate observer behavior at startup)
 
 Restart classification is computed from `AgentConfig` top-level schema fields.
@@ -611,6 +613,7 @@ Restart classification is computed from `AgentConfig` top-level schema fields.
 `ModelRegistry` (`ductor_bot/config.py`):
 
 - Claude models are hardcoded: `haiku`, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, and `fable` (Claude CLI strips the `[1m]` suffix and sets the 1M-context beta header internally).
+- MiMo text-agent models are hardcoded: `mimo-v2.5-pro`, `mimo-v2.5-pro[1m]`, and `mimo-v2.5`. MiMo uses Claude Code with an Anthropic-compatible gateway, isolates user-level Claude gateway settings, and does not expose a reasoning-effort selector.
 - Gemini aliases are hardcoded: `auto`, `pro`, `flash`, `flash-lite`.
 - Runtime Gemini models are discovered from local Gemini CLI files at startup.
 - Antigravity has a built-in `antigravity-default` model and runtime model display names discovered from `agy models`.
@@ -620,6 +623,7 @@ Restart classification is computed from `AgentConfig` top-level schema fields.
 - Grok Build models have a hardcoded fallback list (`grok-4.5`, `grok-composer-2.5-fast`) and refresh from `grok models` at startup (discovery order preserved). The Telegram `/model` selector shows the discovery-ordered IDs via `get_grok_models_ordered()`.
 - Provider resolution (`provider_for(model_id)`):
   - Claude when in `CLAUDE_MODELS` or when model looks like `claude-*`,
+  - MiMo when in `MIMO_MODELS` or when model looks like `mimo-*`,
   - Gemini when in aliases/discovered set or when model looks like `gemini-*`/`auto-gemini-*`,
   - Antigravity when in the built-in/discovered set or when model looks like `antigravity-*`,
   - Grok when in `GROK_MODELS`/discovered set or when model looks like `grok-*`,

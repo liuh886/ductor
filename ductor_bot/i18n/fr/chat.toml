@@ -234,6 +234,7 @@ no_auth = "Aucun provider authentifié.\nLance `claude auth`, `codex auth` ou au
 pick_provider = "Choisis un provider :"
 select_claude = "Choisis un modèle Claude :"
 select_gemini = "Choisis un modèle Gemini :"
+select_mimo = "Choisis un modèle MiMo :"
 select_codex = "Choisis un modèle Codex :"
 select_antigravity = "Choisis un modèle Antigravity :"
 select_grok = "Choisis un modèle Grok Build :"

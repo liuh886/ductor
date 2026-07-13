@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 from ductor_bot.cli.param_resolver import TaskExecutionConfig
@@ -60,6 +61,35 @@ class TestBuildCmdWithTaskExecutionConfig:
         separator_idx = result.cmd.index("--")
         assert result.cmd.index("--fast") < separator_idx
         assert result.cmd.index("--verbose") < separator_idx
+
+    def test_build_cmd_mimo_maps_gateway_credentials(self, tmp_path: Path) -> None:
+        exec_config = TaskExecutionConfig(
+            provider="mimo",
+            model="mimo-v2.5-pro",
+            reasoning_effort="",
+            cli_parameters=[],
+            permission_mode="bypassPermissions",
+            working_dir=str(tmp_path),
+            file_access="all",
+            mimo_api_key="mimo-config-key",
+        )
+
+        with patch("ductor_bot.cron.execution.which", return_value="/usr/bin/claude"):
+            result = build_cmd(exec_config, "hello")
+
+        assert result is not None
+        assert result.cmd[result.cmd.index("--model") + 1] == "mimo-v2.5-pro"
+        assert "--effort" not in result.cmd
+        assert result.cmd[result.cmd.index("--setting-sources") + 1] == "project,local"
+        assert result.env_overrides == {
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_AUTH_TOKEN": "mimo-config-key",
+            "ANTHROPIC_BASE_URL": "https://token-plan-cn.xiaomimimo.com/anthropic",
+            "ANTHROPIC_MODEL": "mimo-v2.5-pro",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "mimo-v2.5-pro",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.5-pro",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.5-pro",
+        }
 
     def test_build_cmd_codex_basic(self) -> None:
         """Codex command builds correctly with TaskExecutionConfig."""

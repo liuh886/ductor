@@ -163,6 +163,20 @@ def _make_callback_query(
 # ---------------------------------------------------------------------------
 
 
+class TestSessionHelp:
+    @pytest.mark.parametrize("provider", ["mimo", "antigravity"])
+    def test_gateway_provider_is_not_described_as_gemini(self, provider: str) -> None:
+        tg_bot, _ = _make_tg_bot()
+        orch = _make_orchestrator()
+        orch.available_providers = frozenset({provider})
+        tg_bot._orchestrator = orch
+
+        help_text = tg_bot._build_session_help()
+
+        assert "@provider" in help_text
+        assert "Gemini" not in help_text
+
+
 class TestTelegramBotInit:
     def test_creates_dispatcher_and_router(self) -> None:
         tg_bot, _ = _make_tg_bot()

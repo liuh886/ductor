@@ -30,6 +30,11 @@ def test_create_cli_returns_gemini() -> None:
     assert isinstance(cli, GeminiCLI)
 
 
+def test_create_cli_returns_claude_backend_for_mimo() -> None:
+    cli = create_cli(CLIConfig(provider="mimo", model="mimo-v2.5-pro"))
+    assert isinstance(cli, ClaudeCodeCLI)
+
+
 def test_create_cli_unknown_provider_returns_claude() -> None:
     cli = create_cli(CLIConfig(provider="unknown"))
     assert isinstance(cli, ClaudeCodeCLI)

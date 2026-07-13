@@ -117,6 +117,8 @@ class CLIConfig:
     process_label: str = "main"
     # Gemini-specific auth fallback:
     gemini_api_key: str | None = None
+    # MiMo-specific auth for the Anthropic-compatible Claude Code gateway.
+    mimo_api_key: str | None = None
     # Extra CLI parameters (provider-specific):
     cli_parameters: list[str] = field(default_factory=list)
     # Transport identification (for routing results back):
@@ -216,6 +218,15 @@ def docker_wrap(
         from ductor_bot.infra.env_secrets import load_env_secrets
 
         merged_extra = dict(load_env_secrets(main_home / ".env"))
+        if config.provider == "mimo":
+            for key in (
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "MIMO_API_KEY",
+                "MIMO_BASE_URL",
+            ):
+                merged_extra.pop(key, None)
         # Remove keys already in host env (subprocess inherits docker binary env).
         for key in list(merged_extra):
             if key in os.environ:

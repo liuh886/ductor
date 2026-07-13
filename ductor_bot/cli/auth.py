@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from ductor_bot.cli.antigravity_runtime import antigravity_process_env
 from ductor_bot.cli.gemini_utils import find_gemini_cli
+from ductor_bot.cli.mimo import resolve_mimo_credentials
 from ductor_bot.config import NULLISH_TEXT_VALUES
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 
@@ -517,10 +518,18 @@ def _grok_cli_logged_in(binary: str) -> bool:
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
+def check_mimo_auth() -> AuthResult:
+    """Check whether a MiMo API key is available to the local runtime."""
+    key, _base_url = resolve_mimo_credentials()
+    status = AuthStatus.AUTHENTICATED if key else AuthStatus.NOT_FOUND
+    return AuthResult(provider="mimo", status=status)
+
+
 _CHECKERS: dict[str, Callable[[], AuthResult]] = {
     "claude": check_claude_auth,
     "codex": check_codex_auth,
     "gemini": check_gemini_auth,
+    "mimo": check_mimo_auth,
     "antigravity": check_antigravity_auth,
     "grok": check_grok_auth,
 }

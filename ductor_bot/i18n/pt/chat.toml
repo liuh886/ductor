@@ -234,6 +234,7 @@ no_auth = "Nenhum provider autenticado encontrado.\nExecute `claude auth`, `code
 pick_provider = "Escolha um provider:"
 select_claude = "Selecione o modelo Claude:"
 select_gemini = "Selecione o modelo Gemini:"
+select_mimo = "Selecione o modelo MiMo:"
 select_codex = "Selecione o modelo Codex:"
 select_antigravity = "Selecione o modelo Antigravity:"
 select_grok = "Selecione o modelo Grok Build:"
