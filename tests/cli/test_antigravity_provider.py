@@ -218,7 +218,7 @@ class TestAgentEnvInjection:
         assert env["DUCTOR_CHAT_ID"] == "77"
         assert env["DUCTOR_TRANSPORT"] == "tg"
         assert "DUCTOR_HOME" in env
-        assert "DUCTOR_SHARED_MEMORY_PATH" in env
+        assert "DUCTOR_SHARED_MEMORY_PATH" not in env
 
     async def test_send_streaming_injects_agent_env(self) -> None:
         cli = _make_cli(chat_id=77)
@@ -408,12 +408,7 @@ class TestSendUsesTranscript:
         _map_cwd(isolated_agy_state, cli._agy_workspace, "old")
         _write_transcript(isolated_agy_state, "old", [{**_PLANNER, "content": "stale"}])
         transcript = (
-            isolated_agy_state
-            / "brain"
-            / "old"
-            / ".system_generated"
-            / "logs"
-            / "transcript.jsonl"
+            isolated_agy_state / "brain" / "old" / ".system_generated" / "logs" / "transcript.jsonl"
         )
         original_stat = transcript.stat()
         proc = _make_oneshot_process(b"")

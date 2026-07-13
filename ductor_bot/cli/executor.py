@@ -101,14 +101,6 @@ def build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
     working_dir = Path(config.working_dir)
     ductor_home = working_dir.parent if working_dir.name == "workspace" else working_dir
     env["DUCTOR_HOME"] = str(ductor_home)
-    # Shared knowledge is always at the main agent's home level.
-    # For main: ductor_home itself. For sub-agents: ../../ from agents/<name>/.
-    if config.agent_name == "main":
-        env["DUCTOR_SHARED_MEMORY_PATH"] = str(ductor_home / "SHAREDMEMORY.md")
-    else:
-        # Sub-agent home is <main_home>/agents/<name>/
-        main_home = ductor_home.parent.parent
-        env["DUCTOR_SHARED_MEMORY_PATH"] = str(main_home / "SHAREDMEMORY.md")
     return env
 
 

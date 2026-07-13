@@ -130,6 +130,17 @@ class AgentSupervisor:
     def bus(self) -> InterAgentBus | None:
         return self._bus
 
+    async def _start_legacy_shared_knowledge(self) -> None:
+        """Start legacy shared-memory cleanup only when compatibility is enabled."""
+        if not self._main_config.memory_context.enabled:
+            return
+
+        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
+
+        shared_path = self._main_paths.ductor_home / "SHAREDMEMORY.md"
+        self._shared_knowledge = SharedKnowledgeSync(shared_path, self)
+        await self._shared_knowledge.start()
+
     async def start(self) -> int:
         """Start main agent + all sub-agents. Blocks until main agent exits."""
         self._running = True
@@ -178,12 +189,7 @@ class AgentSupervisor:
                 "TaskHub initialized (max_parallel=%d)", self._main_config.tasks.max_parallel
             )
 
-        # Initialize shared operations before any agent task can write legacy memory.
-        from ductor_bot.multiagent.shared_knowledge import SharedKnowledgeSync
-
-        shared_path = self._main_paths.ductor_home / "SHAREDMEMORY.md"
-        self._shared_knowledge = SharedKnowledgeSync(shared_path, self)
-        await self._shared_knowledge.start()
+        await self._start_legacy_shared_knowledge()
 
         # 1. Start main agent
         main_stack = await AgentStack.create(
@@ -195,7 +201,8 @@ class AgentSupervisor:
         self._health["main"] = AgentHealth(name="main")
         self._bus.register("main", main_stack)
         self._bus.set_async_result_handler("main", main_stack.bot.on_async_interagent_result)
-        await self._shared_knowledge.sync_agent(main_stack.paths.mainmemory_path)
+        if self._shared_knowledge:
+            await self._shared_knowledge.sync_agent(main_stack.paths.mainmemory_path)
 
         self._tasks["main"] = asyncio.create_task(
             self._supervised_run("main", main_stack),

@@ -17,16 +17,4 @@ Markdown file only when the user asks or the workflow explicitly requires it.
 Do not write to SQLite indexes or create a parallel database-only truth source.
 
 Do not store one-off requests, temporary debugging noise, or duplicate facts.
-
-## Shared Operations
-
-Use `SHAREDMEMORY.md` only for short cross-agent operational notes. Read it
-explicitly before cross-agent coordination or incident diagnosis:
-
-```bash
-python3 tools/agent_tools/edit_shared_knowledge.py --show
-python3 tools/agent_tools/edit_shared_knowledge.py --append "New shared fact"
-```
-
-Durable domain knowledge belongs in the zhihaol vault, not the shared alert
-channel. Never narrate internal retrieval mechanics to the user.
+Never narrate internal retrieval mechanics to the user.

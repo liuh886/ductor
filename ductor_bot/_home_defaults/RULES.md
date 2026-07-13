@@ -51,17 +51,6 @@ python3 workspace/tools/agent_tools/ask_agent_async.py TARGET_AGENT "Your messag
 Use async for tasks that may take longer. Use sync for quick lookups.
 See `workspace/tools/agent_tools/CLAUDE.md` for all agent management tools.
 
-### Shared Operations
-
-`~/.ductor/SHAREDMEMORY.md` is a short operational note shared across
-agents (ports, environment changes, active incidents). It is not copied into
-agent prompts and is not a durable project knowledge store.
-
-- For durable project/domain knowledge: use the relevant zhihaol vault note.
-- Before cross-agent coordination or incident diagnosis, read `SHAREDMEMORY.md`
-  explicitly with `workspace/tools/agent_tools/edit_shared_knowledge.py --show`.
-- Update it through the same tool; changes are not pushed into provider sessions.
-
 ## Operating Rules
 
 - Use tool scripts in `workspace/tools/` for cron/webhook lifecycle changes.
