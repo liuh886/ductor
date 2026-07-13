@@ -60,6 +60,7 @@ async def test_normal_returns_result(orch: Orchestrator) -> None:
 
 
 async def test_normal_new_session_injects_mainmemory(orch: Orchestrator) -> None:
+    orch._config.memory_context.enabled = True
     orch.paths.mainmemory_path.write_text("# Important Context")
     mock_execute = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute", mock_execute)
@@ -71,6 +72,17 @@ async def test_normal_new_session_injects_mainmemory(orch: Orchestrator) -> None
     assert request.append_system_prompt is not None
     assert "Important Context" in request.append_system_prompt
     assert request.resume_session is None  # New session
+
+
+async def test_normal_new_session_skips_mainmemory_by_default(orch: Orchestrator) -> None:
+    orch.paths.mainmemory_path.write_text("# Legacy Context")
+    mock_execute = AsyncMock(return_value=_mock_response())
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await normal(orch, SessionKey(chat_id=1), "Hello")
+
+    request = mock_execute.call_args[0][0]
+    assert request.append_system_prompt is None
 
 
 async def test_normal_resume_session_no_append(orch: Orchestrator) -> None:

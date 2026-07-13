@@ -95,6 +95,7 @@ interrupted_body = "Sebuah tugas terputus saat restart.\n`{preview}`\nSilakan ki
 
 [memory]
 header = "**Memori Utama**"
+disabled = "Memori otomatis lama dinonaktifkan. Pengetahuan jangka panjang diambil dari vault hanya saat diperlukan."
 empty = "Kosong. Agen akan membangun memori saat Anda berinteraksi."
 empty_tip = "*Tips: Minta agen Anda untuk \"mengingat\" sesuatu untuk memulai.*"
 filled_tip = "*Tips: Agen membaca dan memperbarui ini secara otomatis.*"

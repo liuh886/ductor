@@ -349,11 +349,17 @@ class TestStopAll:
         main_stack.bot = MagicMock()
         main_stack.bot.on_async_interagent_result = AsyncMock()
         main_stack.is_main = True
+        main_stack.paths.mainmemory_path = Path("MAINMEMORY.md")
+        startup_order: list[str] = []
 
         # stack.run() must block forever (simulating normal polling)
         async def _block_forever() -> int:
+            startup_order.append("provider")
             await asyncio.sleep(9999)
             return 0
+
+        async def _record_cleanup(_path: Path) -> None:
+            startup_order.append("memory-cleanup")
 
         main_stack.run = _block_forever
 
@@ -375,12 +381,14 @@ class TestStopAll:
             mock_sks = MagicMock()
             mock_sks.start = AsyncMock()
             mock_sks.stop = AsyncMock()
+            mock_sks.sync_agent = AsyncMock(side_effect=_record_cleanup)
             mock_sks_cls.return_value = mock_sks
 
             task = asyncio.create_task(supervisor.start())
             # Let start() reach _main_done.wait()
             await asyncio.sleep(0.05)
             assert not task.done()
+            assert startup_order == ["memory-cleanup", "provider"]
 
             # Simulate SIGINT: cancel the task (same as _request_shutdown)
             task.cancel()

@@ -149,8 +149,8 @@ Do not edit task-folder `CLAUDE.md`, `AGENTS.md`, or `GEMINI.md` manually.
 
 ## After Cron Setup
 
-Update `memory_system/MAINMEMORY.md` silently with inferred preference signals
-from the user's requested automation (not just "created job").
+Persist durable automation preferences in the relevant vault/project Markdown
+note only when the user explicitly requests or the workflow requires it.
 
 ## Pitfalls
 

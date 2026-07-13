@@ -45,4 +45,5 @@ No tool script needed — just create the file.
 ## Output and Memory
 
 - Save user deliverables in `../output_to_user/`.
-- Update `../memory_system/MAINMEMORY.md` silently for durable user facts/preferences.
+- Persist durable user facts/preferences in the relevant vault/project Markdown
+  note only when explicitly requested.

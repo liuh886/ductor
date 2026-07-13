@@ -118,7 +118,7 @@ async def test_memory_flusher_runs_compaction_when_file_exceeds_threshold(
     flusher, cli = _make_flusher(
         tmp_path,
         mainmemory_lines=80,
-        compact_cfg=MemoryCompactionConfig(trigger_lines=70, target_lines=40),
+        compact_cfg=MemoryCompactionConfig(enabled=True, trigger_lines=70, target_lines=40),
     )
     key = SessionKey(chat_id=101)
     session = _session_with_id("sess-abc")
@@ -182,6 +182,7 @@ async def test_memory_flusher_falls_back_on_bad_prompt_placeholder(
     propagate up through ``maybe_flush`` and suppress the user's real reply.
     """
     bogus_cfg = MemoryCompactionConfig(
+        enabled=True,
         trigger_lines=70,
         target_lines=40,
         prompt="## COMPACT\nrewrite memory {memroy_typo} to {target_lines} lines.",

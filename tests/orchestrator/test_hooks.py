@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ductor_bot.cli.types import AgentResponse
+from ductor_bot.config import AgentConfig, MemoryContextConfig
 from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import normal
 from ductor_bot.orchestrator.hooks import (
@@ -135,8 +136,26 @@ def orch(orch: Orchestrator) -> Orchestrator:
     return orch
 
 
-async def test_hook_injects_into_prompt_on_6th_message(orch: Orchestrator) -> None:
+def _memory_orch(workspace: tuple[object, object]) -> Orchestrator:
+    paths, _base = workspace
+    config = AgentConfig(memory_context=MemoryContextConfig(enabled=True))
+    return Orchestrator(config, paths)  # type: ignore[arg-type]
+
+
+def test_mainmemory_hook_not_registered_by_default(orch: Orchestrator) -> None:
+    assert "mainmemory_reminder" not in [hook.name for hook in orch._hook_registry._hooks]
+
+
+def test_mainmemory_hook_registered_when_enabled(workspace: tuple[object, object]) -> None:
+    orch = _memory_orch(workspace)
+    assert "mainmemory_reminder" in [hook.name for hook in orch._hook_registry._hooks]
+
+
+async def test_hook_injects_into_prompt_on_6th_message(
+    workspace: tuple[object, object],
+) -> None:
     """After 5 successful messages, the 6th should carry the reminder."""
+    orch = _memory_orch(workspace)
     resp = _mock_response()
     mock_execute = AsyncMock(return_value=resp)
     object.__setattr__(orch._cli_service, "execute", mock_execute)

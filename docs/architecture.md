@@ -65,10 +65,10 @@ Both implement `BotProtocol`. Adding a new transport requires only a new factory
 1. start `InterAgentBus`
 2. start `InternalAgentAPI`
 3. optional shared `TaskHub` (`tasks.enabled=true`)
-4. create/start main `AgentStack`
-5. wait for main readiness (`_main_ready`)
-6. load/start sub-agents from `agents.json`
-7. start `SharedKnowledgeSync`
+4. initialize `SharedKnowledgeSync` and the shared operations note
+5. create the main `AgentStack`, clean its legacy projection, then start it
+6. wait for main readiness (`_main_ready`)
+7. create each sub-agent, clean its legacy projection, then start it
 8. start `agents.json` watcher
 9. block on main completion and return its exit code
 
@@ -163,7 +163,7 @@ Per-topic `/model` behavior:
 
 1. resolve runtime target (provider/model)
 2. resolve session by `SessionKey`
-3. new session: append `MAINMEMORY.md` (+ agent roster context if available)
+3. new session: append agent roster context; append `MAINMEMORY.md` only when `memory_context.enabled=true`
 4. apply message hooks
 5. build `AgentRequest` with `topic_id`
 6. persist in-flight foreground turn (`InflightTracker.begin`)

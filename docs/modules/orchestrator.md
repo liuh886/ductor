@@ -13,8 +13,8 @@ Central routing layer between ingress transports (Telegram/Matrix/API) and CLI e
 - `orchestrator/commands.py`: slash-command handlers
 - `orchestrator/flows.py`: normal/streaming/named-session/heartbeat flows
 - `orchestrator/directives.py`: leading `@...` parser
-- `orchestrator/hooks.py`: message hooks (`MAINMEMORY_REMINDER`, delegation hints)
-- `orchestrator/memory_flush.py`: silent pre-compaction memory flush + optional `MAINMEMORY.md` compaction
+- `orchestrator/hooks.py`: message hooks (opt-in legacy-memory reminder, delegation hints)
+- `orchestrator/memory_flush.py`: opt-in silent pre-compaction memory flush + optional `MAINMEMORY.md` compaction
 - `orchestrator/selectors/*`: model/cron/session/task selector modules + selector types
 
 ## Why it was split

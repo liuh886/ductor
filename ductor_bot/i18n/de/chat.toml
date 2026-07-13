@@ -96,6 +96,7 @@ interrupted_body = "Eine Aufgabe wurde beim Neustart unterbrochen.\n`{preview}`\
 
 [memory]
 header = "**Hauptspeicher**"
+disabled = "Der automatische Legacy-Speicher ist deaktiviert. Dauerhaftes Wissen wird nur bei Bedarf aus dem Vault abgerufen."
 empty = "Leer. Der Agent baut sein Gedächtnis auf, während ihr zusammenarbeitet."
 empty_tip = "*Tipp: Sag deinem Agent, er soll sich etwas \"merken\", um loszulegen.*"
 filled_tip = "*Tipp: Der Agent liest und aktualisiert das automatisch.*"

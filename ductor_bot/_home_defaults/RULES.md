@@ -9,7 +9,7 @@ Read in this order:
 
 1. `workspace/CLAUDE.md` (main behavior + Telegram rules)
 2. `workspace/tools/CLAUDE.md` (tool routing)
-3. `workspace/memory_system/MAINMEMORY.md` (long-term context)
+3. Search prior sessions or the zhihaol vault only when the task needs that context.
 4. `config/CLAUDE.md` (only for config changes)
 
 ## Top-Level Layout
@@ -51,15 +51,16 @@ python3 workspace/tools/agent_tools/ask_agent_async.py TARGET_AGENT "Your messag
 Use async for tasks that may take longer. Use sync for quick lookups.
 See `workspace/tools/agent_tools/CLAUDE.md` for all agent management tools.
 
-### Shared Knowledge
+### Shared Operations
 
-`~/.ductor/SHAREDMEMORY.md` contains facts shared across all agents
-(server info, user preferences, infrastructure). Changes are automatically
-synced into every agent's `MAINMEMORY.md` by the Supervisor.
+`~/.ductor/SHAREDMEMORY.md` is a short operational note shared across
+agents (ports, environment changes, active incidents). It is not copied into
+agent prompts and is not a durable project knowledge store.
 
-- For agent-specific knowledge: use your own `memory_system/MAINMEMORY.md`.
-- For cross-agent knowledge: use `SHAREDMEMORY.md` (via
-  `workspace/tools/agent_tools/edit_shared_knowledge.py`).
+- For durable project/domain knowledge: use the relevant zhihaol vault note.
+- Before cross-agent coordination or incident diagnosis, read `SHAREDMEMORY.md`
+  explicitly with `workspace/tools/agent_tools/edit_shared_knowledge.py --show`.
+- Update it through the same tool; changes are not pushed into provider sessions.
 
 ## Operating Rules
 
@@ -69,5 +70,5 @@ Do not manually edit `cron_jobs.json` or `webhooks.json` for normal operations.
 Then tell the user to run `/restart`.
 - Save user-facing generated files in `workspace/output_to_user/` and send with
 `<file:/absolute/path/to/output_to_user/...>`.
-- Update `workspace/memory_system/MAINMEMORY.md` silently when durable user facts
-or preferences are learned.
+- Persist durable user facts or preferences only when explicitly requested, in
+  the smallest relevant project/vault Markdown note.

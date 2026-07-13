@@ -78,6 +78,12 @@ async def cmd_memory(orch: Orchestrator, _key: SessionKey, _text: str) -> Orches
     """Handle /memory."""
     logger.info("Memory requested")
     content = await asyncio.to_thread(read_mainmemory, orch.paths)
+    if not orch._config.memory_context.enabled:
+        parts = [t("memory.header"), SEP]
+        if content.strip():
+            parts.extend((content, SEP))
+        parts.append(t("memory.disabled"))
+        return OrchestratorResult(text=fmt(*parts))
     if not content.strip():
         return OrchestratorResult(
             text=fmt(

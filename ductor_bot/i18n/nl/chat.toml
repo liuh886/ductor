@@ -96,6 +96,7 @@ interrupted_body = "Een taak werd onderbroken tijdens de herstart.\n`{preview}`\
 
 [memory]
 header = "**Hoofdgeheugen**"
+disabled = "Automatisch verouderd geheugen is uitgeschakeld. Duurzame kennis wordt alleen indien nodig uit de vault opgehaald."
 empty = "Leeg. De agent bouwt zijn geheugen op terwijl jullie samenwerken."
 empty_tip = "*Tip: Vraag je agent om iets te \"onthouden\" om te beginnen.*"
 filled_tip = "*Tip: De agent leest en werkt dit automatisch bij.*"

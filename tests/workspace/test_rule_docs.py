@@ -22,3 +22,11 @@ def test_agent_tools_rules_contains_transport_info() -> None:
     assert "Telegram" in content
     assert "Matrix" in content
     assert "create_agent.py" in content
+
+
+def test_active_rule_templates_do_not_seed_mainmemory_writes() -> None:
+    defaults = Path(__file__).resolve().parents[2] / "ductor_bot" / "_home_defaults"
+    rule_files = sorted(defaults.rglob("RULES*.md"))
+    assert rule_files
+    offenders = [path for path in rule_files if "MAINMEMORY" in path.read_text(encoding="utf-8")]
+    assert offenders == []

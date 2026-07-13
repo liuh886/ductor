@@ -52,8 +52,8 @@ class DockerConfig(BaseModel):
 
 _DEFAULT_HEARTBEAT_PROMPT = (
     "You are running as a background heartbeat check. Review the current workspace context:\n"
-    "- Read memory_system/MAINMEMORY.md for user interests and personality\n"
     "- Check cron_tasks/ for active projects\n"
+    "- Search the vault only if this check needs durable project context\n"
     "- Think about what might be useful, interesting, or fun for the user\n"
     "\n"
     "If you have a creative idea, suggestion, interesting fact, or something the user might enjoy:\n"
@@ -156,7 +156,7 @@ class CleanupConfig(BaseModel):
 class MemoryFlushConfig(BaseModel):
     """Settings for the pre-compaction silent memory flush (#77)."""
 
-    enabled: bool = True
+    enabled: bool = False
     flush_prompt: str = _DEFAULT_FLUSH_PROMPT
     # ``0`` disables the dedup window (flush fires on every boundary).
     dedup_seconds: int = Field(default=300, ge=0)
@@ -174,7 +174,7 @@ class MemoryReflectionConfig(BaseModel):
 class MemoryCompactionConfig(BaseModel):
     """Settings for LLM-driven memory compaction (#80)."""
 
-    enabled: bool = True
+    enabled: bool = False
     trigger_lines: int = Field(default=70, ge=1)
     target_lines: int = Field(default=40, ge=1)
     # ``0`` disables the "preserve recent entries verbatim" guard.
@@ -190,6 +190,12 @@ class MemoryCompactionConfig(BaseModel):
                 f"trigger_lines ({self.trigger_lines})"
             )
         return self
+
+
+class MemoryContextConfig(BaseModel):
+    """Compatibility gate for automatic legacy-memory prompt injection."""
+
+    enabled: bool = False
 
 
 class ImageConfig(BaseModel):
@@ -453,6 +459,7 @@ class AgentConfig(BaseModel):
     memory_flush: MemoryFlushConfig = Field(default_factory=MemoryFlushConfig)
     memory_reflection: MemoryReflectionConfig = Field(default_factory=MemoryReflectionConfig)
     memory_compaction: MemoryCompactionConfig = Field(default_factory=MemoryCompactionConfig)
+    memory_context: MemoryContextConfig = Field(default_factory=MemoryContextConfig)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     cli_parameters: CLIParametersConfig = Field(default_factory=CLIParametersConfig)

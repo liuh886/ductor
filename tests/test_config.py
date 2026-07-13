@@ -11,6 +11,7 @@ from ductor_bot.config import (
     AgentConfig,
     DockerConfig,
     MemoryCompactionConfig,
+    MemoryContextConfig,
     MemoryFlushConfig,
     MemoryReflectionConfig,
     ModelRegistry,
@@ -46,6 +47,14 @@ def test_agent_config_defaults() -> None:
     assert cfg.cron_preflight.enabled is False
     assert cfg.cron_preflight.timeout_seconds == 15.0
     assert cfg.cron_preflight.skip_marker == "HEARTBEAT_OK"
+
+
+def test_automatic_memory_features_default_off() -> None:
+    cfg = AgentConfig()
+    assert cfg.memory_context == MemoryContextConfig(enabled=False)
+    assert cfg.memory_flush.enabled is False
+    assert cfg.memory_reflection.enabled is False
+    assert cfg.memory_compaction.enabled is False
 
 
 def test_agent_config_normalizes_nullish_gemini_api_key() -> None:

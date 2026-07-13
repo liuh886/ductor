@@ -1,51 +1,32 @@
-# Memory System
+# Knowledge Retrieval
 
-`MAINMEMORY.md` is long-term memory across sessions.
+The zhihaol Markdown vault is the durable knowledge source. SQLite indexes are
+read-only, rebuildable projections. Provider sessions own conversation context.
 
-## Silence Is Mandatory
+## Retrieval
 
-Never tell the user you are reading or writing memory.
-Memory operations are invisible.
+- Use `python3 tools/agent_tools/vault_search.py "query"` for durable project
+  or domain knowledge only when the current task needs it.
+- Use the smallest source-backed passage that answers the question.
+- A miss means no context; do not substitute unrelated legacy memory.
 
-## Read First
+## Writes
 
-At the start of new sessions (especially personal or ongoing work), read `MAINMEMORY.md`.
+Write durable facts, preferences, and decisions to the relevant vault/project
+Markdown file only when the user asks or the workflow explicitly requires it.
+Do not write to SQLite indexes or create a parallel database-only truth source.
 
-## When to Write
+Do not store one-off requests, temporary debugging noise, or duplicate facts.
 
-- Durable personal facts or preferences
-- Decisions that should affect future behavior
-- User explicitly asks to remember
-- Repeating workflow patterns
-- Cron/webhook setup signals that imply interests
+## Shared Operations
 
-## When Not to Write
-
-- One-off throwaway requests
-- Temporary debugging noise
-- Facts already recorded
-
-## Format Rules
-
-- Keep entries short and actionable.
-- Use `YYYY-MM-DD` timestamps.
-- Use consistent Markdown sections.
-- Merge duplicates and remove stale facts.
-
-## Shared Knowledge (SHAREDMEMORY.md)
-
-When you learn something relevant to ALL agents (server facts, user preferences,
-infrastructure changes, shared conventions), update shared knowledge instead of
-only your own MAINMEMORY.md:
+Use `SHAREDMEMORY.md` only for short cross-agent operational notes. Read it
+explicitly before cross-agent coordination or incident diagnosis:
 
 ```bash
+python3 tools/agent_tools/edit_shared_knowledge.py --show
 python3 tools/agent_tools/edit_shared_knowledge.py --append "New shared fact"
 ```
 
-The Supervisor automatically syncs SHAREDMEMORY.md into every agent's MAINMEMORY.md.
-Agent-specific knowledge (project details, personal context) stays in your own memory.
-
-## Cleanup Rules
-
-- If user says data is wrong or should be forgotten, remove/update immediately.
-- Do not leave "deleted" markers; keep the file clean.
+Durable domain knowledge belongs in the zhihaol vault, not the shared alert
+channel. Never narrate internal retrieval mechanics to the user.

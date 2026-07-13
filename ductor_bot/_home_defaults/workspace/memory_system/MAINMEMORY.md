@@ -2,12 +2,12 @@
 
 ## About the User
 
-(Empty -- will be populated as you learn about your human.)
+(Empty -- populated only when legacy memory features are explicitly enabled.)
 
 ## Learned Facts
 
-(Empty -- will be populated as the agent learns.)
+(Empty -- reserved for opt-in legacy memory features.)
 
 ## Decisions and Preferences
 
-(Empty -- record important decisions and their reasoning here.)
+(Empty -- reserved for opt-in legacy memory features.)
