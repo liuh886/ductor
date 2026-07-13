@@ -27,6 +27,8 @@ empty_turn = "Nenhuma resposta de texto final foi retornada. A execução pode t
 
 recovered = "_A sessão anterior não pôde ser restaurada. Uma nova sessão foi iniciada automaticamente._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
+context_request_too_large = "Esta solicitação é grande demais para uma nova sessão. Encurte-a ou remova anexos e tente novamente."
+context_recovery_failed = "A solicitação ainda excede o limite de contexto após iniciar uma nova sessão. Encurte-a ou remova anexos e tente novamente."
 sigkill = "A execução foi interrompida. Por favor, envie a mesma solicitação novamente."
 
 not_found = "Sessão '{name}' não encontrada."
