@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from ductor_bot.cli.stream_events import ToolUseEvent
@@ -9,6 +10,9 @@ from ductor_bot.config import AgentConfig
 from ductor_bot.messenger.slack.bot import SlackBot, _ThreadContextCache
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.session.manager import SessionData
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _make_bot() -> SlackBot:
@@ -51,6 +55,20 @@ def _make_bot() -> SlackBot:
     bot._handle_command = AsyncMock()
     bot._send_rich = AsyncMock()
     return bot
+
+
+async def test_broadcast_without_channels_omits_message_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "sensitive-slack-broadcast"
+    bot = _make_bot()
+    bot._config.slack.allowed_channels = []
+    bot._last_active_channel = None
+
+    await bot.broadcast(secret)
+
+    assert f"chars={len(secret)}" in caplog.text
+    assert secret not in caplog.text
 
 
 class TestThreadSessionLookup:

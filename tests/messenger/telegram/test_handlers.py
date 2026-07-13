@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiogram.types import Message
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _make_message(
@@ -166,6 +170,25 @@ class TestHandleCommand:
         msg = _make_message(text="/status")
         await handle_command(orchestrator, bot, msg)
         orchestrator.handle_message.assert_called_once()
+
+    async def test_command_log_omits_arguments(self, caplog: pytest.LogCaptureFixture) -> None:
+        from ductor_bot.messenger.telegram.handlers import handle_command
+        from ductor_bot.orchestrator.registry import OrchestratorResult
+
+        secret = "sensitive-command-argument"
+        orchestrator = MagicMock()
+        orchestrator.handle_message = AsyncMock(return_value=OrchestratorResult(text="ok"))
+        msg = _make_message(text=f"/session {secret}")
+
+        caplog.set_level("INFO", logger="ductor_bot.messenger.telegram.handlers")
+        with patch(
+            "ductor_bot.messenger.telegram.handlers.send_rich",
+            new_callable=AsyncMock,
+        ):
+            await handle_command(orchestrator, MagicMock(), msg)
+
+        assert "Command dispatched cmd=/session" in caplog.text
+        assert secret not in caplog.text
 
 
 class TestHandleNewSession:

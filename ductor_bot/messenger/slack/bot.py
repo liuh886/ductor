@@ -1000,7 +1000,7 @@ class SlackBot:
     async def broadcast(self, text: str) -> None:
         channels = self._broadcast_channels()
         if not channels:
-            logger.warning("Slack broadcast: no channels available, message lost: %s", text[:80])
+            logger.warning("Slack broadcast: no channels available, message lost chars=%d", len(text))
             return
         for channel_id in channels:
             await self._send_rich(channel_id, text)
