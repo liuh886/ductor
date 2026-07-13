@@ -15,9 +15,8 @@ Ductor registries store sessions, tasks, inflight turns, automation state, and
 other runtime facts. These stores are operational projections, not durable world
 knowledge. They must not enable automatic synthesis or prompt injection.
 
-`SHAREDMEMORY.md` is retained only as a short cross-agent operational note for
-ports, environment changes, and active incidents. Agents read it explicitly;
-it is not copied into agent-local prompts.
+Existing `SHAREDMEMORY.md` files remain user-owned legacy data. The default
+runtime does not create, advertise, inject, or synchronize them.
 
 ## 3. Vault Knowledge
 
@@ -46,6 +45,10 @@ current index, then replaces it atomically. Vault Markdown is never modified.
 
 Upstream `MAINMEMORY.md` support remains available but is opt-in:
 
+The same `memory_context.enabled` gate enables one-time cleanup support for old
+shared-memory projections. The compatibility tool remains available for users
+who explicitly depend on the legacy file, but it is not part of the active
+memory architecture.
 - `memory_context.enabled=false`
 - `memory_flush.enabled=false`
 - `memory_reflection.enabled=false`
