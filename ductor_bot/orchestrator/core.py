@@ -361,7 +361,11 @@ class Orchestrator:
     async def _handle_message_impl(self, dispatch: _MessageDispatch) -> OrchestratorResult:
         self._process_registry.clear_abort(dispatch.key.chat_id)
         self._process_registry.clear_topic_abort(dispatch.key.chat_id, dispatch.key.topic_id)
-        logger.info("Message received text=%s", dispatch.cmd[:80])
+        logger.info(
+            "Message received chars=%d command=%s",
+            len(dispatch.text),
+            dispatch.cmd.startswith("/"),
+        )
 
         patterns = detect_suspicious_patterns(dispatch.text)
         if patterns:
