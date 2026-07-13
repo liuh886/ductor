@@ -337,6 +337,7 @@ class TestDockerManager:
 
         run_str = " ".join(run_args)
         assert "--user 1000:1000" in run_str
+        assert "HOME=/home/node" in run_str
 
     async def test_no_uid_mapping_on_macos(
         self, docker_config: DockerConfig, docker_paths: DuctorPaths
@@ -371,6 +372,7 @@ class TestDockerManager:
 
         run_str = " ".join(run_args)
         assert "--user" not in run_str
+        assert "HOME=/home/node" in run_str
 
     async def test_container_property(
         self, docker_config: DockerConfig, docker_paths: DuctorPaths
