@@ -33,6 +33,7 @@ _GEMINI_SELECTED_AUTH_TYPES = frozenset(
 _GEMINI_NON_API_KEY_AUTH_TYPES = frozenset(
     {"oauth-personal", "vertex-ai", "compute-default-credentials", "cloud-shell"}
 )
+_ANTIGRAVITY_AUTH_PROBE_TIMEOUT_SECONDS = 3.0
 
 
 @unique
@@ -410,16 +411,29 @@ def _normalize_key_like_value(raw: str) -> str:
     return value
 
 
-def _antigravity_cli_logged_in() -> bool:
-    # Resolve the executable so the npm shim (agy.cmd on Windows) is found; a
-    # bare "agy" raises FileNotFoundError there, so OAuth auth is missed (#149).
-    agy_cli = shutil.which("agy") or "agy"
+def _antigravity_official_auth_source() -> tuple[Path | None, datetime | None]:
+    """Return shared Gemini OAuth state usable by the official Antigravity CLI."""
+    gemini_home = _gemini_home_dir()
+    oauth_file = gemini_home / "oauth_creds.json"
+    if _is_nonempty_file(oauth_file):
+        return oauth_file, datetime.fromtimestamp(oauth_file.stat().st_mtime, tz=UTC)
+
+    accounts_file = gemini_home / "google_accounts.json"
+    if _has_active_google_account(accounts_file):
+        return accounts_file, datetime.fromtimestamp(accounts_file.stat().st_mtime, tz=UTC)
+
+    return None, None
+
+
+def _antigravity_cli_logged_in(agy_cli: str | None = None) -> bool:
+    """Run one short, strict ``agy models`` probe when files cannot prove auth."""
+    executable = agy_cli or shutil.which("agy") or "agy"
     try:
         result = subprocess.run(
-            [agy_cli, "models"],
+            [executable, "models"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_ANTIGRAVITY_AUTH_PROBE_TIMEOUT_SECONDS,
             check=False,
             env=antigravity_process_env(),
             creationflags=_CREATION_FLAGS,
@@ -428,26 +442,48 @@ def _antigravity_cli_logged_in() -> bool:
         logger.debug("Antigravity CLI auth probe failed: %s", exc)
         return False
 
-    output = f"{result.stdout}\n{result.stderr}".lower()
-    if "sign in" in output or "not logged in" in output or "login" in output:
+    if result.returncode != 0:
         return False
-    return result.returncode == 0
+
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    auth_errors = (
+        "you are not logged into antigravity",
+        "not logged in",
+        "please sign in",
+        "unauthenticated",
+    )
+    if any(marker in output for marker in auth_errors):
+        return False
+
+    model_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not model_lines:
+        return False
+    return not model_lines[0].startswith(("Usage:", "Flags:", "Available subcommands:"))
 
 
 def check_antigravity_auth() -> AuthResult:
-    """Check if Antigravity CLI (agy) is installed and configured."""
+    """Check the official Antigravity CLI and its shared Gemini auth state."""
     binary = shutil.which("agy")
-    if binary is not None and _antigravity_cli_logged_in():
+    if binary is None:
+        logger.debug("Auth check provider=antigravity status=NOT_FOUND")
+        return AuthResult(provider="antigravity", status=AuthStatus.NOT_FOUND)
+
+    auth_file, auth_age = _antigravity_official_auth_source()
+    if auth_file is not None:
+        logger.debug("Auth check provider=antigravity status=AUTHENTICATED (gemini auth)")
+        return AuthResult(
+            provider="antigravity",
+            status=AuthStatus.AUTHENTICATED,
+            auth_file=auth_file,
+            auth_age=auth_age,
+        )
+
+    if _antigravity_cli_logged_in(binary):
         logger.debug("Auth check provider=antigravity status=AUTHENTICATED (agy models)")
         return AuthResult(provider="antigravity", status=AuthStatus.AUTHENTICATED)
 
-    ccs_settings = Path.home() / ".ccs" / "agy.settings.json"
-    if binary is not None or ccs_settings.is_file():
-        logger.debug("Auth check provider=antigravity status=INSTALLED")
-        return AuthResult(provider="antigravity", status=AuthStatus.INSTALLED)
-
-    logger.debug("Auth check provider=antigravity status=NOT_FOUND")
-    return AuthResult(provider="antigravity", status=AuthStatus.NOT_FOUND)
+    logger.debug("Auth check provider=antigravity status=INSTALLED")
+    return AuthResult(provider="antigravity", status=AuthStatus.INSTALLED)
 
 
 def check_grok_auth() -> AuthResult:

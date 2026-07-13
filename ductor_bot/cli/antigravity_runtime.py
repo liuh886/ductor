@@ -15,6 +15,7 @@ def antigravity_process_env(base_env: dict[str, str] | None = None) -> dict[str,
     env = dict(os.environ if base_env is None else base_env)
     for key in _SANDBOX_ENV_KEYS:
         env.pop(key, None)
+    env["BROWSER"] = "none"
     return env
 
 
