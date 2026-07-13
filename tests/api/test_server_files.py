@@ -26,7 +26,7 @@ class TestParseFileRefs:
     def test_single_file(self) -> None:
         refs = _parse_file_refs("result <file:/tmp/output.txt>")
         assert len(refs) == 1
-        assert refs[0]["path"] == "/tmp/output.txt"
+        assert refs[0]["path"] == str(Path("/tmp/output.txt"))
         assert refs[0]["name"] == "output.txt"
         assert refs[0]["is_image"] is False
 
@@ -43,7 +43,7 @@ class TestParseFileRefs:
     def test_windows_file_ref_is_normalized(self) -> None:
         with patch("ductor_bot.files.tags.is_windows", return_value=True):
             refs = _parse_file_refs("<file:/C/Users/alice/output_to_user/out.zip>")
-        assert refs[0]["path"] == "C:/Users/alice/output_to_user/out.zip"
+        assert refs[0]["path"] == str(Path("C:/Users/alice/output_to_user/out.zip"))
         assert refs[0]["name"] == "out.zip"
 
 

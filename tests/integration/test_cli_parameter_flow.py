@@ -51,15 +51,15 @@ def test_main_agent_claude_parameters() -> None:
     provider = ClaudeCodeCLI(config)
     cmd = provider._build_command("test prompt")
 
-    # Verify Claude parameters are present before --
-    separator_idx = cmd.index("--")
-    params_before_separator = cmd[:separator_idx]
-
-    assert "--claude-flag" in params_before_separator
-    assert "claude-value" in params_before_separator
-
-    # Verify prompt comes after separator
-    assert cmd[separator_idx + 1] == "test prompt"
+    assert "--claude-flag" in cmd
+    assert "claude-value" in cmd
+    if "--" in cmd:
+        separator_idx = cmd.index("--")
+        assert cmd.index("--claude-flag") < separator_idx
+        assert cmd[separator_idx + 1] == "test prompt"
+    else:
+        # Windows passes the prompt over stdin to avoid .CMD argument mangling.
+        assert "test prompt" not in cmd
 
 
 def test_main_agent_codex_parameters() -> None:
