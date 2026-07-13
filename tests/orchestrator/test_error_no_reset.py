@@ -160,10 +160,10 @@ async def test_sigkill_resets_only_affected_provider(orch: Orchestrator) -> None
     assert "Execution was interrupted" in result.text
     session = await orch._sessions.get_active(SessionKey(chat_id=1))
     assert session is not None
-    assert session.provider == "claude"
+    assert session.provider == "codex"
     assert session.session_id == ""
-    assert "claude" not in session.provider_sessions
-    assert session.provider_sessions["codex"].session_id == "codex-sid"
+    assert "codex" not in session.provider_sessions
+    assert session.provider_sessions["claude"].session_id == "claude-sid"
 
 
 async def test_streaming_error_preserves_session(orch: Orchestrator) -> None:
