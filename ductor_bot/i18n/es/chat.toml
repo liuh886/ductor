@@ -234,6 +234,7 @@ no_auth = "No se encontraron proveedores autenticados.\nEjecuta `claude auth`, `
 pick_provider = "Elige un proveedor:"
 select_claude = "Selecciona modelo de Claude:"
 select_gemini = "Selecciona modelo de Gemini:"
+select_mimo = "Selecciona modelo de MiMo:"
 select_codex = "Selecciona modelo de Codex:"
 select_antigravity = "Selecciona modelo de Antigravity:"
 no_codex = "No hay modelos de Codex disponibles."

@@ -152,6 +152,20 @@ def test_cli_parameters_for_antigravity() -> None:
     assert cfg.cli_parameters_for_provider("antigravity") == ["--log-file", "agy.log"]
 
 
+def test_cli_parameters_for_mimo() -> None:
+    cfg = CLIServiceConfig(
+        working_dir="/tmp",
+        default_model="mimo-v2.5-pro",
+        provider="mimo",
+        max_turns=None,
+        max_budget_usd=None,
+        permission_mode="bypassPermissions",
+        mimo_cli_parameters=("--debug",),
+    )
+
+    assert cfg.cli_parameters_for_provider("mimo") == ["--debug"]
+
+
 async def test_stream_callbacks_dispatches_compact_boundary() -> None:
     """CompactBoundaryEvent fires on_compact_boundary and on_status(None), in order."""
     from ductor_bot.cli.service import _StreamCallbacks

@@ -83,6 +83,7 @@ Changes take effect on the next CLI invocation (mtime-based cache invalidation, 
 | `append_system_prompt_files` | `list[str]` | `[]` | Workspace-relative files appended to the system prompt on every agent-driven turn (chat, named sessions, inter-agent, tasks); paths escaping the workspace and files over 256 KiB are skipped |
 | `file_access` | `str` | `"all"` | File access scope (`all`, `home`, `workspace`) for file sends and API `GET /files`; unknown values fall back to workspace-only |
 | `gemini_api_key` | `str \| None` | `None` | Config fallback key injected for Gemini API-key mode |
+| `mimo_api_key` | `str \| None` | `None` | Optional MiMo key override; normal local use reads `MIMO_API_KEY` from `~/.ductor/.env` |
 | `transport` | `str` | `"telegram"` | Messaging transport: `"telegram"` or `"matrix"` |
 | `transports` | `list[str]` | `[]` | List of transports to run in parallel (e.g. `["telegram", "matrix"]`). When empty, falls back to single `transport` value. |
 | `telegram_token` | `str` | `""` | Telegram bot token (required when `transport=telegram`) |
@@ -147,6 +148,7 @@ Notes:
 | `claude` | `list[str]` | `[]` | Extra args appended to Claude CLI command |
 | `codex` | `list[str]` | `[]` | Extra args appended to Codex CLI command |
 | `gemini` | `list[str]` | `[]` | Extra args appended to Gemini CLI command |
+| `mimo` | `list[str]` | `[]` | Extra args appended to Claude Code when routed through the MiMo gateway |
 | `antigravity` | `list[str]` | `[]` | Extra args appended to Antigravity (`agy`) CLI command |
 
 Used by `CLIServiceConfig` for main-chat calls.
@@ -530,7 +532,7 @@ Restart-required top-level fields:
 
 - `transport`, `telegram_token`, `matrix`
 - `docker`, `api`, `webhooks`
-- `ductor_home`, `log_level`, `gemini_api_key`, `notifications`, `transcription`, `timeouts`, `tasks`
+- `ductor_home`, `log_level`, `gemini_api_key`, `mimo_api_key`, `notifications`, `transcription`, `timeouts`, `tasks`
 
 Restart classification is computed from `AgentConfig` top-level schema fields.
 
@@ -539,6 +541,7 @@ Restart classification is computed from `AgentConfig` top-level schema fields.
 `ModelRegistry` (`ductor_bot/config.py`):
 
 - Claude models are hardcoded: `haiku`, `sonnet`, `sonnet[1m]`, `opus`, `opus[1m]`, and `fable` (Claude CLI strips the `[1m]` suffix and sets the 1M-context beta header internally).
+- MiMo text-agent models are hardcoded: `mimo-v2.5-pro`, `mimo-v2.5-pro[1m]`, and `mimo-v2.5`. MiMo uses Claude Code with an Anthropic-compatible gateway, isolates user-level Claude gateway settings, and does not expose a reasoning-effort selector.
 - Gemini aliases are hardcoded: `auto`, `pro`, `flash`, `flash-lite`.
 - Runtime Gemini models are discovered from local Gemini CLI files at startup.
 - Antigravity has a built-in `antigravity-default` model and runtime model display names discovered from `agy models`.
@@ -547,6 +550,7 @@ Restart classification is computed from `AgentConfig` top-level schema fields.
   are still known to directives and API provider metadata.
 - Provider resolution (`provider_for(model_id)`):
   - Claude when in `CLAUDE_MODELS` or when model looks like `claude-*`,
+  - MiMo when in `MIMO_MODELS` or when model looks like `mimo-*`,
   - Gemini when in aliases/discovered set or when model looks like `gemini-*`/`auto-gemini-*`,
   - Antigravity when in the built-in/discovered set or when model looks like `antigravity-*`,
   - otherwise Codex.

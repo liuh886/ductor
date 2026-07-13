@@ -20,6 +20,7 @@
     "file_access": "all",
     "append_system_prompt_files": [],
     "gemini_api_key": "null",
+    "mimo_api_key": "null",
     "transport": "telegram",
     "transports": ["telegram"],
     "telegram_token": "YOUR_BOT_TOKEN_HERE",
@@ -112,6 +113,7 @@
         "claude": ["--verbose", "--chrome"],
         "codex": [],
         "gemini": [],
+        "mimo": [],
         "antigravity": []
     },
     "image": {"max_dimension": 2000, "output_format": "webp", "quality": 85},

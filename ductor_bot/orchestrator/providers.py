@@ -10,6 +10,7 @@ from ductor_bot.config import (
     _GEMINI_ALIASES,
     ANTIGRAVITY_MODELS,
     CLAUDE_MODELS,
+    MIMO_MODELS,
     ModelRegistry,
     get_antigravity_models,
     get_gemini_models,
@@ -76,6 +77,8 @@ class ProviderManager:
             return "Claude Code"
         if provider == "gemini":
             return "Gemini"
+        if provider == "mimo":
+            return "MiMo"
         if provider == "antigravity":
             return "Antigravity"
         return "Codex"
@@ -144,6 +147,7 @@ class ProviderManager:
         """Refresh directive-known model IDs from dynamic provider registries."""
         self._known_model_ids = (
             CLAUDE_MODELS
+            | MIMO_MODELS
             | ANTIGRAVITY_MODELS
             | _GEMINI_ALIASES
             | get_gemini_models()
@@ -173,11 +177,14 @@ class ProviderManager:
                     if m.is_default:
                         return m.id
             return ""
-        if provider == "gemini":
-            return ""
-        if provider == "antigravity":
-            return "antigravity-default"
-        return ""
+        defaults = {
+            "gemini": "",
+            "mimo": (
+                self._config.model if self._config.provider == "mimo" else "mimo-v2.5-pro"
+            ),
+            "antigravity": "antigravity-default",
+        }
+        return defaults.get(provider, "")
 
     def resolve_session_directive(self, key: str) -> tuple[str, str] | None:
         """Resolve a ``@key`` directive to ``(provider, model)`` or ``None``.
@@ -187,7 +194,7 @@ class ProviderManager:
         - known model   (``@opus``)  -> (inferred_provider, model)
         - unknown                    -> None
         """
-        if key in ("claude", "codex", "gemini", "antigravity"):
+        if key in ("claude", "codex", "gemini", "mimo", "antigravity"):
             return key, self.default_model_for_provider(key)
         if self.is_known_model(key):
             provider = self._models.provider_for(key)
@@ -207,6 +214,7 @@ class ProviderManager:
         provider_meta: dict[str, tuple[str, str]] = {
             "claude": ("Claude Code", "#F97316"),
             "gemini": ("Gemini", "#8B5CF6"),
+            "mimo": ("MiMo", "#06B6D4"),
             "codex": ("Codex", "#10B981"),
             "antigravity": ("Antigravity", "#3B82F6"),
         }
@@ -222,6 +230,8 @@ class ProviderManager:
             elif pid == "codex":
                 cache = codex_cache_obs.get_cache() if codex_cache_obs else None
                 models = [m.id for m in cache.models] if cache and cache.models else []
+            elif pid == "mimo":
+                models = sorted(MIMO_MODELS)
             elif pid == "antigravity":
                 antigravity = get_antigravity_models()
                 models = sorted(antigravity) if antigravity else sorted(ANTIGRAVITY_MODELS)

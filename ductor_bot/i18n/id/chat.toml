@@ -233,6 +233,7 @@ no_auth = "Tidak ada provider yang terautentikasi.\nJalankan `claude auth`, `cod
 pick_provider = "Pilih provider:"
 select_claude = "Pilih model Claude:"
 select_gemini = "Pilih model Gemini:"
+select_mimo = "Pilih model MiMo:"
 select_codex = "Pilih model Codex:"
 select_antigravity = "Pilih model Antigravity:"
 no_codex = "Tidak ada model Codex yang tersedia."

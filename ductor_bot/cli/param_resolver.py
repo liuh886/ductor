@@ -15,10 +15,11 @@ from ductor_bot.config import (
     _GEMINI_ALIASES,
     CLAUDE_MODELS,
     CLAUDE_SUPPORTED_EFFORTS,
+    MIMO_MODELS,
     get_gemini_models,
 )
 
-_TASK_PROVIDERS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
+_TASK_PROVIDERS: frozenset[str] = frozenset({"claude", "codex", "gemini", "mimo"})
 
 
 def _looks_like_gemini_model(model: str) -> bool:
@@ -70,6 +71,7 @@ class TaskExecutionConfig:
     permission_mode: str
     working_dir: str
     file_access: str
+    mimo_api_key: str | None = None
 
 
 def _resolve_reasoning_effort(
@@ -160,6 +162,10 @@ def resolve_cli_config(
             raise DuctorError(msg)
     elif provider == "gemini":
         _validate_gemini_model(model)
+    elif provider == "mimo":
+        if model not in MIMO_MODELS:
+            msg = f"Invalid MiMo model: {model}. Must be one of {sorted(MIMO_MODELS)}"
+            raise DuctorError(msg)
     else:  # codex
         if codex_cache is None:
             msg = "Codex cache is required for Codex model validation"
@@ -191,4 +197,5 @@ def resolve_cli_config(
         permission_mode=base_config.permission_mode,
         working_dir=base_config.ductor_home,
         file_access=base_config.file_access,
+        mimo_api_key=base_config.mimo_api_key,
     )

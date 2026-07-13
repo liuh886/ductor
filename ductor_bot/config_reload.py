@@ -71,6 +71,7 @@ _RESTART_REQUIRED: frozenset[str] = frozenset(
         "ductor_home",
         "log_level",
         "gemini_api_key",
+        "mimo_api_key",
     }
 )
 

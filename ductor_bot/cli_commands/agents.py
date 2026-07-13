@@ -233,16 +233,23 @@ def agents_add(rest: list[str]) -> None:
 
     provider: str | None = questionary.select(
         t_rich("agents.add.prompt_provider"),
-        choices=["claude", "codex", "gemini", "antigravity"],
+        choices=["claude", "codex", "gemini", "mimo", "antigravity"],
         default="claude",
     ).ask()
     if provider is None:
         _console.print(t_rich("agents.add.cancelled"))
         return
 
+    default_models = {
+        "claude": "sonnet",
+        "codex": "gpt-5.2-codex",
+        "gemini": "auto",
+        "mimo": "mimo-v2.5-pro",
+        "antigravity": "antigravity-default",
+    }
     model: str | None = questionary.text(
         t_rich("agents.add.prompt_model"),
-        default="sonnet",
+        default=default_models[provider],
     ).ask()
     if model is None:
         _console.print(t_rich("agents.add.cancelled"))

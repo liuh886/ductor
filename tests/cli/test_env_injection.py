@@ -53,6 +53,61 @@ def test_subprocess_env_works_without_env_file(tmp_path: Path) -> None:
     assert "DUCTOR_AGENT_NAME" in env
 
 
+def test_mimo_subprocess_env_replaces_inherited_anthropic_credentials(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / ".env").write_text(
+        "MIMO_API_KEY=mimo-secret\nMIMO_BASE_URL=https://mimo.example/anthropic\n",
+        encoding="utf-8",
+    )
+    config = CLIConfig(provider="mimo", working_dir=workspace)
+    clear_cache()
+
+    with patch.dict(
+        "os.environ",
+        {
+            "ANTHROPIC_API_KEY": "claude-secret",
+            "ANTHROPIC_AUTH_TOKEN": "claude-token",
+            "ANTHROPIC_BASE_URL": "https://claude.example",
+        },
+        clear=True,
+    ):
+        env = build_subprocess_env(config)
+
+    assert env is not None
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "mimo-secret"
+    assert env["ANTHROPIC_BASE_URL"] == "https://mimo.example/anthropic"
+    assert env["ANTHROPIC_MODEL"] == "mimo-v2.5-pro"
+    assert "MIMO_API_KEY" not in env
+    assert "MIMO_BASE_URL" not in env
+
+
+def test_mimo_subprocess_env_maps_process_credentials(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = CLIConfig(provider="mimo", working_dir=workspace)
+    clear_cache()
+
+    with patch.dict(
+        "os.environ",
+        {
+            "MIMO_API_KEY": "process-secret",
+            "MIMO_BASE_URL": "https://process.example/anthropic",
+        },
+        clear=True,
+    ):
+        env = build_subprocess_env(config)
+
+    assert env is not None
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "process-secret"
+    assert env["ANTHROPIC_BASE_URL"] == "https://process.example/anthropic"
+    assert "MIMO_API_KEY" not in env
+
+
 def test_subprocess_env_sets_task_id_for_task_label(tmp_path: Path) -> None:
     """Background-task labels (task:<id>) expose DUCTOR_TASK_ID to the subprocess."""
     workspace = tmp_path / "workspace"

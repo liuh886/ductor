@@ -234,6 +234,7 @@ no_auth = "Geen geauthenticeerde providers gevonden.\nVoer `claude auth`, `codex
 pick_provider = "Kies een provider:"
 select_claude = "Selecteer Claude-model:"
 select_gemini = "Selecteer Gemini-model:"
+select_mimo = "Selecteer MiMo-model:"
 select_codex = "Selecteer Codex-model:"
 select_antigravity = "Selecteer Antigravity-model:"
 no_codex = "Geen Codex-modellen beschikbaar."

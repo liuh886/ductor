@@ -57,6 +57,11 @@ class TestResolveRuntimeTarget:
         assert model == "o3-mini"
         assert provider == "codex"
 
+    def test_mimo_model(self) -> None:
+        model, provider = _pm().resolve_runtime_target("mimo-v2.5-pro")
+        assert model == "mimo-v2.5-pro"
+        assert provider == "mimo"
+
     def test_none_falls_back_to_config(self) -> None:
         pm = _pm(model="haiku")
         model, provider = pm.resolve_runtime_target(None)
@@ -90,6 +95,9 @@ class TestResolveSessionDirective:
         assert result is not None
         assert result[0] == "codex"
 
+    def test_provider_name_mimo(self) -> None:
+        assert _pm().resolve_session_directive("mimo") == ("mimo", "mimo-v2.5-pro")
+
     def test_known_model(self) -> None:
         pm = _pm()
         result = pm.resolve_session_directive("opus")
@@ -122,6 +130,9 @@ class TestIsKnownModel:
         pm = _pm()
         assert pm.is_known_model("auto") is True
         assert pm.is_known_model("flash") is True
+
+    def test_mimo_models(self) -> None:
+        assert _pm().is_known_model("mimo-v2.5-pro") is True
 
     def test_gemini_runtime_models(self) -> None:
         set_gemini_models(frozenset({"gemini-2.5-pro"}))
@@ -174,6 +185,9 @@ class TestDefaultModelForProvider:
     def test_gemini(self) -> None:
         pm = _pm()
         assert pm.default_model_for_provider("gemini") == ""
+
+    def test_mimo(self) -> None:
+        assert _pm().default_model_for_provider("mimo") == "mimo-v2.5-pro"
 
     def test_unknown_provider(self) -> None:
         pm = _pm()
@@ -246,6 +260,10 @@ class TestActiveProviderName:
     def test_gemini(self) -> None:
         pm = _pm(model="auto", provider="gemini")
         assert pm.active_provider_name == "Gemini"
+
+    def test_mimo(self) -> None:
+        pm = _pm(model="mimo-v2.5-pro", provider="mimo")
+        assert pm.active_provider_name == "MiMo"
 
     def test_codex(self) -> None:
         pm = _pm(model="o3-mini", provider="codex")

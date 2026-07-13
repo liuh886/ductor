@@ -14,6 +14,7 @@ from shutil import which
 from ductor_bot.cli.codex_events import parse_codex_jsonl
 from ductor_bot.cli.gemini_events import parse_gemini_json
 from ductor_bot.cli.gemini_utils import find_gemini_cli
+from ductor_bot.cli.mimo import build_mimo_gateway_env
 from ductor_bot.cli.param_resolver import TaskExecutionConfig
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 from ductor_bot.infra.process_tree import force_kill_process_tree
@@ -152,6 +153,23 @@ def _build_gemini_cmd(exec_config: TaskExecutionConfig, prompt: str) -> OneShotC
     return OneShotCommand(cmd=cmd, stdin_input=prompt.encode())
 
 
+def _build_mimo_cmd(exec_config: TaskExecutionConfig, prompt: str) -> OneShotCommand | None:
+    """Build a Claude Code command isolated to the MiMo gateway."""
+    one_shot = _build_claude_cmd(exec_config, prompt)
+    if one_shot is None:
+        return None
+    one_shot.env_overrides.update(
+        build_mimo_gateway_env(
+            config_key=exec_config.mimo_api_key,
+            model=exec_config.model,
+            ductor_home=Path(exec_config.working_dir),
+        )
+    )
+    separator = one_shot.cmd.index("--")
+    one_shot.cmd[separator:separator] = ["--setting-sources", "project,local"]
+    return one_shot
+
+
 def _build_codex_cmd(exec_config: TaskExecutionConfig, prompt: str) -> OneShotCommand | None:
     """Build a Codex CLI command for one-shot cron execution."""
     cli = which("codex")
@@ -184,12 +202,14 @@ _ResultParser = Callable[[bytes], str]
 _CMD_BUILDERS: dict[str, _CmdBuilder] = {
     "claude": _build_claude_cmd,
     "gemini": _build_gemini_cmd,
+    "mimo": _build_mimo_cmd,
     "codex": _build_codex_cmd,
 }
 
 _RESULT_PARSERS: dict[str, _ResultParser] = {
     "claude": parse_claude_result,
     "gemini": parse_gemini_result,
+    "mimo": parse_claude_result,
     "codex": parse_codex_result,
 }
 

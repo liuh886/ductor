@@ -230,6 +230,7 @@ class CLIParametersConfig(BaseModel):
     claude: list[str] = Field(default_factory=list)
     codex: list[str] = Field(default_factory=list)
     gemini: list[str] = Field(default_factory=list)
+    mimo: list[str] = Field(default_factory=list)
     antigravity: list[str] = Field(default_factory=list)
 
 
@@ -450,6 +451,7 @@ class AgentConfig(BaseModel):
     file_access: str = "all"
     append_system_prompt_files: list[str] = Field(default_factory=list)
     gemini_api_key: str | None = None
+    mimo_api_key: str | None = None
     streaming: StreamingConfig = Field(default_factory=StreamingConfig)
     docker: DockerConfig = Field(default_factory=DockerConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
@@ -481,9 +483,9 @@ class AgentConfig(BaseModel):
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
     slack: SlackConfig = Field(default_factory=SlackConfig)
 
-    @field_validator("gemini_api_key", mode="before")
+    @field_validator("gemini_api_key", "mimo_api_key", mode="before")
     @classmethod
-    def _normalize_gemini_api_key(cls, value: object) -> object:
+    def _normalize_optional_api_key(cls, value: object) -> object:
         """Normalize null-like string values to ``None`` for optional key config."""
         if not isinstance(value, str):
             return value
@@ -607,6 +609,15 @@ CLAUDE_MODELS_ORDERED: tuple[str, ...] = (
 )
 CLAUDE_MODELS: frozenset[str] = frozenset(CLAUDE_MODELS_ORDERED)
 
+# MiMo text models supported by the Anthropic-compatible Claude Code gateway.
+# ASR/TTS models are intentionally excluded from the chat-agent selector.
+MIMO_MODELS_ORDERED: tuple[str, ...] = (
+    "mimo-v2.5-pro",
+    "mimo-v2.5-pro[1m]",
+    "mimo-v2.5",
+)
+MIMO_MODELS: frozenset[str] = frozenset(MIMO_MODELS_ORDERED)
+
 # Reasoning-effort levels the Claude CLI accepts via ``--effort``. ``max`` is
 # Claude-specific (Codex tops out at ``xhigh``).
 CLAUDE_SUPPORTED_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
@@ -642,6 +653,8 @@ class ModelRegistry:
         full model IDs (``claude-opus-4-7``), so any ``claude-`` prefix
         routes to Claude.
         """
+        if model_id in MIMO_MODELS or model_id.startswith("mimo-"):
+            return "mimo"
         if model_id in CLAUDE_MODELS or model_id.startswith("claude-"):
             return "claude"
         if (

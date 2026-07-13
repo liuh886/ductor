@@ -12,6 +12,7 @@ import contextlib
 import logging
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from ductor_bot.cli.base import (
     _IS_WINDOWS,
@@ -19,13 +20,44 @@ from ductor_bot.cli.base import (
     _feed_stdin_and_close,
     _win_feed_stdin,
 )
+from ductor_bot.cli.mimo import build_mimo_gateway_env
 from ductor_bot.cli.stream_events import ResultEvent, StreamEvent
 from ductor_bot.cli.timeout_controller import TimeoutController
 from ductor_bot.cli.types import CLIResponse, task_id_from_label
+from ductor_bot.infra.env_secrets import load_env_secrets
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
 from ductor_bot.infra.process_tree import force_kill_process_tree
 
 logger = logging.getLogger(__name__)
+
+_ANTHROPIC_GATEWAY_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+)
+
+
+def _apply_mimo_gateway_env(
+    env: dict[str, str],
+    config: CLIConfig,
+    ductor_home: Path,
+) -> None:
+    """Replace inherited Anthropic credentials with the configured MiMo gateway."""
+    gateway_env = build_mimo_gateway_env(
+        config_key=config.mimo_api_key,
+        model=config.model,
+        ductor_home=ductor_home,
+        environ=env,
+    )
+    for key in _ANTHROPIC_GATEWAY_KEYS:
+        env.pop(key, None)
+    env.pop("MIMO_API_KEY", None)
+    env.pop("MIMO_BASE_URL", None)
+    env.update(gateway_env)
 
 
 def build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
@@ -37,9 +69,6 @@ def build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
     merged in without overriding existing variables.
     """
     import os
-    from pathlib import Path
-
-    from ductor_bot.infra.env_secrets import load_env_secrets
 
     env = os.environ.copy()
 
@@ -47,9 +76,13 @@ def build_subprocess_env(config: CLIConfig) -> dict[str, str] | None:
     working_dir = Path(config.working_dir)
     ductor_home = working_dir.parent if working_dir.name == "workspace" else working_dir
     env_file = ductor_home / ".env"
-    for key, value in load_env_secrets(env_file).items():
+    secrets = load_env_secrets(env_file)
+    for key, value in secrets.items():
         if key not in env:
             env[key] = value
+
+    if config.provider == "mimo":
+        _apply_mimo_gateway_env(env, config, ductor_home)
 
     env["DUCTOR_AGENT_NAME"] = config.agent_name
     env["DUCTOR_AGENT_ROLE"] = "main" if config.agent_name == "main" else "sub"

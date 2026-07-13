@@ -13,6 +13,7 @@ from ductor_bot.config import (
     CLAUDE_MODELS_ORDERED,
     CLAUDE_SUPPORTED_EFFORTS,
     CODEX_SUPPORTED_EFFORTS_FALLBACK,
+    MIMO_MODELS_ORDERED,
     get_antigravity_models,
     get_gemini_models,
     update_config_file_async,
@@ -242,6 +243,8 @@ async def model_selector_start(
         buttons.append(Button(text="CODEX", callback_data="ms:p:codex"))
     if "gemini" in authed:
         buttons.append(Button(text="GEMINI", callback_data="ms:p:gemini"))
+    if "mimo" in authed:
+        buttons.append(Button(text="MIMO", callback_data="ms:p:mimo"))
     if "antigravity" in authed:
         buttons.append(Button(text="ANTIGRAVITY", callback_data="ms:p:antigravity"))
 
@@ -547,7 +550,7 @@ async def _status_line(orch: Orchestrator, key: SessionKey) -> str:
     return current
 
 
-async def _build_model_step(
+async def _build_model_step(  # noqa: PLR0911
     provider: str,
     header: str,
     codex_cache: CodexModelCache | None = None,
@@ -580,6 +583,14 @@ async def _build_model_step(
         gemini_rows.append([Button(text=t("model.btn_back"), callback_data="ms:b:root")])
         keyboard = ButtonGrid(rows=gemini_rows)
         return SelectorResponse(text=f"{header}\n\n{t('model.select_gemini')}", buttons=keyboard)
+
+    if provider == "mimo":
+        mimo_rows = _chunk_buttons(list(MIMO_MODELS_ORDERED))
+        mimo_rows.append([Button(text=t("model.btn_back"), callback_data="ms:b:root")])
+        return SelectorResponse(
+            text=f"{header}\n\n{t('model.select_mimo')}",
+            buttons=ButtonGrid(rows=mimo_rows),
+        )
 
     if provider == "antigravity":
         antigravity_rows = _chunk_buttons(_antigravity_models_for_selector(), columns=1)

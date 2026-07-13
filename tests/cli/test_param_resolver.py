@@ -223,6 +223,35 @@ def test_resolve_gemini_model_from_discovery(
     assert result.model == "gemini-2.5-pro"
 
 
+def test_resolve_mimo_task_drops_reasoning_effort(
+    base_config: AgentConfig,
+    codex_cache: CodexModelCache,
+) -> None:
+    base_config.cli_parameters = CLIParametersConfig(mimo=["--debug"])
+    overrides = TaskOverrides(
+        provider="mimo",
+        model="mimo-v2.5-pro",
+        reasoning_effort="high",
+    )
+
+    result = resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
+
+    assert result.provider == "mimo"
+    assert result.model == "mimo-v2.5-pro"
+    assert result.reasoning_effort == ""
+    assert result.cli_parameters == ["--debug"]
+
+
+def test_resolve_mimo_rejects_non_agent_model(
+    base_config: AgentConfig,
+    codex_cache: CodexModelCache,
+) -> None:
+    overrides = TaskOverrides(provider="mimo", model="mimo-v2.5-tts")
+
+    with pytest.raises(DuctorError, match="Invalid MiMo model"):
+        resolve_cli_config(base_config, codex_cache, task_overrides=overrides)
+
+
 def test_resolve_gemini_invalid_against_discovered_models(
     base_config: AgentConfig, codex_cache: CodexModelCache
 ) -> None:

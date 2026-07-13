@@ -90,6 +90,30 @@ class TestBuildWelcomeText:
         assert "Gemini authenticated" in text
         assert "gemini-2.5-pro" in text
 
+    @pytest.mark.parametrize(
+        ("provider", "model", "display_name"),
+        [
+            ("mimo", "mimo-v2.5-pro", "MiMo"),
+            ("antigravity", "antigravity-default", "Antigravity"),
+        ],
+    )
+    def test_gateway_providers_are_reported_as_authenticated(
+        self,
+        provider: str,
+        model: str,
+        display_name: str,
+    ) -> None:
+        from ductor_bot.messenger.telegram.welcome import build_welcome_text
+
+        text = build_welcome_text(
+            "Gina",
+            {provider: _auth(provider)},
+            _config(provider=provider, model=model),
+        )
+
+        assert f"{display_name} authenticated" in text
+        assert model in text
+
     def test_no_providers_authenticated(self) -> None:
         from ductor_bot.messenger.telegram.welcome import build_welcome_text
 

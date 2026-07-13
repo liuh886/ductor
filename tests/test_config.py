@@ -37,6 +37,7 @@ def test_agent_config_defaults() -> None:
     assert cfg.cli_timeout == 1800.0
     assert cfg.permission_mode == "bypassPermissions"
     assert cfg.gemini_api_key is None
+    assert cfg.mimo_api_key is None
     assert cfg.telegram_token == ""
     assert cfg.allowed_user_ids == []
 
@@ -45,6 +46,11 @@ def test_agent_config_normalizes_nullish_gemini_api_key() -> None:
     assert AgentConfig(gemini_api_key="null").gemini_api_key is None
     assert AgentConfig(gemini_api_key=" NONE ").gemini_api_key is None
     assert AgentConfig(gemini_api_key="   ").gemini_api_key is None
+
+
+def test_agent_config_normalizes_nullish_mimo_api_key() -> None:
+    assert AgentConfig(mimo_api_key="null").mimo_api_key is None
+    assert AgentConfig(mimo_api_key=" NONE ").mimo_api_key is None
 
 
 def test_agent_config_streaming_defaults() -> None:
@@ -165,6 +171,12 @@ def test_registry_provider_for_gemini_prefix() -> None:
 def test_registry_provider_for_antigravity() -> None:
     reg = ModelRegistry()
     assert reg.provider_for("antigravity-default") == "antigravity"
+
+
+def test_registry_provider_for_mimo() -> None:
+    reg = ModelRegistry()
+    assert reg.provider_for("mimo-v2.5-pro") == "mimo"
+    assert reg.provider_for("mimo-future") == "mimo"
 
 
 def test_streaming_config_fields() -> None:

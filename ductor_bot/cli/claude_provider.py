@@ -16,6 +16,7 @@ from ductor_bot.cli.base import (
     docker_wrap,
 )
 from ductor_bot.cli.executor import SubprocessSpec, run_oneshot_subprocess, run_streaming_subprocess
+from ductor_bot.cli.mimo import build_mimo_gateway_env
 from ductor_bot.cli.stream_events import (
     StreamEvent,
     parse_stream_line,
@@ -59,7 +60,9 @@ class ClaudeCodeCLI(BaseCLI):
 
         _add_opt(cmd, "--permission-mode", cfg.permission_mode)
         _add_opt(cmd, "--model", cfg.model)
-        if cfg.reasoning_effort and cfg.reasoning_effort != "default":
+        if cfg.provider == "mimo":
+            cmd += ["--setting-sources", "project,local"]
+        if cfg.provider == "claude" and cfg.reasoning_effort and cfg.reasoning_effort != "default":
             cmd += ["--effort", cfg.reasoning_effort]
         _add_opt(cmd, "--system-prompt", cfg.system_prompt)
         _add_opt(cmd, "--append-system-prompt", cfg.append_system_prompt)
@@ -91,6 +94,20 @@ class ClaudeCodeCLI(BaseCLI):
             cmd.append(prompt)
         return cmd
 
+    def _mimo_docker_env(self) -> dict[str, str] | None:
+        """Map local MiMo credentials into Claude Code gateway variables."""
+        if self._config.provider != "mimo":
+            return None
+        ductor_home = (
+            self._working_dir.parent if self._working_dir.name == "workspace" else self._working_dir
+        )
+        env = build_mimo_gateway_env(
+            config_key=self._config.mimo_api_key,
+            model=self._config.model,
+            ductor_home=ductor_home,
+        )
+        return env or None
+
     async def send(
         self,
         prompt: str,
@@ -101,7 +118,12 @@ class ClaudeCodeCLI(BaseCLI):
     ) -> CLIResponse:
         """Send a prompt and return the final result."""
         cmd = self._build_command(prompt, resume_session, continue_session)
-        exec_cmd, use_cwd = docker_wrap(cmd, self._config, interactive=_IS_WINDOWS)
+        exec_cmd, use_cwd = docker_wrap(
+            cmd,
+            self._config,
+            extra_env=self._mimo_docker_env(),
+            interactive=_IS_WINDOWS,
+        )
         _log_cmd(exec_cmd)
         return await run_oneshot_subprocess(
             config=self._config,
@@ -137,7 +159,12 @@ class ClaudeCodeCLI(BaseCLI):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Send a prompt and yield stream events as they arrive."""
         cmd = self._build_command_streaming(prompt, resume_session, continue_session)
-        exec_cmd, use_cwd = docker_wrap(cmd, self._config, interactive=_IS_WINDOWS)
+        exec_cmd, use_cwd = docker_wrap(
+            cmd,
+            self._config,
+            extra_env=self._mimo_docker_env(),
+            interactive=_IS_WINDOWS,
+        )
         _log_cmd(exec_cmd, streaming=True)
 
         async for event in run_streaming_subprocess(

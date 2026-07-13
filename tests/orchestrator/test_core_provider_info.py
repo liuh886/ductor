@@ -97,6 +97,16 @@ class TestBuildProviderInfo:
         assert info[0]["id"] == "antigravity"
         assert info[0]["models"] == ["antigravity-default"]
 
+    def test_mimo_models(self) -> None:
+        pm, obs = _make_provider_manager(frozenset({"mimo"}))
+        info = pm.build_provider_info(obs)
+        assert info[0]["id"] == "mimo"
+        assert info[0]["models"] == [
+            "mimo-v2.5",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro[1m]",
+        ]
+
     def test_empty_providers(self) -> None:
         pm, obs = _make_provider_manager(frozenset())
         info = pm.build_provider_info(obs)

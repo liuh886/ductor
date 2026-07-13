@@ -234,6 +234,7 @@ no_auth = "Не найдено ни одного авторизованного 
 pick_provider = "Выбери провайдера:"
 select_claude = "Выбери модель Claude:"
 select_gemini = "Выбери модель Gemini:"
+select_mimo = "Выбери модель MiMo:"
 select_codex = "Выбери модель Codex:"
 select_antigravity = "Выбери модель Antigravity:"
 no_codex = "Нет доступных моделей Codex."

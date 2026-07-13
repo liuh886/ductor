@@ -30,10 +30,12 @@ from ductor_bot.session.manager import ProviderSessionData
 _AUTHED_CLAUDE = AuthResult("claude", AuthStatus.AUTHENTICATED)
 _AUTHED_CODEX = AuthResult("codex", AuthStatus.AUTHENTICATED)
 _AUTHED_GEMINI = AuthResult("gemini", AuthStatus.AUTHENTICATED)
+_AUTHED_MIMO = AuthResult("mimo", AuthStatus.AUTHENTICATED)
 _AUTHED_ANTIGRAVITY = AuthResult("antigravity", AuthStatus.AUTHENTICATED)
 _NOT_FOUND_CLAUDE = AuthResult("claude", AuthStatus.NOT_FOUND)
 _NOT_FOUND_CODEX = AuthResult("codex", AuthStatus.NOT_FOUND)
 _NOT_FOUND_GEMINI = AuthResult("gemini", AuthStatus.NOT_FOUND)
+_NOT_FOUND_ANTIGRAVITY = AuthResult("antigravity", AuthStatus.NOT_FOUND)
 
 _CODEX_MODELS = [
     CodexModelInfo(
@@ -227,6 +229,25 @@ async def test_start_one_provider_antigravity(orch: Orchestrator) -> None:
     assert "antigravity-default" in labels
 
 
+async def test_start_one_provider_mimo_lists_text_models(orch: Orchestrator) -> None:
+    with _patch_auth(
+        {
+            "claude": _NOT_FOUND_CLAUDE,
+            "codex": _NOT_FOUND_CODEX,
+            "gemini": _NOT_FOUND_GEMINI,
+            "mimo": _AUTHED_MIMO,
+            "antigravity": _NOT_FOUND_ANTIGRAVITY,
+        }
+    ):
+        resp = await model_selector_start(orch, SessionKey(chat_id=1))
+
+    assert "Select MiMo model" in resp.text
+    assert resp.buttons is not None
+    labels = [btn.text for row in resp.buttons.rows for btn in row]
+    assert "mimo-v2.5-pro" in labels
+    assert all("tts" not in label for label in labels)
+
+
 # -- handle_model_callback: provider selection --
 
 
@@ -262,6 +283,12 @@ async def test_callback_provider_antigravity(orch: Orchestrator) -> None:
     assert resp.buttons is not None
     labels = [btn.text for row in resp.buttons.rows for btn in row]
     assert "antigravity-default" in labels
+
+
+async def test_callback_provider_mimo(orch: Orchestrator) -> None:
+    resp = await handle_model_callback(orch, SessionKey(chat_id=1), "ms:p:mimo")
+    assert "Select MiMo model" in resp.text
+    assert resp.buttons is not None
 
 
 # -- handle_model_callback: model selection --
@@ -304,6 +331,18 @@ async def test_callback_model_antigravity_switches_without_reasoning_step(
     assert resp.buttons is None
     assert orch._config.model == "antigravity-default"
     assert orch._config.provider == "antigravity"
+
+
+async def test_callback_model_mimo_switches_without_reasoning_step(
+    orch: Orchestrator,
+) -> None:
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+    resp = await handle_model_callback(orch, SessionKey(chat_id=1), "ms:m:mimo-v2.5-pro")
+    assert "mimo-v2.5-pro" in resp.text
+    assert "Thinking level" not in resp.text
+    assert resp.buttons is None
+    assert orch._config.model == "mimo-v2.5-pro"
+    assert orch._config.provider == "mimo"
 
 
 async def test_callback_model_codex_shows_reasoning(orch: Orchestrator) -> None:
