@@ -152,6 +152,59 @@ class TestStreamEditor:
         second_call = bot.send_message.call_args_list[1]
         assert second_call.kwargs.get("parse_mode") is None
 
+    async def test_long_html_fallback_sends_complete_undelivered_plain_text(self) -> None:
+        from aiogram.exceptions import TelegramBadRequest
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        html_attempts = 0
+
+        async def send_message(**kwargs: object) -> Message:
+            nonlocal html_attempts
+            if kwargs["parse_mode"] == ParseMode.HTML:
+                html_attempts += 1
+                if html_attempts == 2:
+                    raise TelegramBadRequest(MagicMock(), "bad HTML")
+            return sent_msg
+
+        bot.send_message = AsyncMock(side_effect=send_message)
+        delivered = "A" * 4080
+        remaining = "<&" + ("B" * 5000)
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_text(f"**{delivered}**\n\n{remaining}")
+
+        plain_chunks = [
+            call.kwargs["text"]
+            for call in bot.send_message.call_args_list
+            if call.kwargs["parse_mode"] is None
+        ]
+        assert html_attempts == 2
+        assert "".join(plain_chunks) == f"\n\n{remaining}"
+        assert all(0 < len(chunk) <= 4096 for chunk in plain_chunks)
+        assert delivered not in "".join(plain_chunks)
+
+    async def test_first_html_chunk_failure_falls_back_without_truncation(self) -> None:
+        from aiogram.exceptions import TelegramBadRequest
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        bot.send_message = AsyncMock(
+            side_effect=[TelegramBadRequest(MagicMock(), "bad HTML"), sent_msg, sent_msg]
+        )
+        text = "<&" + ("B" * 5000)
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_text(text)
+
+        plain_chunks = [
+            call.kwargs["text"]
+            for call in bot.send_message.call_args_list
+            if call.kwargs["parse_mode"] is None
+        ]
+        assert "".join(plain_chunks) == text
+        assert all(len(chunk) <= 4096 for chunk in plain_chunks)
+
     async def test_markdown_formatting_applied(self) -> None:
         from ductor_bot.messenger.telegram.streaming import StreamEditor
 
@@ -216,7 +269,48 @@ class TestStreamEditorButtons:
 
         editor = StreamEditor(bot, chat_id=1)
         await editor.finalize("[button:Ghost]")
-        bot.edit_message_reply_markup.assert_not_called()
+        bot.send_message.assert_called_once()
+        bot.edit_message_reply_markup.assert_called_once()
+
+    async def test_tool_only_stream_sends_final_body(self) -> None:
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        bot.send_message = AsyncMock(return_value=sent_msg)
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_tool("SearchTool")
+        await editor.finalize("Final answer")
+
+        assert bot.send_message.call_count == 2
+        assert bot.send_message.call_args.kwargs["text"] == "Final answer"
+
+    async def test_progress_only_stream_with_buttons_sends_body_then_keyboard(self) -> None:
+        bot = MagicMock()
+        progress_msg = MagicMock(spec=Message)
+        final_msg = MagicMock(spec=Message)
+        type(final_msg).message_id = PropertyMock(return_value=102)
+        bot.send_message = AsyncMock(side_effect=[progress_msg, final_msg])
+        bot.edit_message_reply_markup = AsyncMock()
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_system("Working")
+        await editor.finalize("Done\n[button:OK]")
+
+        assert bot.send_message.call_count == 2
+        assert bot.send_message.call_args.kwargs["text"] == "Done"
+        assert bot.edit_message_reply_markup.call_args.kwargs["message_id"] == 102
+
+    async def test_tool_only_empty_final_response_sends_placeholder(self) -> None:
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        bot.send_message = AsyncMock(return_value=sent_msg)
+
+        editor = StreamEditor(bot, chat_id=1)
+        await editor.append_tool("SearchTool")
+        await editor.finalize("")
+
+        assert bot.send_message.call_count == 2
+        assert "No final text response was returned" in bot.send_message.call_args.kwargs["text"]
 
     async def test_keyboard_on_last_message_after_multiple_chunks(self) -> None:
         from ductor_bot.messenger.telegram.streaming import StreamEditor

@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
+from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram.buttons import extract_buttons
 from ductor_bot.messenger.telegram.formatting import (
     TELEGRAM_MSG_LIMIT,
@@ -31,6 +33,13 @@ if TYPE_CHECKING:
     from ductor_bot.config import StreamingConfig
 
 logger = logging.getLogger(__name__)
+
+_BUTTON_ONLY_PLACEHOLDER = "\u2060"
+
+
+def _html_to_plain_text(text: str) -> str:
+    """Convert Telegram HTML into the text visible to the recipient."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
 @runtime_checkable
@@ -69,6 +78,7 @@ class StreamEditor:
         self._reply_to = reply_to
         self._thread_id = thread_id
         self._messages_sent = 0
+        self._text_messages_sent = 0
         self._last_msg: Message | None = None
 
     @property
@@ -82,8 +92,23 @@ class StreamEditor:
             return
         formatted = markdown_to_telegram_html(text)
         chunks = split_html_message(formatted)
+        plain_text = _html_to_plain_text(formatted)
+        plain_offset = 0
         for chunk in chunks:
-            await self._send(chunk, raw_fallback=text)
+            if await self._send(chunk, raw_fallback=None):
+                self._text_messages_sent += 1
+                plain_offset += len(_html_to_plain_text(chunk))
+                continue
+
+            # HTML and source Markdown have different lengths, so retry the complete
+            # undelivered visible suffix instead of slicing the original source chunk.
+            remaining = plain_text[plain_offset:]
+            for offset in range(0, len(remaining), TELEGRAM_MSG_LIMIT):
+                if await self._send(
+                    remaining[offset : offset + TELEGRAM_MSG_LIMIT], parse_mode=None
+                ):
+                    self._text_messages_sent += 1
+            break
 
     async def append_tool(self, tool_name: str) -> None:
         """Send a tool indicator as a new message."""
@@ -97,11 +122,17 @@ class StreamEditor:
         await self._send(indicator)
 
     async def finalize(self, full_text: str) -> None:
-        """Attach button keyboard to the last sent message, if any."""
-        if self._last_msg is None:
-            return
-        _, markup = extract_buttons(full_text)
-        if markup is None:
+        """Ensure a final body exists, then attach its button keyboard."""
+        cleaned_text, markup = extract_buttons(full_text)
+        if self._text_messages_sent == 0:
+            if self._messages_sent > 0 and cleaned_text.strip():
+                await self.append_text(cleaned_text)
+            elif markup is not None:
+                await self._send(_BUTTON_ONLY_PLACEHOLDER, parse_mode=None)
+            elif self._messages_sent > 0:
+                await self._send(t("session.empty_turn"), parse_mode=None)
+
+        if self._last_msg is None or markup is None:
             return
         try:
             await self._bot.edit_message_reply_markup(
@@ -116,13 +147,13 @@ class StreamEditor:
         self,
         text: str,
         *,
-        raw_fallback: str = "",
+        raw_fallback: str | None = "",
         parse_mode: ParseMode | None = ParseMode.HTML,
-    ) -> None:
+    ) -> bool:
         """Send a single message, using reply_to for the first one."""
         display = text[:TELEGRAM_MSG_LIMIT]
         if not display.strip():
-            return
+            return False
 
         try:
             if self._messages_sent == 0 and self._reply_to:
@@ -136,13 +167,16 @@ class StreamEditor:
                 )
             self._last_msg = msg
             self._messages_sent += 1
+            return True  # noqa: TRY300
         except TelegramBadRequest:
             if parse_mode is not None:
                 logger.warning("HTML send failed, falling back to plain text")
+                if raw_fallback is None:
+                    return False
                 fallback = (raw_fallback or text)[:TELEGRAM_MSG_LIMIT]
-                await self._send(fallback, parse_mode=None)
-            else:
-                logger.exception("Failed to send stream chunk even as plain text")
+                return await self._send(fallback, parse_mode=None)
+            logger.exception("Failed to send stream chunk even as plain text")
+            return False
 
 
 def create_stream_editor(

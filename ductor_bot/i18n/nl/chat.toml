@@ -23,7 +23,7 @@ Stuur een bericht om verder te gaan."""
 
 age_warning = "[Sessie is {age} oud. Gebruik /new voor een frisse start.]"
 
-empty_turn = "_(Agent heeft het geheugen stilletjes bijgewerkt — stuur nog een bericht om verder te gaan.)_"
+empty_turn = "Er is geen definitief tekstantwoord teruggegeven. Mogelijk zijn alleen toolacties uitgevoerd."
 
 recovered = "_De vorige sessie kon niet worden hersteld. Er is automatisch een nieuwe gestart._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
