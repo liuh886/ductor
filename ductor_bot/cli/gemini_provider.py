@@ -334,15 +334,16 @@ class GeminiCLI(BaseCLI):
         """
         extra: dict[str, str] = {"GEMINI_IDE_ENABLED": "false"}
 
-        # Forward host GEMINI_API_KEY if set, otherwise inject from config.
-        host_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if host_key and host_key.lower() not in NULLISH_TEXT_VALUES:
-            extra["GEMINI_API_KEY"] = host_key
-        else:
-            key = (self._config.gemini_api_key or "").strip()
-            if key and key.lower() not in NULLISH_TEXT_VALUES:
-                settings = _gemini_settings_path(dict(os.environ))
-                if gemini_api_key_mode_selected(settings):
+        # Preserve the selected Gemini auth mode inside the container. In
+        # particular, do not let an inherited API key override mounted OAuth.
+        settings = _gemini_settings_path(dict(os.environ))
+        if gemini_api_key_mode_selected(settings):
+            host_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            if host_key and host_key.lower() not in NULLISH_TEXT_VALUES:
+                extra["GEMINI_API_KEY"] = host_key
+            else:
+                key = (self._config.gemini_api_key or "").strip()
+                if key and key.lower() not in NULLISH_TEXT_VALUES:
                     extra["GEMINI_API_KEY"] = key
 
         # Forward Google Cloud auth vars when present on host.

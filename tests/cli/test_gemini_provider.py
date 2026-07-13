@@ -265,6 +265,48 @@ class TestPrepareEnv:
 
         assert "GEMINI_API_KEY" not in env or env["GEMINI_API_KEY"] == ""
 
+    def test_docker_env_does_not_forward_host_key_for_oauth_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(monkeypatch, gemini_api_key="cfg-key-123")
+        gemini_home = tmp_path / "gemini-home"
+        settings = gemini_home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            '{"security":{"auth":{"selectedType":"oauth-personal"}}}',
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_CLI_HOME": str(gemini_home), "GEMINI_API_KEY": "host-key"},
+            clear=False,
+        ):
+            env = cli._docker_extra_env()
+
+        assert "GEMINI_API_KEY" not in env
+
+    def test_docker_env_forwards_host_key_for_api_key_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cli = _make_cli(monkeypatch, gemini_api_key="cfg-key-123")
+        gemini_home = tmp_path / "gemini-home"
+        settings = gemini_home / ".gemini" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            '{"security":{"auth":{"selectedType":"gemini-api-key"}}}',
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_CLI_HOME": str(gemini_home), "GEMINI_API_KEY": "host-key"},
+            clear=False,
+        ):
+            env = cli._docker_extra_env()
+
+        assert env["GEMINI_API_KEY"] == "host-key"
+
 
 class TestSend:
     async def test_send_success(self, monkeypatch: pytest.MonkeyPatch) -> None:

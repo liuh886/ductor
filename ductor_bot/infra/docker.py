@@ -356,10 +356,10 @@ class DockerManager:
             uid = os.getuid()  # type: ignore[attr-defined]
             gid = os.getgid()  # type: ignore[attr-defined]
             cmd += ["--user", f"{uid}:{gid}"]
-            # Explicit HOME so CLIs find their config dirs (~/.claude, ~/.codex,
-            # ~/.gemini) even when the host UID has no passwd entry inside the
-            # container.
-            cmd += ["-e", "HOME=/home/node"]
+
+        # Auth mounts below always target /home/node. Set HOME explicitly on
+        # every host platform so provider CLIs resolve the mounted directories.
+        cmd += ["-e", "HOME=/home/node"]
 
         # Auth directories -- mount only if they exist on the host.
         home = Path.home()
