@@ -220,9 +220,11 @@ async def run_bot(config: AgentConfig) -> int:
     _validate_transports(config)
 
     from ductor_bot.infra.pidlock import acquire_lock, release_lock
+    from ductor_bot.infra.runtime_identity import write_runtime_identity
     from ductor_bot.multiagent.supervisor import AgentSupervisor
 
     acquire_lock(pid_file=paths.ductor_home / "bot.pid", kill_existing=True)
+    write_runtime_identity(paths.runtime_identity_path, framework_root=paths.framework_root)
 
     supervisor = AgentSupervisor(config)
     exit_code = 0

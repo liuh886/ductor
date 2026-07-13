@@ -36,6 +36,15 @@ def test_sessions_path() -> None:
     assert paths.sessions_path == Path("/home/test/.ductor/sessions.json")
 
 
+def test_runtime_identity_path() -> None:
+    paths = DuctorPaths(
+        ductor_home=Path("/home/test/.ductor"),
+        home_defaults=Path("/opt/ductor/workspace"),
+        framework_root=Path("/opt/ductor"),
+    )
+    assert paths.runtime_identity_path == Path("/home/test/.ductor/runtime_identity.json")
+
+
 def test_logs_dir() -> None:
     paths = DuctorPaths(
         ductor_home=Path("/home/test/.ductor"),

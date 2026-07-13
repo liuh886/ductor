@@ -123,6 +123,10 @@ class DuctorPaths:
         return self.ductor_home / "named_sessions.json"
 
     @property
+    def runtime_identity_path(self) -> Path:
+        return self.ductor_home / "runtime_identity.json"
+
+    @property
     def startup_state_path(self) -> Path:
         return self.ductor_home / "startup_state.json"
 
