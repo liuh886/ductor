@@ -418,7 +418,13 @@ def _extract_codex_error_detail(raw: str) -> str:
 
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
-    """Log the CLI command with truncated long values."""
-    safe_cmd = [(c[:80] + "...") if len(c) > 80 else c for c in cmd]
-    prefix = "Codex stream cmd" if streaming else "Codex cmd"
-    logger.info("%s: %s", prefix, " ".join(safe_cmd))
+    """Log command metadata without exposing argument values."""
+    executable = Path(cmd[0]).name if cmd else "<missing>"
+    mode = "docker" if executable.lower() in {"docker", "docker.exe"} else "host"
+    logger.info(
+        "Provider command provider=codex mode=%s executable=%s args=%d streaming=%s",
+        mode,
+        executable,
+        max(len(cmd) - 1, 0),
+        streaming,
+    )

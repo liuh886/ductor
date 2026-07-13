@@ -189,13 +189,16 @@ def _add_opt(cmd: list[str], flag: str, value: str | None) -> None:
 
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
-    """Log the CLI command with truncated long values."""
-    safe_cmd = [
-        (c[:80] + "...") if len(c) > 80 and i > 0 and cmd[i - 1].startswith("--") else c
-        for i, c in enumerate(cmd)
-    ]
-    prefix = "CLI stream cmd" if streaming else "CLI cmd"
-    logger.info("%s: %s", prefix, " ".join(safe_cmd))
+    """Log command metadata without exposing argument values."""
+    executable = Path(cmd[0]).name if cmd else "<missing>"
+    mode = "docker" if executable.lower() in {"docker", "docker.exe"} else "host"
+    logger.info(
+        "Provider command provider=claude mode=%s executable=%s args=%d streaming=%s",
+        mode,
+        executable,
+        max(len(cmd) - 1, 0),
+        streaming,
+    )
 
 
 def _parse_response(stdout: bytes, stderr: bytes, returncode: int | None) -> CLIResponse:

@@ -745,30 +745,29 @@ class TestAddOpt:
 
 
 class TestLogCmd:
-    def test_truncates_long_values_after_flags(self, caplog: pytest.LogCaptureFixture) -> None:
-        long_prompt = "x" * 200
-        cmd = ["claude", "--system-prompt", long_prompt, "short"]
+    def test_omits_all_argument_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        secret = "sensitive-claude-argument"
+        cmd = ["docker", "exec", "-e", f"TOKEN={secret}", "claude", "--", secret]
         with caplog.at_level(logging.INFO, logger="ductor_bot.cli.claude_provider"):
             _log_cmd(cmd)
-        assert "..." in caplog.text
+        assert "provider=claude" in caplog.text
+        assert "mode=docker" in caplog.text
+        assert "executable=docker" in caplog.text
+        assert "args=6" in caplog.text
+        assert secret not in caplog.text
 
-    def test_does_not_truncate_short_values(self, caplog: pytest.LogCaptureFixture) -> None:
-        cmd = ["claude", "--model", "opus", "hello"]
+    def test_streaming_metadata(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO, logger="ductor_bot.cli.claude_provider"):
-            _log_cmd(cmd)
-        assert "..." not in caplog.text
+            _log_cmd(["claude", "-p", "hidden"], streaming=True)
+        assert "mode=host" in caplog.text
+        assert "streaming=True" in caplog.text
+        assert "hidden" not in caplog.text
 
-    def test_streaming_prefix(self, caplog: pytest.LogCaptureFixture) -> None:
-        cmd = ["claude", "-p", "hello"]
+    def test_empty_command_is_safe(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO, logger="ductor_bot.cli.claude_provider"):
-            _log_cmd(cmd, streaming=True)
-        assert "CLI stream cmd" in caplog.text
-
-    def test_normal_prefix(self, caplog: pytest.LogCaptureFixture) -> None:
-        cmd = ["claude", "-p", "hello"]
-        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.claude_provider"):
-            _log_cmd(cmd, streaming=False)
-        assert "CLI cmd" in caplog.text
+            _log_cmd([])
+        assert "executable=<missing>" in caplog.text
+        assert "args=0" in caplog.text
 
 
 # ---------------------------------------------------------------------------
