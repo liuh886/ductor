@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 
 from ductor_bot.messenger.telegram.buttons import extract_buttons
 from ductor_bot.messenger.telegram.formatting import (
@@ -31,6 +32,11 @@ if TYPE_CHECKING:
     from ductor_bot.config import StreamingConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _html_to_plain_text(text: str) -> str:
+    """Convert Telegram HTML into visible plain text."""
+    return html.unescape(re.sub(r"<[^>]+>", "", text))
 
 
 @dataclass(slots=True)
@@ -88,6 +94,7 @@ class _EditorState:
     raw_text_parts: list[str] = field(default_factory=list)
     tool_tracker: _ToolTracker = field(default_factory=_ToolTracker)
     active_msg: Message | None = None
+    active_parse_mode: ParseMode | None = ParseMode.HTML
     sealed_segment_idx: int = 0
     messages_sent: int = 0
     last_edit_time: float = 0.0
@@ -95,6 +102,7 @@ class _EditorState:
     edit_task: asyncio.Task[None] | None = None
     consecutive_failures: int = 0
     fallen_back: bool = False
+    fallback_finalized: bool = False
 
 
 class EditStreamEditor:
@@ -121,6 +129,10 @@ class EditStreamEditor:
         self._max_failures = cfg.max_edit_failures if cfg else 3
         self._thread_id = thread_id
         self._s = _EditorState()
+
+    def _has_fallen_back(self) -> bool:
+        """Read the mutable delivery mode without narrowing across awaits."""
+        return self._s.fallen_back
 
     @property
     def has_content(self) -> bool:
@@ -167,14 +179,28 @@ class EditStreamEditor:
     async def finalize(self, full_text: str) -> None:
         """Force a final edit with indicators stripped for a clean message."""
         self._cancel_timer()
-        if self._s.fallen_back:
+        if self._has_fallen_back():
+            await self._finalize_fallback(full_text)
             return
         self._flush_text_segment()
         # Discard pending indicators and strip flushed ones from active portion.
         self._s.tool_tracker = _ToolTracker()
         self._strip_active_indicators()
         await self._do_edit()
+        if self._has_fallen_back():
+            await self._finalize_fallback(full_text)
+            return
         await self._attach_buttons(full_text)
+
+    async def _finalize_fallback(self, full_text: str) -> None:
+        """Deliver one complete final answer after edit mode has degraded."""
+        cleaned_text, _ = extract_buttons(full_text)
+        if cleaned_text.strip() and not self._s.fallback_finalized:
+            self._s.fallback_finalized = await self._send_new(
+                markdown_to_telegram_html(cleaned_text)
+            )
+        if self._s.fallback_finalized:
+            await self._attach_buttons(full_text)
 
     # ------------------------------------------------------------------
     # Internal: segment management
@@ -280,6 +306,8 @@ class EditStreamEditor:
             await self._edit_message(chunks[0])
         else:
             await self._create_message(chunks[0])
+        if self._s.fallen_back:
+            return
 
         logger.debug("Message sealed, starting new segment")
 
@@ -302,53 +330,74 @@ class EditStreamEditor:
             await self._create_message(remaining)
         self._s.last_edit_time = asyncio.get_event_loop().time()
 
+    async def _send_created_message(
+        self,
+        text: str,
+        parse_mode: ParseMode | None,
+    ) -> Message:
+        """Create a stream message, retrying Telegram rate limits once."""
+
+        async def send() -> Message:
+            if self._s.messages_sent == 0 and self._reply_to is not None:
+                return await self._reply_to.answer(text, parse_mode=parse_mode)
+            return await self._bot.send_message(
+                chat_id=self._chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                message_thread_id=self._thread_id,
+            )
+
+        try:
+            return await send()
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+            return await send()
+
     async def _create_message(self, text: str) -> None:
         """Send a new message (reply for the first one)."""
         display = text[:TELEGRAM_MSG_LIMIT]
         if not display.strip():
             return
         try:
-            if self._s.messages_sent == 0 and self._reply_to is not None:
-                msg = await self._reply_to.answer(display, parse_mode=ParseMode.HTML)
-            else:
-                msg = await self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=display,
-                    parse_mode=ParseMode.HTML,
-                    message_thread_id=self._thread_id,
-                )
+            msg = await self._send_created_message(display, ParseMode.HTML)
             self._s.active_msg = msg
             self._s.messages_sent += 1
+            self._s.active_parse_mode = ParseMode.HTML
             logger.debug("Message created msg_id=%d", msg.message_id)
+            self._s.consecutive_failures = 0
         except TelegramBadRequest:
             logger.warning("HTML create failed, falling back to plain text")
             await self._create_message_plain(display)
+        except (TelegramNetworkError, TelegramRetryAfter) as exc:
+            self._record_delivery_failure("create", exc)
 
     async def _create_message_plain(self, text: str) -> None:
         """Fallback: send without HTML parse mode."""
         try:
-            msg = await self._bot.send_message(
-                chat_id=self._chat_id,
-                text=text[:TELEGRAM_MSG_LIMIT],
-                parse_mode=None,
-                message_thread_id=self._thread_id,
-            )
+            plain_text = _html_to_plain_text(text)
+            msg = await self._send_created_message(plain_text[:TELEGRAM_MSG_LIMIT], None)
             self._s.active_msg = msg
+            self._s.active_parse_mode = None
             self._s.messages_sent += 1
+            self._s.consecutive_failures = 0
         except TelegramBadRequest:
             logger.exception("Failed to send even as plain text")
+        except (TelegramNetworkError, TelegramRetryAfter) as exc:
+            self._record_delivery_failure("plain create", exc)
 
     async def _edit_message(self, text: str) -> None:
         """Edit the active Telegram message with error handling."""
         if self._s.active_msg is None:
             return
-        display = text[:TELEGRAM_MSG_LIMIT]
+        display = (
+            text if self._s.active_parse_mode is ParseMode.HTML else _html_to_plain_text(text)
+        )[:TELEGRAM_MSG_LIMIT]
         try:
             await self._bot.edit_message_text(
                 text=display,
                 chat_id=self._chat_id,
                 message_id=self._s.active_msg.message_id,
-                parse_mode=ParseMode.HTML,
+                parse_mode=self._s.active_parse_mode,
             )
             self._s.consecutive_failures = 0
         except TelegramBadRequest as exc:
@@ -371,11 +420,14 @@ class EditStreamEditor:
                     text=display,
                     chat_id=self._chat_id,
                     message_id=self._s.active_msg.message_id,
-                    parse_mode=ParseMode.HTML,
+                    parse_mode=self._s.active_parse_mode,
                 )
                 self._s.consecutive_failures = 0
-            except (TelegramBadRequest, TelegramRetryAfter):
+            except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter) as retry_exc:
                 logger.warning("Edit retry after rate-limit also failed")
+                self._record_delivery_failure("edit retry", retry_exc)
+        except TelegramNetworkError as exc:
+            self._record_delivery_failure("edit", exc)
 
     # ------------------------------------------------------------------
     # Internal: button keyboard attachment
@@ -394,34 +446,74 @@ class EditStreamEditor:
                 message_id=self._s.active_msg.message_id,
                 reply_markup=markup,
             )
-        except (TelegramBadRequest, TelegramRetryAfter):
+        except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter):
             logger.warning("Failed to attach button keyboard")
 
     # ------------------------------------------------------------------
     # Internal: append-mode fallback
     # ------------------------------------------------------------------
 
-    async def _send_new(self, formatted: str) -> None:
-        """Fallback: send formatted content as new messages (append mode)."""
+    async def _send_appended_message(
+        self,
+        text: str,
+        parse_mode: ParseMode | None,
+    ) -> Message:
+        """Append a message, retrying Telegram rate limits once."""
+
+        async def send() -> Message:
+            return await self._bot.send_message(
+                chat_id=self._chat_id,
+                text=text,
+                parse_mode=parse_mode,
+                message_thread_id=self._thread_id,
+            )
+
+        try:
+            return await send()
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+            return await send()
+
+    async def _send_new(self, formatted: str) -> bool:
+        """Append formatted chunks and report whether all were delivered."""
+        sent_any = False
         for chunk in split_html_message(formatted):
             display = chunk[:TELEGRAM_MSG_LIMIT]
             if not display.strip():
                 continue
             try:
-                await self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=display,
-                    parse_mode=ParseMode.HTML,
-                    message_thread_id=self._thread_id,
-                )
+                msg = await self._send_appended_message(display, ParseMode.HTML)
+                active_parse_mode: ParseMode | None = ParseMode.HTML
             except TelegramBadRequest:
-                await self._bot.send_message(
-                    chat_id=self._chat_id,
-                    text=display,
-                    parse_mode=None,
-                    message_thread_id=self._thread_id,
-                )
+                try:
+                    msg = await self._send_appended_message(_html_to_plain_text(display), None)
+                    active_parse_mode = None
+                except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter) as exc:
+                    self._record_delivery_failure("append plain fallback", exc)
+                    return False
+            except (TelegramNetworkError, TelegramRetryAfter) as exc:
+                self._record_delivery_failure("append", exc)
+                return False
+            self._s.active_msg = msg
+            self._s.active_parse_mode = active_parse_mode
             self._s.messages_sent += 1
+            self._s.consecutive_failures = 0
+            sent_any = True
+        return sent_any
+
+    def _record_delivery_failure(self, operation: str, exc: Exception) -> None:
+        """Record a transient delivery failure and degrade after the configured limit."""
+        self._s.consecutive_failures += 1
+        logger.warning(
+            "Telegram stream %s failed (%d/%d): %s",
+            operation,
+            self._s.consecutive_failures,
+            self._max_failures,
+            exc,
+        )
+        if self._s.consecutive_failures >= self._max_failures:
+            logger.warning("Too many Telegram delivery failures, falling back to append mode")
+            self._s.fallen_back = True
 
 
 def _log_task_error(task: asyncio.Task[None]) -> None:
