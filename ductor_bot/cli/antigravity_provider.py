@@ -6,7 +6,9 @@ import asyncio
 import json
 import logging
 import os
+import weakref
 from collections.abc import AsyncGenerator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +35,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 300.0  # 5 minutes, matches agy --print-timeout default
+_TRANSCRIPT_POLL_SECONDS = 0.5
+_TRANSCRIPT_POLL_INTERVAL = 0.05
+
+_workspace_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscriptCursor:
+    size: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _InvocationCursor:
+    brain_names: frozenset[str]
+    mapped_session: str | None
+    mapped_transcript: _TranscriptCursor | None
+    resume_session: str | None
+    resume_transcript: _TranscriptCursor | None
+    continue_session: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscriptTarget:
+    session_id: str
+    transcript: Path
+    cursor: _TranscriptCursor | None
+    readable: bool = True
 
 
 class AntigravityCLI(BaseCLI):
@@ -176,6 +208,25 @@ class AntigravityCLI(BaseCLI):
         timeout_controller: TimeoutController | None = None,
     ) -> CLIResponse:
         """Send a prompt via ``agy --print`` and return the full response."""
+        async with _workspace_invocation_lock(self._agy_workspace):
+            return await self._send_locked(
+                prompt,
+                resume_session=resume_session,
+                continue_session=continue_session,
+                timeout_seconds=timeout_seconds,
+                timeout_controller=timeout_controller,
+            )
+
+    async def _send_locked(
+        self,
+        prompt: str,
+        *,
+        resume_session: str | None,
+        continue_session: bool,
+        timeout_seconds: float | None,
+        timeout_controller: TimeoutController | None,
+    ) -> CLIResponse:
+        """Run one invocation while holding the per-workspace lock."""
         effective_timeout = timeout_seconds or _DEFAULT_TIMEOUT
         cmd = self._build_command(
             prompt,
@@ -188,6 +239,12 @@ class AntigravityCLI(BaseCLI):
         logger.debug("Antigravity send: %s", safe_cmd)
 
         env = antigravity_process_env(build_subprocess_env(self._config))
+        transcript_cursor = _capture_invocation_cursor(
+            self._agy_workspace,
+            resume_session=resume_session,
+            continue_session=continue_session,
+            env=env,
+        )
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -217,6 +274,7 @@ class AntigravityCLI(BaseCLI):
                 force_kill_process_tree(proc.pid)
                 stdout_bytes, stderr_bytes = await proc.communicate()
                 return CLIResponse(
+                    session_id=resume_session,
                     result="Timeout",
                     is_error=True,
                     timed_out=True,
@@ -231,19 +289,26 @@ class AntigravityCLI(BaseCLI):
         stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
 
-        # agy --print silently drops stdout in non-TTY subprocesses (upstream
-        # bug antigravity-cli#76), so prefer agy's own transcript file, which
-        # also yields the clean final answer without tool-call narration.
-        # stdout is the fallback for environments/versions where it works.
-        transcript_answer = _read_transcript_answer(self._agy_workspace, env)
+        # agy may flush its transcript just after the subprocess exits. Only
+        # inspect the conversation selected for this invocation and only bytes
+        # appended after the pre-invocation cursor.
+        session_id, transcript_answer = await _poll_transcript_answer(
+            self._agy_workspace,
+            transcript_cursor,
+            env,
+        )
         if transcript_answer is not None:
             logger.debug("Antigravity answer read from transcript")
             result_text = transcript_answer
         else:
             result_text = parse_antigravity_json(stdout)
         is_error = proc.returncode not in (None, 0)
+        if not is_error and not result_text.strip():
+            result_text = "Antigravity completed successfully but produced no response text."
+            is_error = True
 
         return CLIResponse(
+            session_id=session_id,
             result=result_text,
             is_error=is_error,
             returncode=proc.returncode,
@@ -275,7 +340,7 @@ class AntigravityCLI(BaseCLI):
             timeout_controller=timeout_controller,
         )
 
-        if response.result:
+        if response.result and not response.is_error:
             yield AssistantTextDelta(type="assistant", text=response.result)
 
         yield ResultEvent(
@@ -296,6 +361,13 @@ def _safe_command_for_logging(cmd: list[str]) -> list[str]:
     if "--print" in cmd and safe:
         safe[-1] = "<prompt>"
     return safe
+
+
+def _workspace_invocation_lock(working_dir: Path) -> asyncio.Lock:
+    """Return the invocation lock for this workspace in the current event loop."""
+    loop = asyncio.get_running_loop()
+    locks = _workspace_locks.setdefault(loop, {})
+    return locks.setdefault(os.path.normcase(str(working_dir.resolve())), asyncio.Lock())
 
 
 # -- Workspace path (workaround for antigravity-cli#20) ------------------------
@@ -373,18 +445,106 @@ def _agy_state_root(env: Mapping[str, str] | None = None) -> Path:
     return base / ".gemini" / "antigravity-cli"
 
 
-def _read_transcript_answer(working_dir: Path, env: Mapping[str, str] | None = None) -> str | None:
-    """Return agy's final answer for *working_dir* from its transcript, or None.
+def _transcript_path(root: Path, session_id: str) -> Path:
+    return root / "brain" / session_id / ".system_generated" / "logs" / "transcript.jsonl"
 
-    The answer is the last ``source=MODEL, type=PLANNER_RESPONSE, status=DONE``
-    entry's ``content`` -- already free of the intermediate tool-call steps.
-    """
-    brain_dir = _resolve_brain_dir(working_dir, env)
-    if brain_dir is None:
-        return None
-    transcript = brain_dir / ".system_generated" / "logs" / "transcript.jsonl"
+
+def _snapshot_transcript(transcript: Path) -> _TranscriptCursor | None:
     try:
-        raw = transcript.read_text(encoding="utf-8", errors="replace")
+        stat = transcript.stat()
+    except OSError:
+        return None
+    return _TranscriptCursor(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
+
+
+def _brain_names(root: Path) -> frozenset[str]:
+    try:
+        return frozenset(entry.name for entry in (root / "brain").iterdir() if entry.is_dir())
+    except OSError:
+        return frozenset()
+
+
+def _capture_invocation_cursor(
+    working_dir: Path,
+    *,
+    resume_session: str | None,
+    continue_session: bool,
+    env: Mapping[str, str] | None = None,
+) -> _InvocationCursor:
+    """Capture only directory names and the transcript this invocation may append."""
+    root = _agy_state_root(env)
+    mapped_session = None if resume_session else _conv_id_for_cwd(root, working_dir)
+    mapped_transcript = (
+        _snapshot_transcript(_transcript_path(root, mapped_session)) if mapped_session else None
+    )
+    resume_transcript = (
+        _snapshot_transcript(_transcript_path(root, resume_session)) if resume_session else None
+    )
+    return _InvocationCursor(
+        brain_names=_brain_names(root),
+        mapped_session=mapped_session,
+        mapped_transcript=mapped_transcript,
+        resume_session=resume_session,
+        resume_transcript=resume_transcript,
+        continue_session=continue_session,
+    )
+
+
+def _unique_new_transcript_target(
+    root: Path, cursor: _InvocationCursor
+) -> _TranscriptTarget | None:
+    """Return the only conversation created during this invocation, if unique."""
+    new_names = _brain_names(root) - cursor.brain_names
+    if len(new_names) != 1:
+        return None
+    session_id = next(iter(new_names))
+    return _TranscriptTarget(
+        session_id=session_id,
+        transcript=_transcript_path(root, session_id),
+        cursor=None,
+    )
+
+
+def _resolve_transcript_target(
+    working_dir: Path,
+    cursor: _InvocationCursor,
+    env: Mapping[str, str] | None = None,
+) -> _TranscriptTarget | None:
+    """Resolve this invocation's conversation without guessing among candidates."""
+    root = _agy_state_root(env)
+    if cursor.resume_session:
+        return _TranscriptTarget(
+            session_id=cursor.resume_session,
+            transcript=_transcript_path(root, cursor.resume_session),
+            cursor=cursor.resume_transcript,
+        )
+
+    mapped_session = _conv_id_for_cwd(root, working_dir)
+    if mapped_session:
+        is_previous_target = mapped_session == cursor.mapped_session
+        is_new_conversation = mapped_session not in cursor.brain_names
+        return _TranscriptTarget(
+            session_id=mapped_session,
+            transcript=_transcript_path(root, mapped_session),
+            cursor=cursor.mapped_transcript if is_previous_target else None,
+            readable=is_previous_target or is_new_conversation,
+        )
+
+    return _unique_new_transcript_target(root, cursor)
+
+
+def _read_transcript_delta(target: _TranscriptTarget) -> str | None:
+    """Read the final planner response from bytes written after *target.cursor*."""
+    if not target.readable:
+        return None
+    try:
+        stat = target.transcript.stat()
+        start = _fresh_transcript_offset(stat, target.cursor)
+        if start is None:
+            return None
+        with target.transcript.open("rb") as transcript_file:
+            transcript_file.seek(start)
+            raw = transcript_file.read().decode("utf-8", errors="replace")
     except OSError:
         return None
 
@@ -409,18 +569,48 @@ def _read_transcript_answer(working_dir: Path, env: Mapping[str, str] | None = N
     return answer
 
 
-def _resolve_brain_dir(working_dir: Path, env: Mapping[str, str] | None = None) -> Path | None:
-    """Locate the ``brain/<conv-id>`` dir for *working_dir*'s latest turn."""
-    root = _agy_state_root(env)
-    brain_root = root / "brain"
+def _fresh_transcript_offset(
+    stat: os.stat_result, cursor: _TranscriptCursor | None
+) -> int | None:
+    """Return the byte boundary for fresh append/rewrite content."""
+    if cursor is None:
+        return 0
+    if stat.st_size > cursor.size:
+        return cursor.size
+    if stat.st_size > 0 and stat.st_mtime_ns != cursor.mtime_ns:
+        return 0
+    return None
 
-    conv_id = _conv_id_for_cwd(root, working_dir)
-    if conv_id:
-        candidate = brain_root / conv_id
-        if candidate.is_dir():
-            return candidate
 
-    return _newest_brain_dir(brain_root)
+async def _poll_transcript_answer(
+    working_dir: Path,
+    cursor: _InvocationCursor,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str | None, str | None]:
+    """Briefly wait for agy to persist this invocation's final transcript entry."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TRANSCRIPT_POLL_SECONDS
+    session_id: str | None = cursor.resume_session
+    while True:
+        target = _resolve_transcript_target(working_dir, cursor, env)
+        if target is not None:
+            session_id = target.session_id
+            answer = _read_transcript_delta(target)
+            if answer is not None:
+                return session_id, answer
+            if (
+                not cursor.resume_session
+                and not cursor.continue_session
+                and target.session_id == cursor.mapped_session
+            ):
+                new_target = _unique_new_transcript_target(_agy_state_root(env), cursor)
+                if new_target is not None:
+                    new_answer = _read_transcript_delta(new_target)
+                    if new_answer is not None:
+                        return new_target.session_id, new_answer
+        if loop.time() >= deadline:
+            return session_id, None
+        await asyncio.sleep(_TRANSCRIPT_POLL_INTERVAL)
 
 
 def _conv_id_for_cwd(root: Path, working_dir: Path) -> str | None:
@@ -437,23 +627,3 @@ def _conv_id_for_cwd(root: Path, working_dir: Path) -> str | None:
         if isinstance(conv, str) and conv:
             return conv
     return None
-
-
-def _newest_brain_dir(brain_root: Path) -> Path | None:
-    """Return the conversation dir with the most recently written transcript."""
-    try:
-        candidates = [entry for entry in brain_root.iterdir() if entry.is_dir()]
-    except OSError:
-        return None
-    best: Path | None = None
-    best_mtime = -1.0
-    for directory in candidates:
-        transcript = directory / ".system_generated" / "logs" / "transcript.jsonl"
-        try:
-            mtime = transcript.stat().st_mtime
-        except OSError:
-            continue
-        if mtime > best_mtime:
-            best_mtime = mtime
-            best = directory
-    return best
