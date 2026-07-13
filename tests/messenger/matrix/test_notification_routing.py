@@ -104,6 +104,30 @@ async def test_notify_upgrade_falls_back_to_broadcast_when_no_targets() -> None:
     notify.assert_not_called()
 
 
+async def test_broadcast_without_rooms_omits_message_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from ductor_bot.messenger.matrix import bot as bot_module
+
+    secret = "sensitive-matrix-broadcast"
+    bot = bot_module.MatrixBot.__new__(bot_module.MatrixBot)
+    bot._config = AgentConfig(
+        transport="matrix",
+        matrix=MatrixConfig(
+            homeserver="https://example.invalid",
+            user_id="@test:example.invalid",
+            access_token="dummy",
+            allowed_rooms=[],
+        ),
+    )
+    bot._last_active_room = None
+
+    await bot.broadcast(secret)
+
+    assert f"chars={len(secret)}" in caplog.text
+    assert secret not in caplog.text
+
+
 async def test_notify_startup_silences_when_all_targets_disabled() -> None:
     """Regression for v0.16.1 MED #3.
 

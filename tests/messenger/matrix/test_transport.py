@@ -500,7 +500,9 @@ class TestBroadcastRooms:
         with patch(
             "ductor_bot.messenger.matrix.transport.matrix_send_rich", new_callable=AsyncMock
         ) as mock_send:
-            await transport._broadcast("lost message")
+            await transport._broadcast("sensitive-lost-message")
 
         mock_send.assert_not_awaited()
         assert "no rooms available" in caplog.text
+        assert "chars=22" in caplog.text
+        assert "sensitive-lost-message" not in caplog.text

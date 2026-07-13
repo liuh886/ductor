@@ -228,7 +228,7 @@ class MatrixTransport:
 
         rooms = resolve_broadcast_rooms(self._bot.config, self._bot._last_active_room)
         if not rooms:
-            logger.warning("_broadcast: no rooms available, message lost: %s", text[:80])
+            logger.warning("_broadcast: no rooms available, message lost chars=%d", len(text))
             return
         for room_id in rooms:
             await matrix_send_rich(self._bot.client, room_id, text)

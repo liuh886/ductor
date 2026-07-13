@@ -1296,7 +1296,7 @@ class MatrixBot:
         """Send a message to all allowed rooms (falls back to last active room)."""
         rooms = self._broadcast_rooms()
         if not rooms:
-            logger.warning("broadcast: no rooms available, message lost: %s", text[:80])
+            logger.warning("broadcast: no rooms available, message lost chars=%d", len(text))
             return
         for room_id in rooms:
             await self._send_rich(room_id, text)

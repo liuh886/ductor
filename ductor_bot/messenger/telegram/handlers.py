@@ -120,7 +120,8 @@ async def handle_command(orchestrator: Orchestrator, bot: Bot, message: Message)
     key = get_session_key(message)
     chat_id = key.chat_id
     thread_id = get_thread_id(message)
-    logger.info("Command dispatched cmd=%s", message.text.strip()[:40])
+    command = message.text.strip().split(maxsplit=1)[0]
+    logger.info("Command dispatched cmd=%s", command)
     async with TypingContext(bot, chat_id, thread_id=thread_id):
         result = await orchestrator.handle_message(key, message.text.strip())
     markup = button_grid_to_markup(result.buttons) if result.buttons else None
