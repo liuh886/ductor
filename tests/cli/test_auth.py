@@ -589,7 +589,7 @@ def test_check_antigravity_auth_installed_binary(
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(_auth_mod.shutil, "which", lambda _cmd: "C:/agy/bin/agy.exe")
-    monkeypatch.setattr(_auth_mod, "_antigravity_cli_logged_in", lambda: False)
+    monkeypatch.setattr(_auth_mod, "_antigravity_cli_logged_in", lambda _binary: False)
 
     result = check_antigravity_auth()
 
@@ -603,14 +603,14 @@ def test_check_antigravity_auth_authenticated_via_cli(
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(_auth_mod.shutil, "which", lambda _cmd: "C:/agy/bin/agy.exe")
-    monkeypatch.setattr(_auth_mod, "_antigravity_cli_logged_in", lambda: True)
+    monkeypatch.setattr(_auth_mod, "_antigravity_cli_logged_in", lambda _binary: True)
 
     result = check_antigravity_auth()
 
     assert result.status == AuthStatus.AUTHENTICATED
 
 
-def test_check_antigravity_auth_ccs_settings_are_only_installed(
+def test_check_antigravity_auth_ignores_ccs_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import ductor_bot.cli.auth as _auth_mod
@@ -623,7 +623,55 @@ def test_check_antigravity_auth_ccs_settings_are_only_installed(
 
     result = check_antigravity_auth()
 
-    assert result.status == AuthStatus.INSTALLED
+    assert result.status == AuthStatus.NOT_FOUND
+
+
+def test_check_antigravity_auth_uses_shared_oauth_without_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ductor_bot.cli.auth as _auth_mod
+
+    gemini_home = tmp_path / ".gemini"
+    gemini_home.mkdir()
+    oauth = gemini_home / "oauth_creds.json"
+    oauth.write_text('{"access_token":"token"}', encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+    monkeypatch.setattr(_auth_mod.shutil, "which", lambda _cmd: "C:/agy/bin/agy.exe")
+
+    def _unexpected_probe(_binary: str) -> bool:
+        raise AssertionError("official OAuth state should bypass the agy probe")
+
+    monkeypatch.setattr(_auth_mod, "_antigravity_cli_logged_in", _unexpected_probe)
+
+    result = check_antigravity_auth()
+
+    assert result.status == AuthStatus.AUTHENTICATED
+    assert result.auth_file == oauth
+
+
+def test_check_antigravity_auth_uses_active_google_account_without_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ductor_bot.cli.auth as _auth_mod
+
+    gemini_home = tmp_path / ".gemini"
+    gemini_home.mkdir()
+    accounts = gemini_home / "google_accounts.json"
+    accounts.write_text('{"active":"user@example.com","old":[]}', encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+    monkeypatch.setattr(_auth_mod.shutil, "which", lambda _cmd: "C:/agy/bin/agy.exe")
+
+    def _unexpected_probe(_binary: str) -> bool:
+        raise AssertionError("active Google account should bypass the agy probe")
+
+    monkeypatch.setattr(_auth_mod, "_antigravity_cli_logged_in", _unexpected_probe)
+
+    result = check_antigravity_auth()
+
+    assert result.status == AuthStatus.AUTHENTICATED
+    assert result.auth_file == accounts
 
 
 def test_antigravity_cli_logged_in_returns_true_for_models(
@@ -641,6 +689,52 @@ def test_antigravity_cli_logged_in_returns_true_for_models(
     monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _FakeResult())
 
     assert _auth_mod._antigravity_cli_logged_in() is True
+
+
+def test_antigravity_cli_logged_in_uses_short_clean_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    import ductor_bot.cli.auth as _auth_mod
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "Gemini 3.5 Flash (High)\n"
+        stderr = ""
+
+    captured: dict[str, object] = {}
+
+    def _run(cmd: list[str], **kwargs: object) -> _FakeResult:
+        captured["cmd"] = cmd
+        captured.update(kwargs)
+        return _FakeResult()
+
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    assert _auth_mod._antigravity_cli_logged_in("C:/agy/bin/agy.exe") is True
+    assert captured["cmd"] == ["C:/agy/bin/agy.exe", "models"]
+    assert captured["timeout"] == 3.0
+    assert captured["env"]["BROWSER"] == "none"  # type: ignore[index]
+    assert "CODEX_SANDBOX_NETWORK_DISABLED" not in captured["env"]  # type: ignore[operator]
+
+
+def test_antigravity_cli_logged_in_rejects_empty_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    import ductor_bot.cli.auth as _auth_mod
+
+    class _FakeResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _FakeResult())
+
+    assert _auth_mod._antigravity_cli_logged_in("agy") is False
 
 
 def test_antigravity_cli_logged_in_returns_false_for_login_prompt(

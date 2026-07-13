@@ -131,15 +131,23 @@ def test_discovers_model_from_official_settings(tmp_path: Path) -> None:
     assert configured_antigravity_models(tmp_path) == ("Claude Opus 4.6 (Thinking)",)
 
 
-def test_process_env_removes_codex_sandbox_flag() -> None:
+def test_process_env_is_headless_and_removes_codex_sandbox_flag() -> None:
     env = antigravity_process_env(
         {
             "HOME": "host",
+            "BROWSER": "chrome",
             "CODEX_SANDBOX_NETWORK_DISABLED": "1",
         }
     )
 
-    assert env == {"HOME": "host"}
+    assert env == {"HOME": "host", "BROWSER": "none"}
+
+
+def test_process_env_does_not_inject_ccs_or_anthropic_settings() -> None:
+    assert antigravity_process_env({"HOME": "host"}) == {
+        "HOME": "host",
+        "BROWSER": "none",
+    }
 
 
 def test_runtime_display_name_routes_to_antigravity() -> None:
