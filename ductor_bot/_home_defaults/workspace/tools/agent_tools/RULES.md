@@ -24,9 +24,13 @@ internal tools for agent-to-agent communication only.
 | `ask_agent.py` | Ask a sub-agent a question (sync, blocks until response) | All agents |
 | `ask_agent_async.py` | Give a sub-agent a task (async, response comes back to YOU) | All agents |
 | `edit_shared_knowledge.py` | View or edit SHAREDMEMORY.md (synced to all agents) | All agents |
+| `vault_search.py` | Search the read-only zhihaol vault index with source paths | All agents |
 | `create_agent.py` | Create a new sub-agent (writes to `agents.json`, auto-detected) | Main only |
 | `remove_agent.py` | Remove a sub-agent from the registry | Main only |
 | `list_agents.py` | List all sub-agents and their configuration | Main only |
+
+Use `python3 tools/agent_tools/vault_search.py "query"` only when durable
+project or domain context is needed. The tool does not write the vault or index.
 
 ## How agent-to-agent communication works
 
