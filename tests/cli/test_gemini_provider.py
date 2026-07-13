@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable
 from pathlib import Path
@@ -501,10 +502,26 @@ class TestParseResponse:
 
 
 class TestLogCmd:
-    def test_truncates_long_args(self) -> None:
-        cmd = ["gemini", "--prompt", "x" * 200]
-        # Should not raise
-        _log_cmd(cmd)
+    def test_omits_all_argument_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        secret = "sensitive-gemini-argument"
+        cmd = ["docker", "exec", "-e", f"TOKEN={secret}", "gemini", "--prompt", secret]
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.gemini_provider"):
+            _log_cmd(cmd)
+        assert "provider=gemini" in caplog.text
+        assert "mode=docker" in caplog.text
+        assert "executable=docker" in caplog.text
+        assert "args=6" in caplog.text
+        assert secret not in caplog.text
 
-    def test_streaming_label(self) -> None:
-        _log_cmd(["gemini", "--output-format", "stream-json"], streaming=True)
+    def test_streaming_metadata(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.gemini_provider"):
+            _log_cmd(["gemini", "--prompt", "hidden"], streaming=True)
+        assert "mode=host" in caplog.text
+        assert "streaming=True" in caplog.text
+        assert "hidden" not in caplog.text
+
+    def test_empty_command_is_safe(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.gemini_provider"):
+            _log_cmd([])
+        assert "executable=<missing>" in caplog.text
+        assert "args=0" in caplog.text

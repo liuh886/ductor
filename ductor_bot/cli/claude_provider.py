@@ -17,7 +17,6 @@ from ductor_bot.cli.base import (
     add_cli_opt,
     docker_prompt_tmp_dir,
     docker_wrap,
-    format_cli_cmd,
     host_path_to_container,
 )
 from ductor_bot.cli.executor import SubprocessSpec, run_oneshot_subprocess, run_streaming_subprocess
@@ -252,9 +251,16 @@ async def _claude_line_handler(line: str) -> AsyncGenerator[StreamEvent, None]:
 
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
-    """Log the Claude CLI command with redacted, truncated long values."""
-    kind = "stream cmd" if streaming else "cmd"
-    logger.info("CLI %s: %s", kind, format_cli_cmd(cmd))
+    """Log command metadata without exposing argument values."""
+    executable = Path(cmd[0]).name if cmd else "<missing>"
+    mode = "docker" if executable.lower() in {"docker", "docker.exe"} else "host"
+    logger.info(
+        "Provider command provider=claude mode=%s executable=%s args=%d streaming=%s",
+        mode,
+        executable,
+        max(len(cmd) - 1, 0),
+        streaming,
+    )
 
 
 def _parse_response(stdout: bytes, stderr: bytes, returncode: int | None) -> CLIResponse:

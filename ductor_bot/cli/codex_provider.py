@@ -13,7 +13,6 @@ from ductor_bot.cli.base import (
     BaseCLI,
     CLIConfig,
     docker_wrap,
-    format_cli_cmd,
 )
 from ductor_bot.cli.codex_events import (
     CodexThinkingFilter,
@@ -419,6 +418,13 @@ def _extract_codex_error_detail(raw: str) -> str:
 
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
-    """Log the Codex CLI command with redacted, truncated long values."""
-    kind = "stream cmd" if streaming else "cmd"
-    logger.info("Codex %s: %s", kind, format_cli_cmd(cmd, opt_prefix=None))
+    """Log command metadata without exposing argument values."""
+    executable = Path(cmd[0]).name if cmd else "<missing>"
+    mode = "docker" if executable.lower() in {"docker", "docker.exe"} else "host"
+    logger.info(
+        "Provider command provider=codex mode=%s executable=%s args=%d streaming=%s",
+        mode,
+        executable,
+        max(len(cmd) - 1, 0),
+        streaming,
+    )

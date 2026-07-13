@@ -21,7 +21,6 @@ from ductor_bot.cli.base import (
     _feed_stdin_and_close,
     docker_prompt_tmp_dir,
     docker_wrap,
-    format_cli_cmd,
     host_path_to_container,
 )
 from ductor_bot.cli.gemini_events import extract_result_text, extract_text, parse_gemini_stream_line
@@ -558,9 +557,16 @@ def _build_stream_exit_event(
 
 
 def _log_cmd(cmd: list[str], *, streaming: bool = False) -> None:
-    """Log the Gemini CLI command with redacted, truncated long values."""
-    kind = "stream cmd" if streaming else "cmd"
-    logger.info("Gemini %s: %s", kind, format_cli_cmd(cmd))
+    """Log command metadata without exposing argument values."""
+    executable = Path(cmd[0]).name if cmd else "<missing>"
+    mode = "docker" if executable.lower() in {"docker", "docker.exe"} else "host"
+    logger.info(
+        "Provider command provider=gemini mode=%s executable=%s args=%d streaming=%s",
+        mode,
+        executable,
+        max(len(cmd) - 1, 0),
+        streaming,
+    )
 
 
 def _gemini_settings_path(env: dict[str, str]) -> Path:

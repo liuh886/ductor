@@ -1156,26 +1156,29 @@ class TestStreamStateLastErrorMessage:
 
 
 class TestLogCmd:
-    def test_short_values_not_truncated(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_omits_all_argument_values(self, caplog: pytest.LogCaptureFixture) -> None:
+        secret = "sensitive-codex-argument"
+        cmd = ["docker", "exec", "-e", f"TOKEN={secret}", "codex", "exec", secret]
         with caplog.at_level(logging.INFO, logger="ductor_bot.cli.codex_provider"):
-            _log_cmd(["codex", "exec", "--json", "short prompt"])
-        assert "short prompt" in caplog.text
+            _log_cmd(cmd)
+        assert "provider=codex" in caplog.text
+        assert "mode=docker" in caplog.text
+        assert "executable=docker" in caplog.text
+        assert "args=6" in caplog.text
+        assert secret not in caplog.text
 
-    def test_long_values_truncated(self, caplog: pytest.LogCaptureFixture) -> None:
-        long_val = "x" * 100
+    def test_streaming_metadata(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO, logger="ductor_bot.cli.codex_provider"):
-            _log_cmd(["codex", "exec", long_val])
-        assert "..." in caplog.text
+            _log_cmd(["codex", "exec", "hidden"], streaming=True)
+        assert "mode=host" in caplog.text
+        assert "streaming=True" in caplog.text
+        assert "hidden" not in caplog.text
 
-    def test_streaming_prefix(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_empty_command_is_safe(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO, logger="ductor_bot.cli.codex_provider"):
-            _log_cmd(["codex", "exec"], streaming=True)
-        assert "Codex stream cmd" in caplog.text
-
-    def test_non_streaming_prefix(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.INFO, logger="ductor_bot.cli.codex_provider"):
-            _log_cmd(["codex", "exec"], streaming=False)
-        assert "Codex cmd" in caplog.text
+            _log_cmd([])
+        assert "executable=<missing>" in caplog.text
+        assert "args=0" in caplog.text
 
 
 # ---------------------------------------------------------------------------
