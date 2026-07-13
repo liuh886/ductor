@@ -26,6 +26,8 @@ empty_turn = "Tidak ada respons teks akhir yang dikembalikan. Proses mungkin han
 
 recovered = "_Sesi sebelumnya tidak dapat dipulihkan. Sesi baru dimulai secara otomatis._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
+context_request_too_large = "Permintaan ini terlalu besar untuk sesi baru. Persingkat atau hapus lampiran, lalu coba lagi."
+context_recovery_failed = "Permintaan masih melebihi batas konteks setelah memulai sesi baru. Persingkat atau hapus lampiran, lalu coba lagi."
 sigkill = "Eksekusi terganggu. Silakan kirim permintaan yang sama lagi."
 
 not_found = "Sesi '{name}' tidak ditemukan."

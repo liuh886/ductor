@@ -27,6 +27,8 @@ empty_turn = "No final text response was returned. The run may have completed wi
 
 recovered = "_Previous session could not be restored. A new session was started automatically._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
+context_request_too_large = "This request is too large for a fresh session. Shorten it or remove attachments, then try again."
+context_recovery_failed = "The request still exceeds the context limit after starting a fresh session. Shorten it or remove attachments, then try again."
 sigkill = "Execution was interrupted. Please send the same request again."
 
 not_found = "Session '{name}' not found."

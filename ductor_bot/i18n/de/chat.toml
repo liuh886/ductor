@@ -27,6 +27,8 @@ empty_turn = "Es wurde keine abschließende Textantwort zurückgegeben. Möglich
 
 recovered = "_Die vorherige Session konnte nicht wiederhergestellt werden. Es wurde automatisch eine neue gestartet._"
 recovery_failed = "Could not recover your session after a fresh start. Please try again or use /new to start over."
+context_request_too_large = "Diese Anfrage ist für eine neue Session zu groß. Kürze sie oder entferne Anhänge und versuche es erneut."
+context_recovery_failed = "Die Anfrage überschreitet auch nach dem Start einer neuen Session das Kontextlimit. Kürze sie oder entferne Anhänge und versuche es erneut."
 sigkill = "Die Ausführung wurde unterbrochen. Bitte schick die gleiche Anfrage nochmal."
 
 not_found = "Session '{name}' nicht gefunden."

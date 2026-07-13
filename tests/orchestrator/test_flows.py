@@ -12,6 +12,7 @@ from ductor_bot.orchestrator.core import Orchestrator
 from ductor_bot.orchestrator.flows import (
     StreamingCallbacks,
     _finish_normal,
+    _is_context_limit,
     _strip_ack_token,
     _update_session,
     heartbeat_flow,
@@ -249,6 +250,127 @@ async def test_normal_stale_session_recovery_failed_circuit_breaker(orch: Orches
     )
 
 
+@pytest.mark.parametrize(
+    "detail",
+    [
+        pytest.param(
+            "The prompt is too long: 210000 tokens > 200000 maximum", id="claude"
+        ),
+        pytest.param("Your input exceeds the context window for this model", id="codex"),
+        pytest.param(
+            "The input token count (1048577) exceeds the maximum number of tokens allowed",
+            id="gemini",
+        ),
+        pytest.param("Context length exceeded", id="mimo"),
+        pytest.param("context_length_exceeded", id="structured-code"),
+    ],
+)
+def test_context_limit_detection_covers_provider_phrasings(detail: str) -> None:
+    assert _is_context_limit(_mock_response(is_error=True, result=detail))
+
+
+def test_context_limit_detection_requires_error_response() -> None:
+    assert not _is_context_limit(_mock_response(is_error=False, result="Context length exceeded"))
+
+
+async def test_normal_context_limit_resets_request_target_and_retries_once(
+    orch: Orchestrator,
+) -> None:
+    key = SessionKey(transport="matrix", chat_id=1, topic_id=42)
+    await orch._sessions.reset_session(key, provider="codex", model="gpt-5.2-codex")
+    session = await orch._sessions.get_active(key)
+    assert session is not None
+    session.session_id = "codex-session"
+    await orch._sessions.preserve_session_identity(session)
+
+    context_error = _mock_response(is_error=True, result="context window exceeded")
+    mock_execute = AsyncMock(side_effect=[context_error, _mock_response(result="Recovered")])
+    reset_provider = AsyncMock(wraps=orch._sessions.reset_provider_session)
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._sessions, "reset_provider_session", reset_provider)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal(orch, key, "Continue", model_override="gpt-5.2-codex")
+
+    assert result.text == "Recovered"
+    assert mock_execute.await_count == 2
+    first_request = mock_execute.await_args_list[0].args[0]
+    retry_request = mock_execute.await_args_list[1].args[0]
+    assert first_request.resume_session == "codex-session"
+    assert retry_request.resume_session is None
+    assert retry_request.provider_override == "codex"
+    assert retry_request.model_override == "gpt-5.2-codex"
+    reset_provider.assert_awaited_once_with(key, provider="codex", model="gpt-5.2-codex")
+
+
+async def test_normal_new_session_context_limit_does_not_retry(orch: Orchestrator) -> None:
+    context_error = _mock_response(is_error=True, result="prompt is too long")
+    mock_execute = AsyncMock(return_value=context_error)
+    reset_provider = AsyncMock()
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._sessions, "reset_provider_session", reset_provider)
+
+    result = await normal(orch, SessionKey(chat_id=1), "Oversized prompt")
+
+    assert result.text == (
+        "This request is too large for a fresh session. Shorten it or remove attachments, "
+        "then try again."
+    )
+    assert mock_execute.await_count == 1
+    reset_provider.assert_not_awaited()
+
+
+async def test_normal_second_context_limit_stops_after_one_retry(orch: Orchestrator) -> None:
+    await _establish_session(orch)
+    context_error = _mock_response(is_error=True, result="maximum context length exceeded")
+    mock_execute = AsyncMock(side_effect=[context_error, context_error])
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal(orch, SessionKey(chat_id=1), "Continue")
+
+    assert result.text == (
+        "The request still exceeds the context limit after starting a fresh session. "
+        "Shorten it or remove attachments, then try again."
+    )
+    assert mock_execute.await_count == 2
+
+
+async def test_context_recovery_preserves_other_provider_and_topic_sessions(
+    orch: Orchestrator,
+) -> None:
+    key = SessionKey(chat_id=1, topic_id=10)
+    other_key = SessionKey(chat_id=1, topic_id=20)
+    current = await orch._sessions.reset_session(key, provider="claude", model="opus")
+    current.session_id = "claude-old"
+    current.provider = "codex"
+    current.model = "gpt-5.2-codex"
+    current.session_id = "codex-old"
+    await orch._sessions.preserve_session_identity(current)
+    other = await orch._sessions.reset_session(other_key, provider="claude", model="opus")
+    other.session_id = "other-topic"
+    await orch._sessions.preserve_session_identity(other)
+
+    context_error = _mock_response(is_error=True, result="context length exceeded")
+    object.__setattr__(
+        orch._cli_service,
+        "execute",
+        AsyncMock(side_effect=[context_error, _mock_response(result="Recovered")]),
+    )
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    await normal(orch, key, "Continue", model_override="gpt-5.2-codex")
+
+    active = await orch._sessions.get_active(key)
+    untouched = await orch._sessions.get_active(other_key)
+    assert active is not None
+    assert active.provider_sessions["claude"].session_id == "claude-old"
+    assert "codex" in active.provider_sessions
+    assert active.provider_sessions["codex"].session_id == "sess-123"
+    assert untouched is not None
+    assert untouched.session_id == "other-topic"
+
+
 async def test_normal_does_not_auto_fallback_provider(orch: Orchestrator) -> None:
     mock_execute = AsyncMock(return_value=_mock_response())
     object.__setattr__(orch._cli_service, "execute", mock_execute)
@@ -442,6 +564,78 @@ async def test_streaming_sigkill_recovers_once_then_succeeds(orch: Orchestrator)
     mock_reset_provider.assert_called_once_with(
         SessionKey(chat_id=1), provider="claude", model="opus"
     )
+
+
+async def test_streaming_context_limit_retries_resumed_session_once(
+    orch: Orchestrator,
+) -> None:
+    key = SessionKey(chat_id=1, topic_id=42)
+    setup = AsyncMock(return_value=_mock_response(session_id="stream-session"))
+    object.__setattr__(orch._cli_service, "execute_streaming", setup)
+    await normal_streaming(orch, key, "Setup")
+
+    context_error = _mock_response(is_error=True, result="context length exceeded")
+    mock_streaming = AsyncMock(
+        side_effect=[context_error, _mock_response(result="Recovered stream")]
+    )
+    reset_provider = AsyncMock(wraps=orch._sessions.reset_provider_session)
+    status = AsyncMock()
+    object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
+    object.__setattr__(orch._sessions, "reset_provider_session", reset_provider)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal_streaming(
+        orch,
+        key,
+        "Continue",
+        cbs=StreamingCallbacks(on_system_status=status),
+    )
+
+    assert result.text == "Recovered stream"
+    assert mock_streaming.await_count == 2
+    retry_request = mock_streaming.await_args_list[1].args[0]
+    assert retry_request.resume_session is None
+    reset_provider.assert_awaited_once_with(key, provider="claude", model="opus")
+    status.assert_any_await("recovering")
+
+
+async def test_streaming_new_session_context_limit_does_not_retry(
+    orch: Orchestrator,
+) -> None:
+    mock_streaming = AsyncMock(
+        return_value=_mock_response(is_error=True, result="input exceeds the context window")
+    )
+    object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
+
+    result = await normal_streaming(orch, SessionKey(chat_id=1), "Oversized prompt")
+
+    assert result.text == (
+        "This request is too large for a fresh session. Shorten it or remove attachments, "
+        "then try again."
+    )
+    assert mock_streaming.await_count == 1
+
+
+async def test_streaming_second_context_limit_stops_after_one_retry(
+    orch: Orchestrator,
+) -> None:
+    key = SessionKey(chat_id=1)
+    setup = AsyncMock(return_value=_mock_response(session_id="stream-session"))
+    object.__setattr__(orch._cli_service, "execute_streaming", setup)
+    await normal_streaming(orch, key, "Setup")
+
+    context_error = _mock_response(is_error=True, result="context_length_exceeded")
+    mock_streaming = AsyncMock(side_effect=[context_error, context_error])
+    object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal_streaming(orch, key, "Continue")
+
+    assert result.text == (
+        "The request still exceeds the context limit after starting a fresh session. "
+        "Shorten it or remove attachments, then try again."
+    )
+    assert mock_streaming.await_count == 2
 
 
 async def test_streaming_error_preserves_session(orch: Orchestrator) -> None:

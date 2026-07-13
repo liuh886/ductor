@@ -7,7 +7,7 @@ import contextlib
 import logging
 import signal
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -262,6 +262,14 @@ def _session_recovery_failed_msg() -> str:
     return t("session.recovery_failed")
 
 
+def _context_request_too_large_msg() -> str:
+    return t("session.context_request_too_large")
+
+
+def _context_recovery_failed_msg() -> str:
+    return t("session.context_recovery_failed")
+
+
 def _is_sigkill(response: AgentResponse) -> bool:
     """Return True when the response indicates SIGKILL termination."""
     return response.is_error and response.returncode == -getattr(signal, "SIGKILL", 9)
@@ -278,6 +286,17 @@ _INVALID_SESSION_MARKERS = (
     "thread/resume failed",
 )
 
+_CONTEXT_LIMIT_MARKERS = (
+    "context length",
+    "maximum context",
+    "context_length_exceeded",
+    "context window exceeded",
+    "context_window_exceeded",
+    "exceeds the context window",
+    "prompt is too long",
+    "input is too long",
+)
+
 
 def _is_invalid_session(response: AgentResponse) -> bool:
     """Return True when the CLI rejected a ``--resume`` session ID.
@@ -291,9 +310,19 @@ def _is_invalid_session(response: AgentResponse) -> bool:
     return any(marker in lower for marker in _INVALID_SESSION_MARKERS)
 
 
+def _is_context_limit(response: AgentResponse) -> bool:
+    """Return True when a provider rejected input beyond its context window."""
+    if not response.is_error:
+        return False
+    lower = (response.result or "").lower()
+    if any(marker in lower for marker in _CONTEXT_LIMIT_MARKERS):
+        return True
+    return "input token count" in lower and "exceeds" in lower and "maximum" in lower
+
+
 def _needs_session_recovery(response: AgentResponse) -> bool:
     """Return True when the response warrants an automatic session reset + retry."""
-    return _is_sigkill(response) or _is_invalid_session(response)
+    return _is_sigkill(response) or _is_invalid_session(response) or _is_context_limit(response)
 
 
 @dataclass(slots=True)
@@ -301,7 +330,6 @@ class _RecoveryContext:
     """Context for session recovery."""
 
     reason: str
-    model_override: str | None
     streaming: bool = False
     cbs: StreamingCallbacks = field(default_factory=StreamingCallbacks)
 
@@ -313,8 +341,9 @@ class _RecoveryOutcome:
     ``retry_performed`` is True when a fresh-session retry actually ran.
     ``session_recovered`` is True only when that retry succeeded after an
     invalid-session rejection (used to prepend the user-facing notice).
-    ``failed_result`` is non-None when the retry still returned stale-session
-    and callers must short-circuit with it (MED #8 circuit breaker).
+    ``failed_result`` is non-None when a fresh request is already too large or
+    when the retry still returns stale-session/context-limit, so callers must
+    short-circuit with it.
     """
 
     request: AgentRequest
@@ -328,12 +357,10 @@ class _RecoveryOutcome:
 async def _maybe_recover_session(  # noqa: PLR0913
     orch: Orchestrator,
     key: SessionKey,
-    text: str,
     request: AgentRequest,
     session: SessionData,
     response: AgentResponse,
     *,
-    model_override: str | None,
     streaming: bool = False,
     cbs: StreamingCallbacks | None = None,
 ) -> _RecoveryOutcome:
@@ -360,17 +387,36 @@ async def _maybe_recover_session(  # noqa: PLR0913
             failed_result=None,
         )
 
+    context_limit = _is_context_limit(response)
+    if context_limit and request.resume_session is None:
+        logger.info("Context limit on fresh session chat=%s action=no-retry", key.chat_id)
+        return _RecoveryOutcome(
+            request=request,
+            session=session,
+            response=response,
+            retry_performed=False,
+            session_recovered=False,
+            failed_result=OrchestratorResult(text=_context_request_too_large_msg()),
+        )
+
     session_recovered = _is_invalid_session(response)
-    reason = "invalid_session" if session_recovered else "sigkill"
+    if context_limit:
+        reason = "context_limit"
+    elif session_recovered:
+        reason = "invalid_session"
+    else:
+        reason = "sigkill"
     ctx = _RecoveryContext(
         reason=reason,
-        model_override=model_override,
         streaming=streaming,
         cbs=cbs or StreamingCallbacks(),
     )
-    request, session, response = await _recover_session(orch, key, text, ctx)
+    request, session, response = await _recover_session(orch, key, request, ctx)
     failed_result: OrchestratorResult | None = None
-    if _is_invalid_session(response):
+    if _is_context_limit(response):
+        logger.error("Context-limit recovery failed on retry for chat_id=%s", key.chat_id)
+        failed_result = OrchestratorResult(text=_context_recovery_failed_msg())
+    elif _is_invalid_session(response):
         logger.error("Session recovery failed on retry for chat_id=%s", key.chat_id)
         failed_result = OrchestratorResult(text=_session_recovery_failed_msg())
     return _RecoveryOutcome(
@@ -386,7 +432,7 @@ async def _maybe_recover_session(  # noqa: PLR0913
 async def _recover_session(
     orch: Orchestrator,
     key: SessionKey,
-    text: str,
+    request: AgentRequest,
     ctx: _RecoveryContext,
 ) -> tuple[AgentRequest, SessionData, AgentResponse]:
     """Reset the active provider session and retry once.
@@ -394,11 +440,12 @@ async def _recover_session(
     When callbacks are set in *ctx.cbs*, the retry uses streaming execution.
     """
     logger.warning("recovery.%s chat=%s action=retry", ctx.reason, key.chat_id)
-    model_name = ctx.model_override or orch._config.model
-    provider_name = orch.models.provider_for(model_name)
+    model_name, provider_name = _request_target(orch, request)
     await orch._process_registry.kill_by_chat_topic(key.chat_id, key.topic_id)
     orch._process_registry.clear_topic_abort(key.chat_id, key.topic_id)
-    await orch._sessions.reset_provider_session(key, provider=provider_name, model=model_name)
+    fresh_session = await orch._sessions.reset_provider_session(
+        key, provider=provider_name, model=model_name
+    )
 
     cb = ctx.cbs
     if ctx.reason == "invalid_session" and cb.on_text_delta is not None:
@@ -406,14 +453,26 @@ async def _recover_session(
     elif cb.on_system_status is not None:
         await cb.on_system_status("recovering")
 
-    request, session = await _prepare_normal(orch, key, text, model_override=ctx.model_override)
+    request = replace(
+        request,
+        resume_session=None,
+        timeout_controller=_make_timeout_controller(orch, "normal"),
+    )
+    session = await orch._sessions.get_active(key) or fresh_session
     if ctx.streaming:
+
+        async def _on_compact() -> None:
+            if orch._memory_flusher is not None:
+                orch._memory_flusher.mark_boundary(key)
+
         response = await orch._cli_service.execute_streaming(
             request,
             on_text_delta=cb.on_text_delta,
             on_thinking_delta=cb.on_thinking_delta,
             on_tool_activity=cb.on_tool_activity,
             on_system_status=cb.on_system_status,
+            on_reasoning_delta=cb.on_reasoning_delta,
+            on_compact_boundary=_on_compact if orch._memory_flusher is not None else None,
         )
     else:
         response = await orch._cli_service.execute(request)
@@ -495,9 +554,7 @@ async def normal(  # noqa: PLR0911
     _begin_inflight(orch, request, session, is_recovery=is_recovery)
     try:
         response = await orch._cli_service.execute(request)
-        outcome = await _maybe_recover_session(
-            orch, key, text, request, session, response, model_override=model_override
-        )
+        outcome = await _maybe_recover_session(orch, key, request, session, response)
         if outcome.failed_result is not None:
             return outcome.failed_result
         request, session, response = outcome.request, outcome.session, outcome.response
@@ -576,11 +633,9 @@ async def normal_streaming(  # noqa: PLR0911
         outcome = await _maybe_recover_session(
             orch,
             key,
-            text,
             request,
             session,
             response,
-            model_override=model_override,
             streaming=True,
             cbs=cb,
         )
