@@ -26,8 +26,9 @@ Only provide user-facing results.
 Read `memory_system/CLAUDE/GEMINI/AGENTS.md` for full format and cleanup rules.
 
 - Search durable knowledge with `python3 tools/agent_tools/vault_search.py "query"`.
-- Write to the relevant vault/project Markdown note only when the user asks or
-  the workflow explicitly requires persistence.
+- Treat the default vault tool as read-only. Do not write a vault-relative path
+  unless the user explicitly asks and an authorized absolute vault root has
+  been resolved and containment-checked.
 - Do not write directly to `vault_index.db`; it is a rebuildable read-only projection.
 - Never mention internal retrieval mechanics to the user.
 

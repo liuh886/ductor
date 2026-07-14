@@ -1,10 +1,9 @@
-# ruff: noqa: INP001
-
 """Audit or atomically rebuild the read-only zhihaol vault index."""
 
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
@@ -79,22 +78,33 @@ def scan_vault(
             continue
         eligible_count += 1
         relative = path.relative_to(vault_root).as_posix()
+        prefix = bytearray()
+        checksum = hashlib.sha256()
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        has_null_byte = False
         try:
-            raw = path.read_bytes()
+            with path.open("rb") as handle:
+                while chunk := handle.read(64 * 1024):
+                    checksum.update(chunk)
+                    has_null_byte = has_null_byte or b"\x00" in chunk
+                    decoder.decode(chunk)
+                    if len(prefix) <= max_content_bytes:
+                        remaining = max_content_bytes + 1 - len(prefix)
+                        prefix.extend(chunk[:remaining])
+                decoder.decode(b"", final=True)
         except OSError:
             decode_error_paths.append(relative)
             continue
-        if b"\x00" in raw:
-            null_byte_paths.append(relative)
-            continue
-        try:
-            full_content = raw.decode("utf-8")
         except UnicodeDecodeError:
             decode_error_paths.append(relative)
             continue
-        content = full_content
-        if len(raw) > max_content_bytes:
-            content = raw[:max_content_bytes].decode("utf-8", errors="ignore")
+        if has_null_byte:
+            null_byte_paths.append(relative)
+            continue
+        truncated = len(prefix) > max_content_bytes
+        raw_content = bytes(prefix[:max_content_bytes])
+        content = raw_content.decode("utf-8", errors="ignore" if truncated else "strict")
+        if truncated:
             truncated_paths.append(relative)
         stat = path.stat()
         parts = Path(relative).parts
@@ -102,11 +112,11 @@ def scan_vault(
         records.append(
             VaultRecord(
                 ulid=_stable_id(relative),
-                title=_extract_title(full_content[:65536], path.stem),
+                title=_extract_title(content[:65536], path.stem),
                 content=content,
                 path=relative,
                 created_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-                checksum=hashlib.sha256(raw).hexdigest(),
+                checksum=checksum.hexdigest(),
                 active_project=active_project,
             )
         )
@@ -197,30 +207,41 @@ def build_index(index_path: Path, scan: VaultScan) -> None:
         conn.close()
 
 
-def index_paths(index_path: Path) -> set[str]:
+def index_records(index_path: Path) -> dict[str, str | None]:
     if not index_path.is_file():
-        return set()
+        return {}
     uri = f"file:{index_path.resolve().as_posix()}?mode=ro"
     conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-        return {str(row[0]).replace("\\", "/") for row in conn.execute("SELECT path FROM notes")}
+        try:
+            rows = conn.execute("SELECT path, checksum FROM notes")
+            return {str(path).replace("\\", "/"): str(checksum or "") for path, checksum in rows}
+        except sqlite3.Error:
+            rows = conn.execute("SELECT path FROM notes")
+            return {str(row[0]).replace("\\", "/"): None for row in rows}
     except sqlite3.Error:
-        return set()
+        return {}
     finally:
         if conn is not None:
             conn.close()
 
 
 def coverage_report(scan: VaultScan, index_path: Path) -> dict[str, object]:
-    source_paths = {record.path for record in scan.records}
-    indexed_paths = index_paths(index_path)
+    source_records = {record.path: record.checksum for record in scan.records}
+    indexed_records = index_records(index_path)
+    source_paths = set(source_records)
+    indexed_paths = set(indexed_records)
+    shared_paths = source_paths & indexed_paths
     return {
         "eligible_markdown": scan.eligible_count,
         "indexable_markdown": len(source_paths),
         "indexed_notes": len(indexed_paths),
         "missing_paths": sorted(source_paths - indexed_paths),
         "stale_paths": sorted(indexed_paths - source_paths),
+        "changed_paths": sorted(
+            path for path in shared_paths if source_records[path] != indexed_records[path]
+        ),
         "null_byte_paths": list(scan.null_byte_paths),
         "decode_error_paths": list(scan.decode_error_paths),
         "truncated_paths": list(scan.truncated_paths),
@@ -283,7 +304,13 @@ def main() -> int:
     print(json.dumps(report, ensure_ascii=False, indent=2))
     after = report["after"]
     assert isinstance(after, dict)
-    return 0 if not after["missing_paths"] and not after["stale_paths"] else 1
+    return (
+        0
+        if not after["missing_paths"]
+        and not after["stale_paths"]
+        and not after["changed_paths"]
+        else 1
+    )
 
 
 if __name__ == "__main__":

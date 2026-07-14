@@ -69,7 +69,7 @@
         "extras": ["ffmpeg", "pandoc", "matplotlib", "pandas"]
     },
     "heartbeat": {
-        "enabled": true,
+        "enabled": false,
         "interval_minutes": 30,
         "cooldown_minutes": 5,
         "quiet_start": 22,

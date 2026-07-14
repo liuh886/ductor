@@ -27,6 +27,7 @@ LEGACY_LINEAGE_FIELDS = frozenset(
 )
 LEGACY_CONFIG_FIELDS = frozenset({"state_backend", "state_db_path"})
 LEGACY_MEMORY_PATHS = (
+    Path("SHAREDMEMORY.md"),
     Path("state.db"),
     Path("workspace/tools/memory"),
     Path("workspace/tools/agent_tools/search_past_sessions.py"),
@@ -145,6 +146,16 @@ def runtime_config_checks(home: Path) -> list[CheckResult]:
                 "disabled/default" if value is not True else "enabled",
             )
         )
+
+    prompt_files = config.get("append_system_prompt_files")
+    prompt_files_disabled = prompt_files in (None, [])
+    results.append(
+        CheckResult(
+            prompt_files_disabled,
+            "append_system_prompt_files",
+            "disabled/default" if prompt_files_disabled else f"configured={len(prompt_files)}",
+        )
+    )
 
     vault_index = home / "workspace" / "memory_system" / "vault_index.db"
     results.append(CheckResult(vault_index.is_file(), "vault index", str(vault_index)))

@@ -48,6 +48,36 @@ def test_build_index_and_coverage_report(tmp_path: Path) -> None:
     assert coverage_report(scan, index)["missing_paths"] == []
 
 
+def test_coverage_report_detects_content_changes_at_existing_path(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "one.md"
+    note.write_text("# One\nOriginal", encoding="utf-8")
+    index = tmp_path / "vault_index.db"
+    build_index(index, scan_vault(vault))
+
+    note.write_text("# One\nChanged", encoding="utf-8")
+    report = coverage_report(scan_vault(vault), index)
+
+    assert report["missing_paths"] == []
+    assert report["stale_paths"] == []
+    assert report["changed_paths"] == ["one.md"]
+
+
+def test_scan_vault_hashes_full_file_with_bounded_content(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "large.md"
+    note.write_text("# Large\n" + "x" * 128, encoding="utf-8")
+
+    first = scan_vault(vault, max_content_bytes=32)
+    note.write_text("# Large\n" + "x" * 127 + "y", encoding="utf-8")
+    second = scan_vault(vault, max_content_bytes=32)
+
+    assert len(first.records[0].content.encode()) <= 32
+    assert first.records[0].checksum != second.records[0].checksum
+
+
 def test_replace_index_backs_up_and_removes_stale_paths(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()

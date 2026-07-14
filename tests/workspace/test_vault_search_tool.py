@@ -37,6 +37,12 @@ def _build_index(path: Path) -> None:
         ),
         ("2", "香港优才计划", "香港优才计划的申请要求和材料清单。", "100_Project/香港优才.md"),
         ("3", "Unrelated", "A grocery list for the weekend.", "000_Inbox/grocery.md"),
+        (
+            "4",
+            "香港优秀人才入境计划",
+            "香港人才申请指南包含资格要求、评分标准和材料准备。",
+            "100_Project/香港人才申请.md",
+        ),
     ]
     connection.executemany("INSERT INTO notes VALUES (?, ?, ?, ?)", rows)
     connection.executemany("INSERT INTO notes_fts VALUES (?, ?, ?)", (row[:3] for row in rows))
@@ -67,6 +73,22 @@ def test_search_vault_uses_chinese_fallback(tmp_path: Path) -> None:
     results = search_vault("香港优才计划", index_path=index)
 
     assert results[0]["path"] == "100_Project/香港优才.md"
+
+
+def test_search_vault_ranks_partial_chinese_paraphrase(tmp_path: Path) -> None:
+    index = tmp_path / "vault_index.db"
+    _build_index(index)
+
+    results = search_vault("香港人才引进如何打分申请", index_path=index)
+
+    assert results[0]["path"] == "100_Project/香港人才申请.md"
+
+
+def test_search_vault_abstains_for_unrelated_chinese_query(tmp_path: Path) -> None:
+    index = tmp_path / "vault_index.db"
+    _build_index(index)
+
+    assert search_vault("量子火星传送协议", index_path=index) == []
 
 
 def test_search_vault_abstains_for_unrelated_query(tmp_path: Path) -> None:

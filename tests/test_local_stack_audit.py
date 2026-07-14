@@ -47,7 +47,24 @@ def test_runtime_config_checks_reject_enabled_automatic_memory(tmp_path: Path) -
     assert by_label["memory_flush.enabled"].ok is False
     assert by_label["heartbeat.enabled"].ok is True
     assert by_label["memory_context.enabled"].ok is True
+    assert by_label["append_system_prompt_files"].ok is True
     assert by_label["vault index"].ok is True
+
+
+def test_runtime_config_checks_reject_ambient_prompt_files(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "config" / "config.json",
+        {"append_system_prompt_files": ["PERSONA.md"]},
+    )
+    vault_index = tmp_path / "workspace" / "memory_system" / "vault_index.db"
+    vault_index.parent.mkdir(parents=True)
+    vault_index.touch()
+
+    results = audit.runtime_config_checks(tmp_path)
+    by_label = {result.label: result for result in results}
+
+    assert by_label["append_system_prompt_files"].ok is False
+    assert by_label["append_system_prompt_files"].detail == "configured=1"
 
 
 def test_legacy_session_checks_scan_only_active_agents(tmp_path: Path) -> None:
@@ -95,6 +112,17 @@ def test_legacy_memory_surface_checks_reject_retired_state(tmp_path: Path) -> No
     _write_json(tmp_path / "config" / "config.json", {})
     results = audit.legacy_memory_surface_checks(tmp_path)
     assert all(result.ok for result in results)
+
+
+def test_legacy_memory_surface_checks_reject_shared_memory_file(tmp_path: Path) -> None:
+    (tmp_path / "agents.json").write_text("[]", encoding="utf-8")
+    _write_json(tmp_path / "config" / "config.json", {})
+    (tmp_path / "SHAREDMEMORY.md").write_text("# Legacy", encoding="utf-8")
+
+    result = audit.legacy_memory_surface_checks(tmp_path)[0]
+
+    assert result.ok is False
+    assert result.detail == "paths=1 homes=1"
 
 
 def test_runtime_identity_checks_detect_stale_checkout(tmp_path: Path, monkeypatch) -> None:

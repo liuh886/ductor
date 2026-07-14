@@ -144,6 +144,25 @@ def _maximal_terms(terms: list[str]) -> list[str]:
     ]
 
 
+def _contains_cjk(term: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", term))
+
+
+def _search_terms(terms: list[str]) -> tuple[list[str], list[str]]:
+    """Return independent English terms and overlap-scored CJK grams."""
+    english = _maximal_terms([term for term in terms if not _contains_cjk(term)])
+    cjk = list(
+        dict.fromkeys(
+            term
+            for term in terms
+            if _contains_cjk(term) and 2 <= len(term) <= 4
+        )
+    )
+    if not cjk:
+        cjk = _maximal_terms([term for term in terms if _contains_cjk(term)])
+    return english, cjk
+
+
 def _fts_escape(term: str) -> str:
     cleaned = re.sub(r"[\"'*(){}:+]", "", term.strip()).replace("-", " ")
     for operator in ("AND", "OR", "NOT", "NEAR"):
@@ -162,8 +181,25 @@ def _term_matches(term: str, searchable: str) -> bool:
     return bool(normalized) and normalized in searchable
 
 
+def _qualifies(
+    *,
+    english_matches: int,
+    english_count: int,
+    cjk_matches: int,
+    cjk_count: int,
+    cjk_title_matches: int,
+) -> bool:
+    english_ok = bool(english_count) and english_matches >= _minimum_matches(english_count)
+    cjk_required = max(2, math.ceil(cjk_count * 0.1))
+    cjk_ok = bool(cjk_count) and (
+        cjk_matches >= cjk_required or (cjk_title_matches >= 1 and cjk_matches >= 2)
+    )
+    return english_ok or cjk_ok
+
+
 def _search_rows(index_path: Path, terms: list[str], *, limit: int) -> list[dict[str, str]]:
-    query_terms = _maximal_terms(terms)
+    english_terms, cjk_terms = _search_terms(terms)
+    query_terms = [*english_terms, *cjk_terms]
     quoted = [
         f'"{escaped.replace(chr(34), chr(34) * 2)}"'
         for term in query_terms
@@ -195,49 +231,62 @@ def _search_rows(index_path: Path, terms: list[str], *, limit: int) -> list[dict
             fts_failed = True
             rows = []
 
-        required_matches = _minimum_matches(len(query_terms))
-        ranked: list[tuple[int, int, float, dict[str, str]]] = []
+        candidates: dict[str, tuple[dict[str, str], float]] = {}
         for row in rows:
             payload = {key: str(row[key] or "") for key in ("title", "content", "path", "ulid")}
-            title = payload["title"].casefold()
-            searchable = f"{payload['title']}\n{payload['content']}".casefold()
-            match_count = sum(_term_matches(term, searchable) for term in query_terms)
-            if match_count < required_matches:
-                continue
-            title_matches = sum(_term_matches(term, title) for term in query_terms)
-            ranked.append((title_matches, match_count, float(row["fts_score"]), payload))
-        ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        results = [payload for _title, _matches, _score, payload in ranked[:limit]]
+            candidates[payload["ulid"]] = (payload, float(row["fts_score"]))
 
-        like_terms = (
-            query_terms
-            if fts_failed
-            else [term for term in query_terms if re.search(r"[\u3400-\u9fff]", term)]
-        )
-        seen = {row["ulid"] for row in results}
-        if like_terms and len(results) < limit:
+        like_terms = query_terms if fts_failed else cjk_terms
+        if like_terms:
             escaped_terms = [
                 term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 for term in like_terms
             ]
             like_rows = connection.execute(
                 """
-                SELECT DISTINCT n.title, n.content, n.path, n.ulid
+                SELECT n.title, n.content, n.path, n.ulid,
+                       SUM(CASE
+                           WHEN n.title LIKE '%' || terms.value || '%' ESCAPE char(92)
+                             OR n.content LIKE '%' || terms.value || '%' ESCAPE char(92)
+                           THEN 1 ELSE 0 END) AS lexical_hits
                 FROM notes n
                 JOIN json_each(?) terms
                 WHERE n.title LIKE '%' || terms.value || '%' ESCAPE char(92)
                    OR n.content LIKE '%' || terms.value || '%' ESCAPE char(92)
-                ORDER BY n.path, n.ulid
+                GROUP BY n.ulid
+                ORDER BY lexical_hits DESC, n.path, n.ulid
                 LIMIT ?
                 """,
-                (json.dumps(escaped_terms, ensure_ascii=False), limit - len(results)),
+                (json.dumps(escaped_terms, ensure_ascii=False), max(200, limit * 50)),
             ).fetchall()
             for row in like_rows:
                 payload = {key: str(row[key] or "") for key in ("title", "content", "path", "ulid")}
-                if payload["ulid"] not in seen:
-                    results.append(payload)
-                    seen.add(payload["ulid"])
-        return results[:limit]
+                candidates.setdefault(payload["ulid"], (payload, 0.0))
+
+        ranked: list[tuple[int, float, int, float, dict[str, str]]] = []
+        for payload, fts_score in candidates.values():
+            title = payload["title"].casefold()
+            searchable = f"{payload['title']}\n{payload['content']}".casefold()
+            english_matches = sum(_term_matches(term, searchable) for term in english_terms)
+            cjk_matches = sum(_term_matches(term, searchable) for term in cjk_terms)
+            english_title_matches = sum(_term_matches(term, title) for term in english_terms)
+            cjk_title_matches = sum(_term_matches(term, title) for term in cjk_terms)
+            if not _qualifies(
+                english_matches=english_matches,
+                english_count=len(english_terms),
+                cjk_matches=cjk_matches,
+                cjk_count=len(cjk_terms),
+                cjk_title_matches=cjk_title_matches,
+            ):
+                continue
+            title_matches = english_title_matches + cjk_title_matches
+            match_count = english_matches + cjk_matches
+            coverage = english_matches / max(1, len(english_terms)) + cjk_matches / max(
+                1, len(cjk_terms)
+            )
+            ranked.append((title_matches, coverage, match_count, fts_score, payload))
+        ranked.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
+        return [payload for _title, _coverage, _matches, _score, payload in ranked[:limit]]
     except (OSError, sqlite3.Error):
         logger.debug("Vault index search failed", exc_info=True)
         return []
