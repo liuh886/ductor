@@ -12,8 +12,9 @@ read-only, rebuildable projections. Provider sessions own conversation context.
 
 ## Writes
 
-Write durable facts, preferences, and decisions to the relevant vault/project
-Markdown file only when the user asks or the workflow explicitly requires it.
+The default vault integration is read-only. Write only when the user explicitly
+asks and an authorized absolute vault root has been resolved and
+containment-checked. Never infer a writable path from a relative search result.
 Do not write to SQLite indexes or create a parallel database-only truth source.
 
 Do not store one-off requests, temporary debugging noise, or duplicate facts.
