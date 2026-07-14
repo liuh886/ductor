@@ -186,9 +186,11 @@ def maintenance_file_checks(repo: Path) -> list[CheckResult]:
     """Check that the portable PM2 and maintenance surfaces are present."""
     ecosystem = repo / "ecosystem.config.js"
     maintenance = repo / "docs" / "local-stack-maintenance.md"
+    fork_inventory = repo / "docs" / "local-stack-origin-main-inventory.md"
     ecosystem_text = ecosystem.read_text(encoding="utf-8") if ecosystem.is_file() else ""
     return [
         CheckResult(maintenance.is_file(), "maintenance guide", str(maintenance)),
+        CheckResult(fork_inventory.is_file(), "fork main inventory", str(fork_inventory)),
         CheckResult("cwd: __dirname" in ecosystem_text, "portable PM2 cwd", str(ecosystem)),
         CheckResult("disable_logs: true" in ecosystem_text, "bounded PM2 logs", str(ecosystem)),
     ]
