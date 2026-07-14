@@ -93,14 +93,21 @@ Durable knowledge comes from the zhihaol Markdown vault through explicit
 
 ## 5. Cut Over And Observe
 
-The PM2 configuration uses `__dirname`, so it always runs the checkout that
-contains `ecosystem.config.js` instead of a hard-coded old worktree.
+The PM2 configuration uses `__dirname`, so a newly registered process runs the
+checkout that contains `ecosystem.config.js`. PM2 preserves the existing `cwd`
+when `startOrReload` reloads an app, however, so a cross-worktree cutover must
+delete the old app definition first.
 
 ```powershell
-pm2 startOrReload ecosystem.config.js --only ductor --update-env
+pm2 delete ductor
+pm2 start ecosystem.config.js --only ductor --update-env
 pm2 status ductor
 python scripts/local_stack_audit.py
 ```
+
+For a later restart from the same checkout, `pm2 startOrReload` is sufficient.
+Never accept a successful PM2 status as proof of a cutover; the audit must pass
+both `runtime checkout` and `runtime commit`.
 
 Inspect `~/.ductor/logs/agent.log` after startup. Verify:
 
