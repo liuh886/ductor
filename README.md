@@ -450,7 +450,6 @@ the bundled agent tool scripts.
   cron_jobs.json                     # Scheduled tasks
   webhooks.json                      # Webhook definitions
   agents.json                        # Sub-agent registry (optional)
-  SHAREDMEMORY.md                    # Shared knowledge across all agents
   CLAUDE.md / AGENTS.md / GEMINI.md  # Rule files
   logs/agent.log
   workspace/

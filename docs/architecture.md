@@ -65,10 +65,10 @@ Both implement `BotProtocol`. Adding a new transport requires only a new factory
 1. start `InterAgentBus`
 2. start `InternalAgentAPI`
 3. optional shared `TaskHub` (`tasks.enabled=true`)
-4. initialize `SharedKnowledgeSync` and the shared operations note
-5. create the main `AgentStack`, clean its legacy projection, then start it
+4. when `memory_context.enabled=true`, initialize legacy `SharedKnowledgeSync` cleanup
+5. create the main `AgentStack`, optionally clean its legacy projection, then start it
 6. wait for main readiness (`_main_ready`)
-7. create each sub-agent, clean its legacy projection, then start it
+7. create each sub-agent, optionally clean its legacy projection, then start it
 8. start `agents.json` watcher
 9. block on main completion and return its exit code
 

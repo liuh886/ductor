@@ -74,7 +74,7 @@ Observer / TaskHub / InterAgentBus callback
 | `session/` | `SessionKey(transport, chat_id, topic_id)`, provider-isolated session buckets, named sessions |
 | `tasks/` | delegated background task runtime (`TaskHub`) and persistent registry |
 | `background/` | named background session execution for `/session` |
-| `multiagent/` | supervisor, inter-agent bus, internal localhost API bridge, shared knowledge sync |
+| `multiagent/` | supervisor, inter-agent bus, internal localhost API bridge, legacy shared-memory cleanup |
 | `api/` | optional direct WebSocket API and authenticated file endpoints |
 | `cron/`, `webhook/`, `heartbeat/`, `cleanup/` | in-process automation observers |
 | `workspace/` | `~/.ductor` path model, seeding, rule deployment/sync, skill sync |
@@ -167,7 +167,6 @@ Nuances:
 - `startup_state.json`
 - `inflight_turns.json`
 - `chat_activity.json`
-- `SHAREDMEMORY.md`
 - `logs/agent.log`
 - `workspace/`
 

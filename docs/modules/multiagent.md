@@ -11,7 +11,7 @@ Multi-agent runtime: run multiple independent ductor agents in one process.
 - `multiagent/models.py`: `SubAgentConfig`, merge helpers
 - `multiagent/registry.py`: `agents.json` read/write
 - `multiagent/health.py`: per-agent health model
-- `multiagent/shared_knowledge.py`: shared knowledge sync (`SHAREDMEMORY.md`)
+- `multiagent/shared_knowledge.py`: opt-in cleanup for legacy `SHAREDMEMORY.md` projections
 - `multiagent/commands.py`: Telegram commands (`/agents`, `/agent_start`, `/agent_stop`, `/agent_restart`)
 
 ## Runtime model
@@ -23,7 +23,7 @@ AgentSupervisor
   +-- InterAgentBus
   +-- InternalAgentAPI (localhost bridge)
   +-- optional TaskHub (shared)
-  +-- SharedKnowledgeSync
+  +-- optional legacy SharedKnowledgeSync
   +-- FileWatcher(agents.json)
 ```
 
@@ -34,10 +34,10 @@ Each stack is isolated (token/workspace/sessions), but shares process/event-loop
 1. start inter-agent bus
 2. start internal API
 3. optional shared task hub
-4. initialize the shared operations note
-5. create the main stack, clean its legacy projection, then start it
+4. optionally initialize legacy shared-memory cleanup (`memory_context.enabled=true`)
+5. create the main stack, optionally clean its legacy projection, then start it
 6. wait for main readiness
-7. create each sub-agent, clean its legacy projection, then start it
+7. create each sub-agent, optionally clean its legacy projection, then start it
 8. start `agents.json` watcher
 
 ## Dynamic agent changes
@@ -102,7 +102,6 @@ Shared across process:
 - `InternalAgentAPI`
 - optional shared `TaskHub`
 - central log file (`~/.ductor/logs/agent.log`)
-- shared knowledge source (`~/.ductor/SHAREDMEMORY.md`)
 
 ## Inter-agent communication
 
@@ -175,12 +174,12 @@ Priority behavior is shared across agents:
 - `background` is the default
 - `batch` keeps the same cap semantics as `background` but documents low-urgency work explicitly
 
-## Shared knowledge sync
+## Legacy shared-memory cleanup
 
-`SharedKnowledgeSync` keeps `~/.ductor/SHAREDMEMORY.md` as a short operational
-note. At startup, and when a new agent is created, it removes obsolete
-projection blocks from agent `MAINMEMORY.md` files. It does not run a file watcher
-or copy shared content into provider prompts; agents read the note explicitly.
+`SharedKnowledgeSync` is a compatibility cleanup path enabled only when
+`memory_context.enabled=true`. At startup, and when a new agent is created, it
+removes obsolete projection blocks from agent `MAINMEMORY.md` files. The default
+runtime does not create, advertise, synchronize, or inject `SHAREDMEMORY.md`.
 
 ## Chat and CLI commands
 

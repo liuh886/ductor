@@ -1,6 +1,6 @@
 # Agent Tools
 
-Tools for inter-agent communication and shared knowledge.
+Tools for inter-agent communication and read-only vault retrieval.
 Agent creation and removal are only available on the main agent.
 
 ## How users interact with sub-agents

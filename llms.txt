@@ -60,7 +60,6 @@ Timeout behavior (current implementation):
 - `cron_jobs.json`
 - `webhooks.json`
 - `agents.json`
-- `SHAREDMEMORY.md`
 - `logs/agent.log`
 - `workspace/` (memory, tools, cron tasks, files, skills)
 

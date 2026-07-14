@@ -46,9 +46,8 @@ current index, then replaces it atomically. Vault Markdown is never modified.
 Upstream `MAINMEMORY.md` support remains available but is opt-in:
 
 The same `memory_context.enabled` gate enables one-time cleanup support for old
-shared-memory projections. The compatibility tool remains available for users
-who explicitly depend on the legacy file, but it is not part of the active
-memory architecture.
+shared-memory projections. No shared-memory write tool is seeded into new
+workspaces; the compatibility module is not part of the active architecture.
 - `memory_context.enabled=false`
 - `memory_flush.enabled=false`
 - `memory_reflection.enabled=false`
@@ -64,3 +63,11 @@ and world knowledge. It remains an optional sidecar candidate rather than a
 Ductor dependency. Adoption requires better measured multilingual retrieval than
 the built-in adapter, no autonomous writes or enrichment by default, citations,
 and the ability to disable it without affecting Ductor startup or transports.
+
+The current reproducible index audit covers 1,514 of 1,514 indexable Markdown
+documents. The latest private retrieval benchmark reports lexical recall@5 of
+0.90, semantic-paraphrase recall@5 of 0.30, abstention precision of 1.00, and
+p95 latency of about 484 ms. This is sufficient for explicit lexical retrieval,
+but not a basis for automatic prompt injection or synthesis. Any optional
+semantic sidecar must improve the same benchmark, preserve source citations, and
+remain outside the startup-critical path.
