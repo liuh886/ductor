@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from shutil import which
 
 from ductor_bot.infra.platform import CREATION_FLAGS as _CREATION_FLAGS
+from ductor_bot.infra.process_tree import force_kill_process_tree
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,6 @@ async def discover_codex_models(*, deadline: float = DISCOVERY_TIMEOUT) -> list[
         return []
     finally:
         if process is not None:
-            if process.stdin is not None and not process.stdin.is_closing():
-                with contextlib.suppress(Exception):
-                    process.stdin.close()
             await _kill_process(process)
 
     models = _parse_response("".join(lines))
@@ -108,11 +106,20 @@ async def discover_codex_models(*, deadline: float = DISCOVERY_TIMEOUT) -> list[
 
 
 async def _kill_process(process: asyncio.subprocess.Process) -> None:
-    """Best-effort kill of a hung process."""
-    with contextlib.suppress(OSError):
+    """Best-effort kill and drain of the app-server process.
+
+    Waiting for the process alone does not close Proactor pipe transports on
+    Windows.  ``communicate()`` drains those pipes and lets asyncio release the
+    underlying handles before the event loop is torn down.
+    """
+    await asyncio.to_thread(force_kill_process_tree, process.pid)
+    with contextlib.suppress(OSError, ProcessLookupError):
         process.kill()
-    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-        await asyncio.wait_for(process.wait(), timeout=0.2)
+    try:
+        await asyncio.wait_for(process.communicate(), timeout=0.5)
+    except (TimeoutError, ProcessLookupError, ValueError):
+        with contextlib.suppress(TimeoutError, ProcessLookupError):
+            await asyncio.wait_for(process.wait(), timeout=0.2)
 
 
 def _parse_response(raw: str) -> list[CodexModelInfo]:

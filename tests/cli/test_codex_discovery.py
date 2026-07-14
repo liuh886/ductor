@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -55,22 +56,31 @@ _MODEL_LIST_RESPONSE = json.dumps(
 _STDOUT = f"{_INIT_RESPONSE}\n{_MODEL_LIST_RESPONSE}\n"
 
 
+@pytest.fixture(autouse=True)
+def _tree_kill() -> Iterator[MagicMock]:
+    with patch("ductor_bot.cli.codex_discovery.force_kill_process_tree") as kill:
+        yield kill
+
+
 def _mock_process(stdout: str = _STDOUT, returncode: int = 0) -> AsyncMock:
     proc = MagicMock()
     proc.stdin = MagicMock()
     proc.stdin.write = MagicMock()
     proc.stdin.drain = AsyncMock()
     proc.stdin.close = MagicMock()
+    proc.stdin.is_closing = MagicMock(return_value=False)
     proc.stdout = MagicMock()
     lines = [f"{line}\n".encode() for line in stdout.splitlines()] + [b""]
     proc.stdout.readline = AsyncMock(side_effect=lines)
     proc.returncode = returncode
+    proc.pid = 123
     proc.kill = MagicMock()
     proc.wait = AsyncMock(return_value=returncode)
+    proc.communicate = AsyncMock(return_value=(b"", b""))
     return proc
 
 
-async def test_discover_models_parses_response() -> None:
+async def test_discover_models_parses_response(_tree_kill: MagicMock) -> None:
     proc = _mock_process()
     with (
         patch("ductor_bot.cli.codex_discovery.which", return_value="/usr/bin/codex"),
@@ -91,7 +101,8 @@ async def test_discover_models_parses_response() -> None:
     assert second.id == "gpt-5.1-codex-mini"
     assert second.supported_efforts == ("medium", "high")
     assert second.is_default is False
-    proc.stdin.close.assert_not_called()
+    proc.communicate.assert_awaited_once()
+    _tree_kill.assert_called_once_with(123)
 
 
 async def test_discover_models_codex_not_installed() -> None:
