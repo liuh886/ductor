@@ -90,6 +90,9 @@ Confirm these high-cost features are disabled unless being tested explicitly:
 
 Durable knowledge comes from the zhihaol Markdown vault through explicit
 `vault_search.py` calls. `vault_index.db` is a rebuildable read-only projection.
+The audit also rejects retired `state.db`/memory-tool surfaces and the obsolete
+`state_backend`/`state_db_path` configuration keys in active agent homes. Archived
+migration evidence under `~/.ductor/archive/` is intentionally ignored.
 
 ## 5. Cut Over And Observe
 
