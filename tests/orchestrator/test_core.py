@@ -304,7 +304,10 @@ async def test_create_with_authenticated_provider(
     ):
         result = await Orchestrator.create(config)
 
-    assert result.available_providers == frozenset({"claude"})
+    try:
+        assert result.available_providers == frozenset({"claude"})
+    finally:
+        await result.shutdown()
 
 
 async def test_create_no_authenticated_providers(
@@ -330,7 +333,10 @@ async def test_create_no_authenticated_providers(
     ):
         result = await Orchestrator.create(config)
 
-    assert result.available_providers == frozenset()
+    try:
+        assert result.available_providers == frozenset()
+    finally:
+        await result.shutdown()
 
 
 async def test_create_installed_but_not_authenticated(
@@ -356,7 +362,10 @@ async def test_create_installed_but_not_authenticated(
     ):
         result = await Orchestrator.create(config)
 
-    assert result.available_providers == frozenset({"codex"})
+    try:
+        assert result.available_providers == frozenset({"codex"})
+    finally:
+        await result.shutdown()
 
 
 async def test_create_both_providers_authenticated(
@@ -382,7 +391,10 @@ async def test_create_both_providers_authenticated(
     ):
         result = await Orchestrator.create(config)
 
-    assert result.available_providers == frozenset({"claude", "codex"})
+    try:
+        assert result.available_providers == frozenset({"claude", "codex"})
+    finally:
+        await result.shutdown()
 
 
 async def test_create_starts_cron_and_heartbeat(
@@ -407,7 +419,10 @@ async def test_create_starts_cron_and_heartbeat(
     ):
         result = await Orchestrator.create(config)
 
-    assert result._observers._rule_sync_task is not None
+    try:
+        assert result._observers._rule_sync_task is not None
+    finally:
+        await result.shutdown()
 
 
 # ---------------------------------------------------------------------------
