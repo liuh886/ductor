@@ -40,6 +40,8 @@ import sys
 import urllib.error
 import urllib.request
 
+_INTERNAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def main() -> None:
     args = sys.argv[1:]
@@ -114,7 +116,7 @@ def main() -> None:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _INTERNAL_OPENER.open(req, timeout=10) as resp:
             result = json.loads(resp.read().decode())
     except urllib.error.URLError as e:
         print(f"Error: Cannot reach inter-agent API at {url}: {e}", file=sys.stderr)

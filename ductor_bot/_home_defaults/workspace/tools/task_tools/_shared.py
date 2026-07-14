@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+_INTERNAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def detect_agent_name() -> str:
     """Detect the agent name from script path or env var.
@@ -47,7 +49,7 @@ def post_json(url: str, body: dict[str, object], *, timeout: int = 300) -> dict[
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _INTERNAL_OPENER.open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())  # type: ignore[no-any-return]
     except urllib.error.URLError as e:
         print(f"Error: Cannot reach task API at {url}: {e}", file=sys.stderr)
@@ -62,7 +64,7 @@ def get_json(url: str, *, timeout: int = 10) -> dict[str, object]:
     """GET JSON from internal API, return parsed response."""
     req = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _INTERNAL_OPENER.open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())  # type: ignore[no-any-return]
     except urllib.error.URLError as e:
         print(f"Error: Cannot reach task API at {url}: {e}", file=sys.stderr)
