@@ -25,6 +25,14 @@ LEGACY_LINEAGE_FIELDS = frozenset(
         "lineage_created_at",
     }
 )
+LEGACY_CONFIG_FIELDS = frozenset({"state_backend", "state_db_path"})
+LEGACY_MEMORY_PATHS = (
+    Path("state.db"),
+    Path("workspace/tools/memory"),
+    Path("workspace/tools/agent_tools/search_past_sessions.py"),
+    Path("workspace/tools/agent_tools/edit_shared_knowledge.py"),
+    Path("workspace/tools/agent_tools/memory_atomic_op.py"),
+)
 DISABLED_RUNTIME_FEATURES = (
     ("heartbeat", "enabled"),
     ("memory_context", "enabled"),
@@ -153,44 +161,39 @@ def _count_legacy_lineage(value: object) -> int:
     return 0
 
 
-def legacy_session_checks(home: Path) -> list[CheckResult]:
-    """Reject obsolete P0 lineage fields in active agent session stores."""
-    session_paths = [home / "sessions.json"]
+def _active_agent_homes(home: Path) -> tuple[list[Path], str | None]:
+    """Return main + registered agent homes without following arbitrary paths."""
+    homes = [home]
     agents_path = home / "agents.json"
     try:
         agents = json.loads(agents_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         agents = []
     except (OSError, json.JSONDecodeError):
-        return [
-            CheckResult(ok=False, label="legacy session lineage", detail=f"invalid {agents_path}")
-        ]
+        return homes, f"invalid {agents_path}"
 
     if not isinstance(agents, list):
-        return [
-            CheckResult(ok=False, label="legacy session lineage", detail=f"invalid {agents_path}")
-        ]
+        return homes, f"invalid {agents_path}"
     for agent in agents:
         if not isinstance(agent, dict) or not isinstance(agent.get("name"), str):
-            return [
-                CheckResult(
-                    ok=False, label="legacy session lineage", detail=f"invalid {agents_path}"
-                )
-            ]
+            return homes, f"invalid {agents_path}"
         name = agent["name"]
         if not name or Path(name).name != name:
-            return [
-                CheckResult(
-                    ok=False,
-                    label="legacy session lineage",
-                    detail=f"invalid agent name {name!r}",
-                )
-            ]
-        session_paths.append(home / "agents" / name / "sessions.json")
+            return homes, f"invalid agent name {name!r}"
+        homes.append(home / "agents" / name)
+    return homes, None
+
+
+def legacy_session_checks(home: Path) -> list[CheckResult]:
+    """Reject obsolete P0 lineage fields in active agent session stores."""
+    agent_homes, error = _active_agent_homes(home)
+    if error:
+        return [CheckResult(ok=False, label="legacy session lineage", detail=error)]
 
     total = 0
     scanned = 0
-    for path in session_paths:
+    for agent_home in agent_homes:
+        path = agent_home / "sessions.json"
         if not path.is_file():
             continue
         payload = _load_json(path)
@@ -199,6 +202,49 @@ def legacy_session_checks(home: Path) -> list[CheckResult]:
         total += _count_legacy_lineage(payload)
         scanned += 1
     return [CheckResult(total == 0, "legacy session lineage", f"fields={total} files={scanned}")]
+
+
+def legacy_memory_surface_checks(home: Path) -> list[CheckResult]:
+    """Reject retired LifeOS/AMEM runtime files and configuration keys."""
+    agent_homes, error = _active_agent_homes(home)
+    if error:
+        return [CheckResult(ok=False, label="legacy memory surfaces", detail=error)]
+
+    paths = [
+        agent_home / relative for agent_home in agent_homes for relative in LEGACY_MEMORY_PATHS
+    ]
+    existing = [path for path in paths if path.exists() or path.is_symlink()]
+
+    obsolete_keys = 0
+    config_files = 0
+    for agent_home in agent_homes:
+        config_path = agent_home / "config" / "config.json"
+        if not config_path.is_file():
+            continue
+        config = _load_json(config_path)
+        if config is None:
+            return [
+                CheckResult(
+                    ok=False,
+                    label="legacy memory config",
+                    detail=f"invalid {config_path}",
+                )
+            ]
+        obsolete_keys += len(LEGACY_CONFIG_FIELDS.intersection(config))
+        config_files += 1
+
+    return [
+        CheckResult(
+            not existing,
+            "legacy memory surfaces",
+            f"paths={len(existing)} homes={len(agent_homes)}",
+        ),
+        CheckResult(
+            obsolete_keys == 0,
+            "legacy memory config",
+            f"keys={obsolete_keys} files={config_files}",
+        ),
+    ]
 
 
 def _read_pid(path: Path) -> int | None:
@@ -288,6 +334,7 @@ def main() -> int:
     if not args.skip_runtime:
         results.extend(runtime_config_checks(home))
         results.extend(legacy_session_checks(home))
+        results.extend(legacy_memory_surface_checks(home))
         results.extend(runtime_identity_checks(repo, home))
     print(render(results))
     return 0 if all(result.ok for result in results) else 1

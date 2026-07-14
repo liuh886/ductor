@@ -76,6 +76,27 @@ def test_legacy_session_checks_scan_only_active_agents(tmp_path: Path) -> None:
     assert result.detail == "fields=0 files=2"
 
 
+def test_legacy_memory_surface_checks_reject_retired_state(tmp_path: Path) -> None:
+    (tmp_path / "agents.json").write_text(json.dumps([{"name": "active"}]), encoding="utf-8")
+    _write_json(tmp_path / "config" / "config.json", {"state_backend": "dual"})
+    _write_json(tmp_path / "agents" / "active" / "config" / "config.json", {})
+    stale_tool = tmp_path / "agents" / "active" / "workspace" / "tools" / "memory"
+    stale_tool.mkdir(parents=True)
+
+    results = audit.legacy_memory_surface_checks(tmp_path)
+    by_label = {result.label: result for result in results}
+
+    assert by_label["legacy memory surfaces"].ok is False
+    assert by_label["legacy memory surfaces"].detail == "paths=1 homes=2"
+    assert by_label["legacy memory config"].ok is False
+    assert by_label["legacy memory config"].detail == "keys=1 files=2"
+
+    stale_tool.rmdir()
+    _write_json(tmp_path / "config" / "config.json", {})
+    results = audit.legacy_memory_surface_checks(tmp_path)
+    assert all(result.ok for result in results)
+
+
 def test_runtime_identity_checks_detect_stale_checkout(tmp_path: Path, monkeypatch) -> None:
     _write_json(
         tmp_path / audit.RUNTIME_IDENTITY_FILENAME,
