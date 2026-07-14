@@ -50,6 +50,32 @@ def test_runtime_config_checks_reject_enabled_automatic_memory(tmp_path: Path) -
     assert by_label["vault index"].ok is True
 
 
+def test_legacy_session_checks_scan_only_active_agents(tmp_path: Path) -> None:
+    _write_json(tmp_path / "sessions.json", {"chat": {"lineage_id": "old"}})
+    _write_json(
+        tmp_path / "agents.json",
+        {"not": "a list"},
+    )
+
+    assert audit.legacy_session_checks(tmp_path)[0].ok is False
+
+    (tmp_path / "agents.json").write_text(json.dumps([{"name": "active"}]), encoding="utf-8")
+    _write_json(tmp_path / "agents" / "active" / "sessions.json", {"chat": {"model": "x"}})
+    _write_json(
+        tmp_path / "agents" / "retired" / "sessions.json",
+        {"chat": {"lineage_parent": "ignored"}},
+    )
+
+    result = audit.legacy_session_checks(tmp_path)[0]
+    assert result.ok is False
+    assert result.detail == "fields=1 files=2"
+
+    _write_json(tmp_path / "sessions.json", {"chat": {"model": "x"}})
+    result = audit.legacy_session_checks(tmp_path)[0]
+    assert result.ok is True
+    assert result.detail == "fields=0 files=2"
+
+
 def test_runtime_identity_checks_detect_stale_checkout(tmp_path: Path, monkeypatch) -> None:
     _write_json(
         tmp_path / audit.RUNTIME_IDENTITY_FILENAME,

@@ -128,7 +128,6 @@ Ownership checks are enforced for resume/cancel/delete when `from=<agent>` is su
 - `agents.json`
 - `startup_state.json`
 - `inflight_turns.json`
-- `SHAREDMEMORY.md`
 - `logs/agent.log`
 - `workspace/` (rules, tools, files, tasks, cron_tasks, skills)
 

@@ -36,7 +36,6 @@ Primary runtime files/directories:
 - `~/.ductor/webhooks.json`
 - `~/.ductor/startup_state.json`
 - `~/.ductor/inflight_turns.json`
-- `~/.ductor/SHAREDMEMORY.md`
 - `~/.ductor/agents.json`
 - `~/.ductor/agents/`
 - `~/.ductor/workspace/`

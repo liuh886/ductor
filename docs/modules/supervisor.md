@@ -21,10 +21,10 @@ In-process multi-agent supervisor (`AgentSupervisor`) for main agent + optional 
 1. start `InterAgentBus`
 2. start `InternalAgentAPI` on `config.interagent_port` (default `8799`): `127.0.0.1:<port>` in host mode, `0.0.0.0:<port>` in Docker mode
 3. if `tasks.enabled=true`: create shared `TaskHub` (`~/.ductor/tasks.json` + `~/.ductor/workspace/tasks/`) and attach it to `InternalAgentAPI`
-4. initialize `SharedKnowledgeSync` and the shared operations note
-5. create the main `AgentStack`, remove any legacy projection, then start it
+4. if `memory_context.enabled=true`, initialize legacy `SharedKnowledgeSync` cleanup
+5. create the main `AgentStack`, optionally remove its legacy projection, then start it
 6. wait for main startup readiness (`_main_ready`) before sub-agent startup; the timeout uses a 120s base and is extended dynamically when Docker extras increase sandbox setup/build time
-7. create each sub-agent, remove any legacy projection, then start it
+7. create each sub-agent, optionally remove its legacy projection, then start it
 8. start `agents.json` watcher
 9. wait for main agent completion and return its exit code
 

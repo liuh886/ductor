@@ -15,6 +15,16 @@ UPSTREAM_BASE = "upstream/main"
 LOCAL_STACK_PREFIX = "codex/local-stack"
 COMMAND_TIMEOUT_SECONDS = 20.0
 RUNTIME_IDENTITY_FILENAME = "runtime_identity.json"
+LEGACY_LINEAGE_FIELDS = frozenset(
+    {
+        "lineage_id",
+        "lineage_root",
+        "lineage_parent",
+        "lineage_depth",
+        "lineage_reason",
+        "lineage_created_at",
+    }
+)
 DISABLED_RUNTIME_FEATURES = (
     ("heartbeat", "enabled"),
     ("memory_context", "enabled"),
@@ -133,6 +143,64 @@ def runtime_config_checks(home: Path) -> list[CheckResult]:
     return results
 
 
+def _count_legacy_lineage(value: object) -> int:
+    if isinstance(value, dict):
+        return sum(key in LEGACY_LINEAGE_FIELDS for key in value) + sum(
+            _count_legacy_lineage(item) for item in value.values()
+        )
+    if isinstance(value, list):
+        return sum(_count_legacy_lineage(item) for item in value)
+    return 0
+
+
+def legacy_session_checks(home: Path) -> list[CheckResult]:
+    """Reject obsolete P0 lineage fields in active agent session stores."""
+    session_paths = [home / "sessions.json"]
+    agents_path = home / "agents.json"
+    try:
+        agents = json.loads(agents_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        agents = []
+    except (OSError, json.JSONDecodeError):
+        return [
+            CheckResult(ok=False, label="legacy session lineage", detail=f"invalid {agents_path}")
+        ]
+
+    if not isinstance(agents, list):
+        return [
+            CheckResult(ok=False, label="legacy session lineage", detail=f"invalid {agents_path}")
+        ]
+    for agent in agents:
+        if not isinstance(agent, dict) or not isinstance(agent.get("name"), str):
+            return [
+                CheckResult(
+                    ok=False, label="legacy session lineage", detail=f"invalid {agents_path}"
+                )
+            ]
+        name = agent["name"]
+        if not name or Path(name).name != name:
+            return [
+                CheckResult(
+                    ok=False,
+                    label="legacy session lineage",
+                    detail=f"invalid agent name {name!r}",
+                )
+            ]
+        session_paths.append(home / "agents" / name / "sessions.json")
+
+    total = 0
+    scanned = 0
+    for path in session_paths:
+        if not path.is_file():
+            continue
+        payload = _load_json(path)
+        if payload is None:
+            return [CheckResult(ok=False, label="legacy session lineage", detail=f"invalid {path}")]
+        total += _count_legacy_lineage(payload)
+        scanned += 1
+    return [CheckResult(total == 0, "legacy session lineage", f"fields={total} files={scanned}")]
+
+
 def _read_pid(path: Path) -> int | None:
     try:
         return int(path.read_text(encoding="utf-8").strip())
@@ -219,6 +287,7 @@ def main() -> int:
     results = [*git_checks(repo), *maintenance_file_checks(repo)]
     if not args.skip_runtime:
         results.extend(runtime_config_checks(home))
+        results.extend(legacy_session_checks(home))
         results.extend(runtime_identity_checks(repo, home))
     print(render(results))
     return 0 if all(result.ok for result in results) else 1
