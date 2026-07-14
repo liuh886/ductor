@@ -82,6 +82,7 @@ def test_runtime_identity_checks_fail_when_missing(tmp_path: Path) -> None:
 def test_maintenance_file_checks_require_portable_pm2_config(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "local-stack-maintenance.md").touch()
+    (tmp_path / "docs" / "local-stack-origin-main-inventory.md").touch()
     (tmp_path / "ecosystem.config.js").write_text(
         "cwd: __dirname\ndisable_logs: true\n", encoding="utf-8"
     )

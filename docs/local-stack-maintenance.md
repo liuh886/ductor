@@ -38,7 +38,8 @@ git push --force-with-lease origin main
 ```
 
 The force-with-lease step intentionally replaces fork-only `main` history. Do
-not run it while the local-stack commit inventory is incomplete.
+not run it while the local-stack commit inventory is incomplete. The audited
+14-commit disposition is recorded in `local-stack-origin-main-inventory.md`.
 
 ## 3. Rebase The Stack
 
