@@ -175,3 +175,20 @@ def test_shared_py_is_also_zone2(temp_workspace):
 
     # Should be updated
     assert deployed_shared.read_text() == "# shared utils v2 - UPDATED"
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "agent_tools/ask_agent.py",
+        "agent_tools/ask_agent_async.py",
+        "task_tools/_shared.py",
+    ],
+)
+def test_internal_http_tools_bypass_environment_proxies(relative_path: str) -> None:
+    """Local supervisor calls must not be routed through HTTP_PROXY/ALL_PROXY."""
+    defaults = Path(__file__).parents[2] / "ductor_bot" / "_home_defaults" / "workspace" / "tools"
+    source = (defaults / relative_path).read_text(encoding="utf-8")
+
+    assert "ProxyHandler({})" in source
+    assert "urllib.request.urlopen" not in source
