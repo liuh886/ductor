@@ -29,17 +29,27 @@ LEGACY_CONFIG_FIELDS = frozenset({"state_backend", "state_db_path"})
 LEGACY_MEMORY_PATHS = (
     Path("SHAREDMEMORY.md"),
     Path("state.db"),
+    Path("workspace/archive"),
+    Path("workspace/cron_tasks/archives"),
     Path("workspace/tools/memory"),
     Path("workspace/tools/agent_tools/search_past_sessions.py"),
     Path("workspace/tools/agent_tools/edit_shared_knowledge.py"),
     Path("workspace/tools/agent_tools/memory_atomic_op.py"),
 )
+TASK_RULE_FILES = frozenset({"AGENTS.md", "CLAUDE.md", "GEMINI.md"})
 DISABLED_RUNTIME_FEATURES = (
     ("heartbeat", "enabled"),
     ("memory_context", "enabled"),
     ("memory_flush", "enabled"),
     ("memory_reflection", "enabled"),
     ("memory_compaction", "enabled"),
+)
+RUNTIME_FATAL_SIGNATURES = (
+    "Context length exceeded",
+    "An internal error occurred",
+    "'ProcessRegistry' object has no attribute 'was_aborted_topic'",
+    "Main agent crashed, terminating supervisor",
+    "Main agent exceeded max transient retries",
 )
 
 
@@ -294,11 +304,104 @@ def legacy_memory_surface_checks(home: Path) -> list[CheckResult]:
     ]
 
 
+def _registered_task_folders(home: Path, raw_tasks: list[object]) -> set[Path]:
+    active_folders: set[Path] = set()
+    for raw in raw_tasks:
+        if not isinstance(raw, dict):
+            continue
+        task_id = raw.get("task_id")
+        if not isinstance(task_id, str) or not task_id or Path(task_id).name != task_id:
+            continue
+        configured_dir = raw.get("tasks_dir")
+        base = Path(configured_dir) if isinstance(configured_dir, str) and configured_dir else None
+        active_folders.add((base or home / "workspace" / "tasks").joinpath(task_id).resolve())
+    return active_folders
+
+
+def _find_orphan_task_artifacts(agent_homes: list[Path], active_folders: set[Path]) -> list[Path]:
+    artifacts: list[Path] = []
+    for agent_home in agent_homes:
+        tasks_root = agent_home / "workspace" / "tasks"
+        if not tasks_root.is_dir():
+            continue
+        for child in tasks_root.iterdir():
+            if child.is_dir() or child.is_symlink():
+                if child.resolve() not in active_folders:
+                    artifacts.append(child)
+            elif child.name not in TASK_RULE_FILES:
+                artifacts.append(child)
+    return artifacts
+
+
+def orphan_task_artifact_checks(home: Path) -> list[CheckResult]:
+    """Reject task artifacts that are not referenced by the persistent registry."""
+    agent_homes, error = _active_agent_homes(home)
+    if error:
+        return [CheckResult(ok=False, label="orphan task artifacts", detail=error)]
+
+    registry = _load_json(home / "tasks.json")
+    raw_tasks = registry.get("tasks") if registry is not None else None
+    if not isinstance(raw_tasks, list):
+        return [
+            CheckResult(
+                ok=False,
+                label="orphan task artifacts",
+                detail=f"invalid {home / 'tasks.json'}",
+            )
+        ]
+
+    active_folders = _registered_task_folders(home, raw_tasks)
+    artifacts = _find_orphan_task_artifacts(agent_homes, active_folders)
+    return [
+        CheckResult(
+            not artifacts,
+            "orphan task artifacts",
+            f"artifacts={len(artifacts)} homes={len(agent_homes)}",
+        )
+    ]
+
+
 def _read_pid(path: Path) -> int | None:
     try:
         return int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
+
+
+def runtime_log_checks(home: Path) -> list[CheckResult]:
+    """Inspect only log records emitted by the currently locked process."""
+    pid = _read_pid(home / "bot.pid")
+    log_path = home / "logs" / "agent.log"
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [CheckResult(ok=False, label="runtime log", detail=f"missing {log_path}")]
+
+    marker = f"PID lock acquired (pid={pid})" if pid is not None else ""
+    if not marker or marker not in log_text:
+        return [
+            CheckResult(
+                ok=False,
+                label="runtime log",
+                detail=f"current pid marker missing pid={pid!r}",
+            )
+        ]
+
+    current_run = log_text.rsplit(marker, 1)[1]
+    fatal_matches = sum(current_run.count(signature) for signature in RUNTIME_FATAL_SIGNATURES)
+    network_events = current_run.count("TelegramNetworkError")
+    return [
+        CheckResult(
+            fatal_matches == 0,
+            "runtime fatal signatures",
+            f"matches={fatal_matches}",
+        ),
+        CheckResult(
+            ok=True,
+            label="telegram network events",
+            detail=f"events={network_events}",
+        ),
+    ]
 
 
 def runtime_identity_checks(repo: Path, home: Path) -> list[CheckResult]:
@@ -383,7 +486,9 @@ def main() -> int:
         results.extend(context_isolation_checks(home))
         results.extend(legacy_session_checks(home))
         results.extend(legacy_memory_surface_checks(home))
+        results.extend(orphan_task_artifact_checks(home))
         results.extend(runtime_identity_checks(repo, home))
+        results.extend(runtime_log_checks(home))
     print(render(results))
     return 0 if all(result.ok for result in results) else 1
 

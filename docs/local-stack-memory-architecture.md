@@ -74,11 +74,19 @@ provider sessions, operational registries, and explicit source-backed retrieval.
 
 ## GBrain Boundary
 
-GBrain is useful as a reference for separating replaceable agent operations from
-durable world knowledge, hybrid retrieval, and source-backed answers. Its daemon,
-autonomous enrichment cycle, database stack, and large skillpack are deliberately
-not copied into Ductor. A future semantic sidecar must be optional, read-only by
-default, independently benchmarked, and absent from the startup-critical path.
+GBrain's
+[brain/memory/session boundary](https://github.com/garrytan/gbrain/blob/master/docs/guides/brain-vs-memory.md)
+matches this stack's three layers: provider sessions hold current conversation,
+Ductor registries hold operational state, and zhihaol holds world knowledge. Its
+source-backed retrieval and evaluation discipline are useful references.
+
+The local stack deliberately does not copy GBrain's daemon, automatic capture,
+write-back, overnight enrichment, database stack, or large skillpack. Those
+features would create a second authority beside zhihaol and reintroduce ambient
+prompt behavior. Even the lightweight MCP/PGLite path remains unnecessary while
+the checked-in lexical adapter meets the current baseline. A future semantic
+sidecar must be optional, read-only by default, independently benchmarked, and
+absent from the startup-critical path.
 
 The current index audit covers 1,511 of 1,511 indexable Markdown documents after
 retiring three A-MEM anchor projections. The checked-in 23-case baseline reports
