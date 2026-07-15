@@ -70,6 +70,7 @@ Run targeted checks first:
 pytest tests/cli/test_antigravity_provider.py tests/orchestrator/test_model_selector.py -q
 pytest tests/orchestrator/test_flows.py tests/messenger/telegram -q
 pytest tests/multiagent tests/test_vault_index_sync.py -q
+python -m scripts.vault_retrieval_benchmark --fixture scripts/vault_retrieval_cases.json --index $HOME\.ductor\workspace\memory_system\vault_index.db
 python -m ruff check ductor_bot tests scripts
 python -m mypy ductor_bot
 ```
@@ -91,6 +92,9 @@ Confirm these high-cost features are disabled unless being tested explicitly:
 
 Durable knowledge comes from the zhihaol Markdown vault through explicit
 `vault_search.py` calls. `vault_index.db` is a rebuildable read-only projection.
+The checked-in retrieval fixture is a local-stack regression gate: keyword,
+paraphrase, abstention, source-path, and excerpt checks must all pass. It contains
+queries and expected paths only, never vault note content.
 The audit also rejects `SHAREDMEMORY.md`, retired `state.db`/memory-tool surfaces, and the obsolete
 `state_backend`/`state_db_path` configuration keys in active agent homes. Archived
 migration evidence under `~/.ductor/archive/` is intentionally ignored.
@@ -104,10 +108,19 @@ delete the old app definition first.
 
 ```powershell
 pm2 delete ductor
+$env:DUCTOR_PYTHON = (Get-Command python).Source
+$env:DUCTOR_CODEX_HOME = "$HOME\.ductor\provider_homes\codex"
 pm2 start ecosystem.config.js --only ductor --update-env
 pm2 status ductor
 python scripts/local_stack_audit.py
 ```
+
+`DUCTOR_CODEX_HOME` is optional. The local runtime uses an isolated Codex home
+with shared authentication but no global skills/plugins, reducing fixed input
+cost for a trivial turn from about 19.9k to 13.3k tokens in the July 15 probe.
+Provision its `auth.json` as a link to the host Codex auth file before the first
+isolated start. Do not copy provider session history into the isolated home;
+stale Ductor session IDs recover once into a fresh provider session.
 
 For a later restart from the same checkout, `pm2 startOrReload` is sufficient.
 Never accept a successful PM2 status as proof of a cutover; the audit must pass

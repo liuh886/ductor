@@ -43,6 +43,12 @@ def _build_index(path: Path) -> None:
             "香港人才申请指南包含资格要求、评分标准和材料准备。",
             "100_Project/香港人才申请.md",
         ),
+        (
+            "5",
+            "General protocol notes",
+            "某些项目不存在统一协议,需要根据实际情况判断。",
+            "300_Resources/protocol.md",
+        ),
     ]
     connection.executemany("INSERT INTO notes VALUES (?, ?, ?, ?)", rows)
     connection.executemany("INSERT INTO notes_fts VALUES (?, ?, ?)", (row[:3] for row in rows))
@@ -89,6 +95,13 @@ def test_search_vault_abstains_for_unrelated_chinese_query(tmp_path: Path) -> No
     _build_index(index)
 
     assert search_vault("量子火星传送协议", index_path=index) == []
+
+
+def test_search_vault_ignores_fictional_cjk_query_prefix(tmp_path: Path) -> None:
+    index = tmp_path / "vault_index.db"
+    _build_index(index)
+
+    assert search_vault("不存在的紫色量子香蕉协议", index_path=index) == []
 
 
 def test_search_vault_abstains_for_unrelated_query(tmp_path: Path) -> None:
