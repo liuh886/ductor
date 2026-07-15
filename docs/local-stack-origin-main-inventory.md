@@ -21,11 +21,13 @@ required by the main-alignment gate in `local-stack-maintenance.md`.
 | `ca5a4bb` | Drop | Integration merge of the removed P0 stack; no independent product behavior. |
 | `14c42da` | Superseded | Upstream covers its Windows, Matrix, MIME, and sender fixes; local commit `9335858` independently preserves Gemini Docker auth selection. |
 
-## Reset Gate
+## Reset Completed
 
-No required runtime behavior remains solely in these 14 commits. The fork can
-be aligned only after the rebuilt local-stack passes its complete test suite,
-is cut over in PM2, and the runtime identity matches the rebuilt branch HEAD.
+No required runtime behavior remains solely in these 14 commits. The fork was
+aligned only after the rebuilt local-stack passed its complete test suite, was
+cut over in PM2, and the runtime identity matched the rebuilt branch HEAD.
 
-The reset itself remains a deliberate operator action because it rewrites
-`origin/main` with `--force-with-lease`.
+On 2026-07-15, `origin/main` was updated with an exact `--force-with-lease` from
+`14c42da` to `db7f88e`. Local `main`, `origin/main`, and `upstream/main` now match.
+The original fork tip remains available as
+`backup/pre-upstream-merge-20260529-014404`.
