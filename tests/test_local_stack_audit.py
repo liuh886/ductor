@@ -148,6 +148,36 @@ def test_legacy_memory_surface_checks_reject_shared_memory_file(tmp_path: Path) 
     assert result.detail == "paths=1 homes=1"
 
 
+def test_orphan_task_artifact_checks_use_registry_as_source_of_truth(tmp_path: Path) -> None:
+    active_root = tmp_path / "agents" / "active" / "workspace" / "tasks"
+    active_folder = active_root / "live1234"
+    orphan_folder = active_root / "old56789"
+    active_folder.mkdir(parents=True)
+    orphan_folder.mkdir()
+    _write_json(
+        tmp_path / "tasks.json",
+        {
+            "tasks": [
+                {
+                    "task_id": "live1234",
+                    "tasks_dir": str(active_root),
+                }
+            ]
+        },
+    )
+    (tmp_path / "agents.json").write_text(json.dumps([{"name": "active"}]), encoding="utf-8")
+
+    result = audit.orphan_task_artifact_checks(tmp_path)[0]
+
+    assert result.ok is False
+    assert result.detail == "artifacts=1 homes=2"
+
+    orphan_folder.rmdir()
+    result = audit.orphan_task_artifact_checks(tmp_path)[0]
+    assert result.ok is True
+    assert result.detail == "artifacts=0 homes=2"
+
+
 def test_runtime_identity_checks_detect_stale_checkout(tmp_path: Path, monkeypatch) -> None:
     _write_json(
         tmp_path / audit.RUNTIME_IDENTITY_FILENAME,
@@ -175,6 +205,32 @@ def test_runtime_identity_checks_fail_when_missing(tmp_path: Path) -> None:
 
     assert len(results) == 1
     assert results[0].ok is False
+
+
+def test_runtime_log_checks_ignore_errors_before_current_pid(tmp_path: Path) -> None:
+    (tmp_path / "bot.pid").write_text("321", encoding="utf-8")
+    log_path = tmp_path / "logs" / "agent.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text(
+        "An internal error occurred\n"
+        "PID lock acquired (pid=321)\n"
+        "TelegramNetworkError: temporary disconnect\n",
+        encoding="utf-8",
+    )
+
+    results = audit.runtime_log_checks(tmp_path)
+    by_label = {result.label: result for result in results}
+
+    assert by_label["runtime fatal signatures"].ok is True
+    assert by_label["runtime fatal signatures"].detail == "matches=0"
+    assert by_label["telegram network events"].ok is True
+    assert by_label["telegram network events"].detail == "events=1"
+
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("Cause: Context length exceeded\n")
+    result = audit.runtime_log_checks(tmp_path)[0]
+    assert result.ok is False
+    assert result.detail == "matches=1"
 
 
 def test_maintenance_file_checks_require_portable_pm2_config(tmp_path: Path) -> None:

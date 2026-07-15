@@ -95,9 +95,11 @@ Durable knowledge comes from the zhihaol Markdown vault through explicit
 The checked-in retrieval fixture is a local-stack regression gate: keyword,
 paraphrase, abstention, source-path, and excerpt checks must all pass. It contains
 queries and expected paths only, never vault note content.
-The audit also rejects `SHAREDMEMORY.md`, retired `state.db`/memory-tool surfaces, and the obsolete
-`state_backend`/`state_db_path` configuration keys in active agent homes. Archived
-migration evidence under `~/.ductor/archive/` is intentionally ignored.
+The audit also rejects `SHAREDMEMORY.md`, retired `state.db`/memory-tool surfaces,
+active workspace archive folders, orphan task artifacts, and the obsolete
+`state_backend`/`state_db_path` configuration keys in active agent homes. Move
+historical evidence under `~/.ductor/archive/`; that directory is intentionally
+ignored.
 
 ## 5. Cut Over And Observe
 
@@ -138,6 +140,12 @@ Inspect `~/.ductor/logs/agent.log` after startup. Verify:
 - one short turn succeeds for the active provider
 - one resumed turn succeeds
 - no context-limit retry loop, empty final response, or ProcessRegistry error
+
+`local_stack_audit.py` examines only records after the current PID lock marker.
+It fails on context exhaustion, internal provider errors, the retired
+`was_aborted_topic` failure, or a terminal main-agent crash. Telegram network
+events are counted separately: running pollers reconnect themselves, while a
+network failure during startup is retried in-process with bounded backoff.
 
 Do not diagnose a new source tree against an old process. If runtime identity
 does not match `HEAD`, fix the PM2 checkout and restart first.
