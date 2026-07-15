@@ -15,6 +15,7 @@ from ductor_bot.multiagent.models import SubAgentConfig
 from ductor_bot.multiagent.supervisor import (
     _MAX_RESTART_RETRIES,
     AgentSupervisor,
+    _is_transient_agent_error,
 )
 
 
@@ -422,10 +423,42 @@ class TestHandleCrash:
         stack = MagicMock()
 
         _, _, should_return = await supervisor._handle_crash(
-            "main", stack, health, 1, "fatal error"
+            "main", stack, health, 1, RuntimeError("fatal error")
         )
         assert should_return is True
         assert supervisor._main_done.is_set()
+
+    async def test_main_transient_crash_restarts_in_process(
+        self, supervisor: AgentSupervisor
+    ) -> None:
+        health = AgentHealth(name="main")
+        supervisor._health["main"] = health
+        stack = MagicMock()
+        stack.shutdown = AsyncMock()
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch.object(
+                supervisor, "_rebuild_stack", new_callable=AsyncMock, return_value=MagicMock()
+            ),
+        ):
+            _, _, should_return = await supervisor._handle_crash(
+                "main",
+                stack,
+                health,
+                1,
+                TimeoutError(),
+            )
+
+        assert should_return is False
+        assert supervisor._main_done.is_set() is False
+        assert health.status == "starting"
+        mock_sleep.assert_awaited_once_with(5)
+
+    def test_transient_error_classification(self) -> None:
+        assert _is_transient_agent_error(TimeoutError()) is True
+        assert _is_transient_agent_error(ConnectionError()) is True
+        assert _is_transient_agent_error(RuntimeError("bad config")) is False
 
     async def test_sub_agent_max_retries_exceeded(self, supervisor: AgentSupervisor) -> None:
         """After max retries, sub-agent is given up."""
@@ -437,7 +470,7 @@ class TestHandleCrash:
 
         retry_count = _MAX_RESTART_RETRIES + 1
         _, _, should_return = await supervisor._handle_crash(
-            "sub1", stack, health, retry_count, "keeps crashing"
+            "sub1", stack, health, retry_count, RuntimeError("keeps crashing")
         )
         assert should_return is True
 
@@ -455,7 +488,7 @@ class TestHandleCrash:
             ),
         ):
             _new_stack, _new_count, should_return = await supervisor._handle_crash(
-                "sub1", stack, health, 1, "transient error"
+                "sub1", stack, health, 1, RuntimeError("transient error")
             )
 
         assert should_return is False

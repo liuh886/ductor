@@ -8,6 +8,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from aiogram.exceptions import TelegramNetworkError
+from aiohttp import ClientError
+
 from ductor_bot.cli.process_registry import ProcessRegistry
 from ductor_bot.config import AgentConfig, update_config_file_async
 from ductor_bot.infra.file_watcher import FileWatcher
@@ -28,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _MAX_RESTART_RETRIES = 5
 _RESTART_BACKOFF_BASE = 5  # seconds, doubles each retry
+
+
+def _is_transient_agent_error(exc: BaseException) -> bool:
+    """Return whether an agent failure is safe to retry in-process."""
+    return isinstance(exc, (TelegramNetworkError, ClientError, TimeoutError, ConnectionError))
 
 
 def _config_changed(new: AgentConfig, old: AgentConfig) -> bool:
@@ -251,13 +259,15 @@ class AgentSupervisor:
         stack: AgentStack,
         health: AgentHealth,
         retry_count: int,
-        error_msg: str,
+        error: BaseException,
     ) -> tuple[AgentStack, int, bool]:
         """Handle a crash in ``_supervised_run``.
 
         Returns ``(stack, retry_count, should_return)`` — when *should_return*
         is True the caller must ``return 1``.
         """
+        error_msg = f"{type(error).__name__}: {error}"
+        retry_main = name == "main" and _is_transient_agent_error(error)
         health.mark_crashed(error_msg)
         logger.exception(
             "Agent '%s' crashed (attempt %d/%d): %s",
@@ -267,13 +277,21 @@ class AgentSupervisor:
             error_msg,
         )
 
-        if name == "main":
+        if name == "main" and not retry_main:
             logger.exception("Main agent crashed, terminating supervisor")
             self._main_ready.set()  # unblock sub-agent startup if still waiting
             self._main_done.set()
             return stack, retry_count, True
 
         if retry_count > _MAX_RESTART_RETRIES:
+            if name == "main":
+                logger.exception(
+                    "Main agent exceeded max transient retries (%d), terminating supervisor",
+                    _MAX_RESTART_RETRIES,
+                )
+                self._main_ready.set()
+                self._main_done.set()
+                return stack, retry_count, True
             logger.exception(
                 "Agent '%s' exceeded max retries (%d), giving up",
                 name,
@@ -340,13 +358,12 @@ class AgentSupervisor:
 
             except Exception as exc:
                 retry_count += 1
-                error_msg = f"{type(exc).__name__}: {exc}"
                 stack, retry_count, should_return = await self._handle_crash(
                     name,
                     stack,
                     health,
                     retry_count,
-                    error_msg,
+                    exc,
                 )
                 if should_return:
                     return 1
