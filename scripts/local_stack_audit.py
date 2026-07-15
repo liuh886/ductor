@@ -195,6 +195,42 @@ def _active_agent_homes(home: Path) -> tuple[list[Path], str | None]:
     return homes, None
 
 
+def context_isolation_checks(home: Path) -> list[CheckResult]:
+    """Require low-context Codex settings in every active agent home."""
+    agent_homes, error = _active_agent_homes(home)
+    if error:
+        return [CheckResult(ok=False, label="context isolation", detail=error)]
+
+    sync_disabled = 0
+    plugins_disabled = 0
+    for agent_home in agent_homes:
+        config = _load_json(agent_home / "config" / "config.json")
+        if config is None:
+            continue
+        if _config_value(config, "skills", "sync_enabled") is False:
+            sync_disabled += 1
+        cli_parameters = _config_value(config, "cli_parameters", "codex")
+        if isinstance(cli_parameters, list) and any(
+            cli_parameters[index : index + 2] == ["--disable", "plugins"]
+            for index in range(len(cli_parameters) - 1)
+        ):
+            plugins_disabled += 1
+
+    total = len(agent_homes)
+    return [
+        CheckResult(
+            sync_disabled == total,
+            "skill sync isolation",
+            f"disabled={sync_disabled} homes={total}",
+        ),
+        CheckResult(
+            plugins_disabled == total,
+            "codex plugin isolation",
+            f"disabled={plugins_disabled} homes={total}",
+        ),
+    ]
+
+
 def legacy_session_checks(home: Path) -> list[CheckResult]:
     """Reject obsolete P0 lineage fields in active agent session stores."""
     agent_homes, error = _active_agent_homes(home)
@@ -344,6 +380,7 @@ def main() -> int:
     results = [*git_checks(repo), *maintenance_file_checks(repo)]
     if not args.skip_runtime:
         results.extend(runtime_config_checks(home))
+        results.extend(context_isolation_checks(home))
         results.extend(legacy_session_checks(home))
         results.extend(legacy_memory_surface_checks(home))
         results.extend(runtime_identity_checks(repo, home))

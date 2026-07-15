@@ -67,6 +67,29 @@ def test_runtime_config_checks_reject_ambient_prompt_files(tmp_path: Path) -> No
     assert by_label["append_system_prompt_files"].detail == "configured=1"
 
 
+def test_context_isolation_checks_require_all_active_homes(tmp_path: Path) -> None:
+    (tmp_path / "agents.json").write_text(json.dumps([{"name": "active"}]), encoding="utf-8")
+    minimal = {
+        "skills": {"sync_enabled": False},
+        "cli_parameters": {"codex": ["--disable", "plugins"]},
+    }
+    _write_json(tmp_path / "config" / "config.json", minimal)
+    _write_json(tmp_path / "agents" / "active" / "config" / "config.json", minimal)
+
+    results = audit.context_isolation_checks(tmp_path)
+
+    assert all(result.ok for result in results)
+    assert results[0].detail == "disabled=2 homes=2"
+    assert results[1].detail == "disabled=2 homes=2"
+
+    _write_json(tmp_path / "agents" / "active" / "config" / "config.json", {})
+    results = audit.context_isolation_checks(tmp_path)
+
+    assert all(result.ok is False for result in results)
+    assert results[0].detail == "disabled=1 homes=2"
+    assert results[1].detail == "disabled=1 homes=2"
+
+
 def test_legacy_session_checks_scan_only_active_agents(tmp_path: Path) -> None:
     _write_json(tmp_path / "sessions.json", {"chat": {"lineage_id": "old"}})
     _write_json(
