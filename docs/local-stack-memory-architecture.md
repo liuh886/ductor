@@ -87,3 +87,8 @@ and abstention precision of 1.00. Offshore-QC, CV-tailoring, and snow-retrieval
 paraphrases remain known lexical misses. The built-in adapter remains unsuitable
 for automatic prompt injection or synthesis; any semantic sidecar must beat this
 benchmark, preserve source citations, and remain independently removable.
+
+Provider context is isolated separately from vault retrieval. The deployed Codex
+home shares only host authentication, while cross-tool skill sync and Codex plugin
+loading are disabled in every active agent config. This reduced a measured trivial
+turn from roughly 20.5k to 14.5k input tokens without changing vault content.

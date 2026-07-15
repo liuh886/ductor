@@ -116,11 +116,16 @@ python scripts/local_stack_audit.py
 ```
 
 `DUCTOR_CODEX_HOME` is optional. The local runtime uses an isolated Codex home
-with shared authentication but no global skills/plugins, reducing fixed input
-cost for a trivial turn from about 19.9k to 13.3k tokens in the July 15 probe.
+with shared authentication and disables Codex plugins, reducing fixed input
+cost for a trivial deployed turn from about 20.5k to 14.5k tokens in the July 15 probe.
 Provision its `auth.json` as a link to the host Codex auth file before the first
 isolated start. Do not copy provider session history into the isolated home;
 stale Ductor session IDs recover once into a fresh provider session.
+
+Set `skills.sync_enabled=false` and Codex CLI parameters `--disable plugins` in
+the main config and every active agent config. A child agent with the default
+sync setting can repopulate the isolated home during startup. The local-stack
+audit verifies both settings across all registered agent homes.
 
 For a later restart from the same checkout, `pm2 startOrReload` is sufficient.
 Never accept a successful PM2 status as proof of a cutover; the audit must pass
