@@ -76,7 +76,19 @@ _MESSAGE_STOPWORDS = frozenset(
         "your",
     }
 )
-_CJK_QUERY_PREFIXES = ("请帮我", "帮我", "查找", "搜索", "查询", "了解", "看看", "关于", "请", "和")
+_CJK_QUERY_PREFIXES = (
+    "不存在的",
+    "请帮我",
+    "帮我",
+    "查找",
+    "搜索",
+    "查询",
+    "了解",
+    "看看",
+    "关于",
+    "请",
+    "和",
+)
 _CJK_QUERY_SUFFIXES = ("相关资料", "相关信息", "资料", "信息", "内容", "情况", "相关")
 
 
@@ -151,13 +163,7 @@ def _contains_cjk(term: str) -> bool:
 def _search_terms(terms: list[str]) -> tuple[list[str], list[str]]:
     """Return independent English terms and overlap-scored CJK grams."""
     english = _maximal_terms([term for term in terms if not _contains_cjk(term)])
-    cjk = list(
-        dict.fromkeys(
-            term
-            for term in terms
-            if _contains_cjk(term) and 2 <= len(term) <= 4
-        )
-    )
+    cjk = list(dict.fromkeys(term for term in terms if _contains_cjk(term) and 2 <= len(term) <= 4))
     if not cjk:
         cjk = _maximal_terms([term for term in terms if _contains_cjk(term)])
     return english, cjk

@@ -42,6 +42,16 @@ The index maintenance command is read-only unless `--apply` is supplied:
 python scripts/vault_index_sync.py --vault D:\Documents\zhihaol
 ```
 
+Retrieval changes are measured against the checked-in local fixture:
+
+```powershell
+python -m scripts.vault_retrieval_benchmark --fixture scripts/vault_retrieval_cases.json --index $HOME\.ductor\workspace\memory_system\vault_index.db
+```
+
+The fixture stores queries and expected source paths, not note content. The command
+exits nonzero if total recall, lexical recall, paraphrase recall, abstention precision,
+source coverage, or excerpt bounds fall below their recorded thresholds.
+
 The audit compares source checksums as well as paths, so changed Markdown cannot
 be reported as current merely because its filename is unchanged. With `--apply`,
 it builds and verifies a temporary SQLite index, backs up the current index,
@@ -71,9 +81,9 @@ not copied into Ductor. A future semantic sidecar must be optional, read-only by
 default, independently benchmarked, and absent from the startup-critical path.
 
 The current index audit covers 1,511 of 1,511 indexable Markdown documents after
-retiring three A-MEM anchor projections. The July 12 private baseline reported
-lexical recall@5 of 0.90, semantic-paraphrase recall@5 of 0.30, and abstention
-precision of 1.00. That private fixture is diagnostic evidence, not a repository
-regression gate. The built-in adapter remains unsuitable for automatic prompt
-injection or synthesis; any semantic sidecar must beat a checked-in benchmark,
-preserve source citations, and remain independently removable.
+retiring three A-MEM anchor projections. The checked-in 23-case baseline reports
+lexical recall@5 of 1.00, paraphrase recall@5 of 0.57, total recall@5 of 0.83,
+and abstention precision of 1.00. Offshore-QC, CV-tailoring, and snow-retrieval
+paraphrases remain known lexical misses. The built-in adapter remains unsuitable
+for automatic prompt injection or synthesis; any semantic sidecar must beat this
+benchmark, preserve source citations, and remain independently removable.
