@@ -31,3 +31,9 @@ On 2026-07-15, `origin/main` was updated with an exact `--force-with-lease` from
 `14c42da` to `db7f88e`. Local `main`, `origin/main`, and `upstream/main` now match.
 The original fork tip remains available as
 `backup/pre-upstream-merge-20260529-014404`.
+
+On 2026-08-03, the rebuilt local stack was rebased onto upstream v0.20.1 at
+`3e3c88a`, passed the complete test suite, and replaced the PM2 runtime. Local
+`main` and `origin/main` were then fast-forwarded from `db7f88e` to `3e3c88a`.
+The previous runtime tip remains available as
+`backup/local-stack-v019-before-v020-sync-20260803`.
