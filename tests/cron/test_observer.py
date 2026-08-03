@@ -353,8 +353,10 @@ class TestCronObserverExecution:
         proc = MagicMock()
         proc.pid = 1234
         with (
-            patch("ductor_bot.cron.observer.os.getpgid", return_value=1234) as getpgid,
-            patch("ductor_bot.cron.observer.os.killpg") as killpg,
+            patch("ductor_bot.cron.observer.sys.platform", "linux"),
+            patch("ductor_bot.cron.observer.signal.SIGKILL", 9, create=True),
+            patch("ductor_bot.cron.observer.os.getpgid", return_value=1234, create=True) as getpgid,
+            patch("ductor_bot.cron.observer.os.killpg", create=True) as killpg,
         ):
             _kill_process_group(proc)
 
@@ -369,8 +371,9 @@ class TestCronObserverExecution:
         proc = MagicMock()
         proc.pid = 1234
         with (
-            patch("ductor_bot.cron.observer.os.getpgid", return_value=1),
-            patch("ductor_bot.cron.observer.os.killpg") as killpg,
+            patch("ductor_bot.cron.observer.sys.platform", "linux"),
+            patch("ductor_bot.cron.observer.os.getpgid", return_value=1, create=True),
+            patch("ductor_bot.cron.observer.os.killpg", create=True) as killpg,
         ):
             _kill_process_group(proc)
 
@@ -383,8 +386,9 @@ class TestCronObserverExecution:
 
         proc = MagicMock()  # proc.pid is a MagicMock, not an int
         with (
-            patch("ductor_bot.cron.observer.os.getpgid") as getpgid,
-            patch("ductor_bot.cron.observer.os.killpg") as killpg,
+            patch("ductor_bot.cron.observer.sys.platform", "linux"),
+            patch("ductor_bot.cron.observer.os.getpgid", create=True) as getpgid,
+            patch("ductor_bot.cron.observer.os.killpg", create=True) as killpg,
         ):
             _kill_process_group(proc)
 
@@ -398,8 +402,13 @@ class TestCronObserverExecution:
         proc = MagicMock()
         proc.pid = 1234
         with (
-            patch("ductor_bot.cron.observer.os.getpgid", side_effect=ProcessLookupError),
-            patch("ductor_bot.cron.observer.os.killpg") as killpg,
+            patch("ductor_bot.cron.observer.sys.platform", "linux"),
+            patch(
+                "ductor_bot.cron.observer.os.getpgid",
+                side_effect=ProcessLookupError,
+                create=True,
+            ),
+            patch("ductor_bot.cron.observer.os.killpg", create=True) as killpg,
         ):
             _kill_process_group(proc)
 

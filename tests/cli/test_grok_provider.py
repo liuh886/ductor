@@ -123,6 +123,7 @@ class TestGrokProvider:
 
     def test_build_command_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("ductor_bot.cli.grok_provider.which", lambda _: "/usr/bin/grok")
+        monkeypatch.setattr("ductor_bot.cli.grok_provider._IS_WINDOWS", False)
         cli = GrokCLI(
             CLIConfig(
                 provider="grok",

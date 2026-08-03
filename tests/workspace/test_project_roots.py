@@ -46,6 +46,7 @@ def test_plain_topic_id_key(tmp_path: Path) -> None:
 
 def test_tilde_expansion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     project = tmp_path / "code" / "proj"
     project.mkdir(parents=True)
     roots = {"proj": "~/code/proj"}

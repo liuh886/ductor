@@ -366,7 +366,7 @@ def test_ask_agent_forwards_source_chat_topic(monkeypatch: pytest.MonkeyPatch) -
         captured.update(json.loads(request.data.decode()))
         return response
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(mod._INTERNAL_OPENER, "open", urlopen)
     monkeypatch.setattr(sys, "argv", ["ask_agent.py", "codex", "hello"])
     monkeypatch.setenv("DUCTOR_AGENT_NAME", "main")
     monkeypatch.setenv("DUCTOR_CHAT_ID", "777")

@@ -253,9 +253,7 @@ async def test_normal_stale_session_recovery_failed_circuit_breaker(orch: Orches
 @pytest.mark.parametrize(
     "detail",
     [
-        pytest.param(
-            "The prompt is too long: 210000 tokens > 200000 maximum", id="claude"
-        ),
+        pytest.param("The prompt is too long: 210000 tokens > 200000 maximum", id="claude"),
         pytest.param("Your input exceeds the context window for this model", id="codex"),
         pytest.param(
             "The input token count (1048577) exceeds the maximum number of tokens allowed",
@@ -277,7 +275,7 @@ async def test_normal_context_limit_resets_request_target_and_retries_once(
     orch: Orchestrator,
 ) -> None:
     key = SessionKey(transport="matrix", chat_id=1, topic_id=42)
-    await orch._sessions.reset_session(key, provider="codex", model="gpt-5.2-codex")
+    await orch._sessions.reset_provider_session(key, provider="codex", model="gpt-5.2-codex")
     session = await orch._sessions.get_active(key)
     assert session is not None
     session.session_id = "codex-session"
@@ -341,13 +339,15 @@ async def test_context_recovery_preserves_other_provider_and_topic_sessions(
 ) -> None:
     key = SessionKey(chat_id=1, topic_id=10)
     other_key = SessionKey(chat_id=1, topic_id=20)
-    current = await orch._sessions.reset_session(key, provider="claude", model="opus")
+    current = await orch._sessions.reset_provider_session(key, provider="claude", model="opus")
     current.session_id = "claude-old"
-    current.provider = "codex"
-    current.model = "gpt-5.2-codex"
+    await orch._sessions.preserve_session_identity(current)
+    current = await orch._sessions.reset_provider_session(
+        key, provider="codex", model="gpt-5.2-codex"
+    )
     current.session_id = "codex-old"
     await orch._sessions.preserve_session_identity(current)
-    other = await orch._sessions.reset_session(other_key, provider="claude", model="opus")
+    other = await orch._sessions.reset_provider_session(other_key, provider="claude", model="opus")
     other.session_id = "other-topic"
     await orch._sessions.preserve_session_identity(other)
 

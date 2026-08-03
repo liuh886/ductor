@@ -142,7 +142,7 @@ def test_redact_cmd_for_log_masks_all_non_whitelisted_dotenv_keys() -> None:
     [log_claude_cmd, log_codex_cmd, log_gemini_cmd],
     ids=["claude", "codex", "gemini"],
 )
-def test_provider_command_logs_redact_secret(
+def test_provider_command_logs_omit_arguments(
     caplog: pytest.LogCaptureFixture,
     log_cmd: Callable[[list[str]], None],
 ) -> None:
@@ -150,17 +150,19 @@ def test_provider_command_logs_redact_secret(
         log_cmd(["docker", "-e", f"api-key={_FAKE_SECRET}"])
 
     assert _FAKE_SECRET not in caplog.text
-    assert "api-key=***" in caplog.text
+    assert "api-key" not in caplog.text
+    assert "args=2" in caplog.text
 
 
-def test_claude_info_log_masks_embedded_url_credentials(
+def test_claude_info_log_omits_embedded_url_credentials(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level(logging.INFO):
         log_claude_cmd(["docker", "-e", f"DATABASE_URL={_FAKE_DATABASE_VALUE}"])
 
     assert _FAKE_DATABASE_VALUE not in caplog.text
-    assert "DATABASE_URL=***" in caplog.text
+    assert "DATABASE_URL" not in caplog.text
+    assert "args=2" in caplog.text
 
 
 async def test_docker_debug_log_masks_embedded_url_credentials(
