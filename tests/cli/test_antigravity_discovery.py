@@ -91,9 +91,15 @@ async def test_discover_returns_empty_when_agy_missing() -> None:
 
 async def test_cache_falls_back_when_discovery_empty(tmp_path: Path) -> None:
     cache_path = tmp_path / "antigravity_models.json"
-    with patch(
-        "ductor_bot.cli.antigravity_cache.discover_antigravity_models",
-        AsyncMock(return_value=()),
+    with (
+        patch(
+            "ductor_bot.cli.antigravity_cache.discover_antigravity_models",
+            AsyncMock(return_value=()),
+        ),
+        patch(
+            "ductor_bot.cli.antigravity_cache.configured_antigravity_models",
+            return_value=(),
+        ),
     ):
         cache = await AntigravityModelCache.load_or_refresh(cache_path, force_refresh=True)
 

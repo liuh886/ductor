@@ -241,6 +241,7 @@ class TestAgentEnvInjection:
 
 
 _PLANNER: dict[str, str] = {"source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE"}
+_SYSTEM_ERROR: dict[str, str] = {"source": "SYSTEM", "type": "ERROR_MESSAGE"}
 
 
 @pytest.fixture(autouse=True)
@@ -330,6 +331,38 @@ class TestSendUsesTranscript:
 
         assert resp.result == "resumed answer"
         assert resp.session_id == "resume-me"
+
+    async def test_resume_surfaces_system_error_from_transcript(
+        self, isolated_agy_state: Path
+    ) -> None:
+        cli = _make_cli()
+        _write_transcript(isolated_agy_state, "resume-me", [{**_PLANNER, "content": "old"}])
+        proc = _make_oneshot_process(b"")
+
+        async def communicate() -> tuple[bytes, bytes]:
+            _append_transcript(
+                isolated_agy_state,
+                "resume-me",
+                [
+                    {
+                        **_SYSTEM_ERROR,
+                        "content": "Error: The stream was interrupted. Please continue the task.",
+                    }
+                ],
+            )
+            return b"", b""
+
+        proc.communicate = AsyncMock(side_effect=communicate)
+
+        with patch(
+            "ductor_bot.cli.antigravity_provider.asyncio.create_subprocess_exec",
+            return_value=proc,
+        ):
+            resp = await cli.send("hi", resume_session="resume-me")
+
+        assert resp.session_id == "resume-me"
+        assert "stream was interrupted" in resp.result
+        assert resp.is_error is True
 
     async def test_stale_transcript_is_not_returned(self, isolated_agy_state: Path) -> None:
         cli = _make_cli()

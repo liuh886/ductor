@@ -297,6 +297,8 @@ _CONTEXT_LIMIT_MARKERS = (
     "input is too long",
 )
 
+_TRANSIENT_SESSION_MARKERS = ("the stream was interrupted",)
+
 
 def _is_invalid_session(response: AgentResponse) -> bool:
     """Return True when the CLI rejected a ``--resume`` session ID.
@@ -320,9 +322,22 @@ def _is_context_limit(response: AgentResponse) -> bool:
     return "input token count" in lower and "exceeds" in lower and "maximum" in lower
 
 
+def _is_transient_session_error(response: AgentResponse) -> bool:
+    """Return True for provider failures where an existing session should be replaced."""
+    if not response.is_error:
+        return False
+    lower = (response.result or "").lower()
+    return any(marker in lower for marker in _TRANSIENT_SESSION_MARKERS)
+
+
 def _needs_session_recovery(response: AgentResponse) -> bool:
     """Return True when the response warrants an automatic session reset + retry."""
-    return _is_sigkill(response) or _is_invalid_session(response) or _is_context_limit(response)
+    return (
+        _is_sigkill(response)
+        or _is_invalid_session(response)
+        or _is_context_limit(response)
+        or _is_transient_session_error(response)
+    )
 
 
 @dataclass(slots=True)
@@ -340,7 +355,8 @@ class _RecoveryOutcome:
 
     ``retry_performed`` is True when a fresh-session retry actually ran.
     ``session_recovered`` is True only when that retry succeeded after an
-    invalid-session rejection (used to prepend the user-facing notice).
+    invalid-session rejection or interrupted provider stream (used to prepend
+    the user-facing notice).
     ``failed_result`` is non-None when a fresh request is already too large or
     when the retry still returns stale-session/context-limit, so callers must
     short-circuit with it.
@@ -366,8 +382,8 @@ async def _maybe_recover_session(  # noqa: PLR0913
 ) -> _RecoveryOutcome:
     """Run the one-shot recovery gate shared by normal() and normal_streaming().
 
-    If the CLI reported a recoverable failure (SIGKILL or stale session) AND
-    the user did not abort/interrupt, retry exactly once with a fresh session.
+    If the CLI reported a recoverable failure and the user did not
+    abort/interrupt, retry exactly once with a fresh session.
     If the retry ALSO returns stale-session, emit a clear error and surface
     ``failed_result`` so callers can short-circuit (MED #8 hard cap).
     """
@@ -388,20 +404,29 @@ async def _maybe_recover_session(  # noqa: PLR0913
         )
 
     context_limit = _is_context_limit(response)
-    if context_limit and request.resume_session is None:
-        logger.info("Context limit on fresh session chat=%s action=no-retry", key.chat_id)
+    transient_error = _is_transient_session_error(response)
+    if (context_limit or transient_error) and request.resume_session is None:
+        logger.info(
+            "%s on fresh session chat=%s action=no-retry",
+            "Context limit" if context_limit else "Transient provider error",
+            key.chat_id,
+        )
         return _RecoveryOutcome(
             request=request,
             session=session,
             response=response,
             retry_performed=False,
             session_recovered=False,
-            failed_result=OrchestratorResult(text=_context_request_too_large_msg()),
+            failed_result=(
+                OrchestratorResult(text=_context_request_too_large_msg()) if context_limit else None
+            ),
         )
 
-    session_recovered = _is_invalid_session(response)
+    session_recovered = _is_invalid_session(response) or transient_error
     if context_limit:
         reason = "context_limit"
+    elif transient_error:
+        reason = "stream_interrupted"
     elif session_recovered:
         reason = "invalid_session"
     else:
@@ -448,7 +473,7 @@ async def _recover_session(
     )
 
     cb = ctx.cbs
-    if ctx.reason == "invalid_session" and cb.on_text_delta is not None:
+    if ctx.reason in {"invalid_session", "stream_interrupted"} and cb.on_text_delta is not None:
         await cb.on_text_delta(f"{_session_recovered_msg()}\n\n")
     elif cb.on_system_status is not None:
         await cb.on_system_status("recovering")

@@ -67,6 +67,12 @@ class _TranscriptTarget:
     readable: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class _TranscriptDelta:
+    answer: str | None = None
+    error: str | None = None
+
+
 class AntigravityCLI(BaseCLI):
     """Async wrapper around the Antigravity CLI (agy).
 
@@ -292,17 +298,22 @@ class AntigravityCLI(BaseCLI):
         # agy may flush its transcript just after the subprocess exits. Only
         # inspect the conversation selected for this invocation and only bytes
         # appended after the pre-invocation cursor.
-        session_id, transcript_answer = await _poll_transcript_answer(
+        session_id, transcript_delta = await _poll_transcript_answer(
             self._agy_workspace,
             transcript_cursor,
             env,
         )
-        if transcript_answer is not None:
+        if transcript_delta.answer is not None:
             logger.debug("Antigravity answer read from transcript")
-            result_text = transcript_answer
+            result_text = transcript_delta.answer
+        elif transcript_delta.error is not None:
+            logger.warning("Antigravity error read from transcript: %s", transcript_delta.error)
+            result_text = transcript_delta.error
         else:
             result_text = parse_antigravity_json(stdout)
-        is_error = proc.returncode not in (None, 0)
+        is_error = proc.returncode not in (None, 0) or (
+            transcript_delta.answer is None and transcript_delta.error is not None
+        )
         if not is_error and not result_text.strip():
             result_text = "Antigravity completed successfully but produced no response text."
             is_error = True
@@ -533,22 +544,23 @@ def _resolve_transcript_target(
     return _unique_new_transcript_target(root, cursor)
 
 
-def _read_transcript_delta(target: _TranscriptTarget) -> str | None:
-    """Read the final planner response from bytes written after *target.cursor*."""
+def _read_transcript_delta(target: _TranscriptTarget) -> _TranscriptDelta:
+    """Read the final response or provider error written after *target.cursor*."""
     if not target.readable:
-        return None
+        return _TranscriptDelta()
     try:
         stat = target.transcript.stat()
         start = _fresh_transcript_offset(stat, target.cursor)
         if start is None:
-            return None
+            return _TranscriptDelta()
         with target.transcript.open("rb") as transcript_file:
             transcript_file.seek(start)
             raw = transcript_file.read().decode("utf-8", errors="replace")
     except OSError:
-        return None
+        return _TranscriptDelta()
 
     answer: str | None = None
+    error: str | None = None
     for line in raw.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -557,21 +569,31 @@ def _read_transcript_delta(target: _TranscriptTarget) -> str | None:
             entry = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        if (
-            isinstance(entry, dict)
-            and entry.get("source") == "MODEL"
-            and entry.get("type") == "PLANNER_RESPONSE"
-            and entry.get("status") == "DONE"
-        ):
-            content = entry.get("content")
-            if isinstance(content, str) and content.strip():
-                answer = content
-    return answer
+        entry_delta = _parse_transcript_entry(entry)
+        answer = entry_delta.answer or answer
+        error = entry_delta.error or error
+    return _TranscriptDelta(answer=answer, error=error)
 
 
-def _fresh_transcript_offset(
-    stat: os.stat_result, cursor: _TranscriptCursor | None
-) -> int | None:
+def _parse_transcript_entry(entry: object) -> _TranscriptDelta:
+    """Classify one decoded agy transcript entry."""
+    if not isinstance(entry, dict):
+        return _TranscriptDelta()
+    content = entry.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return _TranscriptDelta()
+    if (
+        entry.get("source") == "MODEL"
+        and entry.get("type") == "PLANNER_RESPONSE"
+        and entry.get("status") == "DONE"
+    ):
+        return _TranscriptDelta(answer=content)
+    if entry.get("source") == "SYSTEM" and entry.get("type") == "ERROR_MESSAGE":
+        return _TranscriptDelta(error=content)
+    return _TranscriptDelta()
+
+
+def _fresh_transcript_offset(stat: os.stat_result, cursor: _TranscriptCursor | None) -> int | None:
     """Return the byte boundary for fresh append/rewrite content."""
     if cursor is None:
         return 0
@@ -586,18 +608,20 @@ async def _poll_transcript_answer(
     working_dir: Path,
     cursor: _InvocationCursor,
     env: Mapping[str, str] | None = None,
-) -> tuple[str | None, str | None]:
-    """Briefly wait for agy to persist this invocation's final transcript entry."""
+) -> tuple[str | None, _TranscriptDelta]:
+    """Briefly wait for agy to persist this invocation's transcript outcome."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _TRANSCRIPT_POLL_SECONDS
     session_id: str | None = cursor.resume_session
+    last_error: str | None = None
     while True:
         target = _resolve_transcript_target(working_dir, cursor, env)
         if target is not None:
             session_id = target.session_id
-            answer = _read_transcript_delta(target)
-            if answer is not None:
-                return session_id, answer
+            delta = _read_transcript_delta(target)
+            if delta.answer is not None:
+                return session_id, delta
+            last_error = delta.error or last_error
             if (
                 not cursor.resume_session
                 and not cursor.continue_session
@@ -605,11 +629,14 @@ async def _poll_transcript_answer(
             ):
                 new_target = _unique_new_transcript_target(_agy_state_root(env), cursor)
                 if new_target is not None:
-                    new_answer = _read_transcript_delta(new_target)
-                    if new_answer is not None:
-                        return new_target.session_id, new_answer
+                    new_delta = _read_transcript_delta(new_target)
+                    if new_delta.answer is not None:
+                        return new_target.session_id, new_delta
+                    if new_delta.error is not None:
+                        session_id = new_target.session_id
+                        last_error = new_delta.error
         if loop.time() >= deadline:
-            return session_id, None
+            return session_id, _TranscriptDelta(error=last_error)
         await asyncio.sleep(_TRANSCRIPT_POLL_INTERVAL)
 
 

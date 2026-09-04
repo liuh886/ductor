@@ -334,6 +334,48 @@ async def test_normal_second_context_limit_stops_after_one_retry(orch: Orchestra
     assert mock_execute.await_count == 2
 
 
+async def test_normal_stream_interruption_retries_resumed_session_once(
+    orch: Orchestrator,
+) -> None:
+    await _establish_session(orch)
+    interrupted = _mock_response(
+        is_error=True,
+        result="Error: The stream was interrupted. Please continue the task.",
+    )
+    mock_execute = AsyncMock(side_effect=[interrupted, _mock_response(result="Recovered")])
+    reset_provider = AsyncMock(wraps=orch._sessions.reset_provider_session)
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._sessions, "reset_provider_session", reset_provider)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal(orch, SessionKey(chat_id=1), "Continue")
+
+    assert result.text.endswith("Recovered")
+    assert mock_execute.await_count == 2
+    assert mock_execute.await_args_list[1].args[0].resume_session is None
+    reset_provider.assert_awaited_once_with(SessionKey(chat_id=1), provider="claude", model="opus")
+
+
+async def test_normal_stream_interruption_on_fresh_session_does_not_retry(
+    orch: Orchestrator,
+) -> None:
+    interrupted = _mock_response(
+        is_error=True,
+        result="Error: The stream was interrupted. Please continue the task.",
+    )
+    mock_execute = AsyncMock(return_value=interrupted)
+    reset_provider = AsyncMock(wraps=orch._sessions.reset_provider_session)
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+    object.__setattr__(orch._sessions, "reset_provider_session", reset_provider)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal(orch, SessionKey(chat_id=1), "New request")
+
+    assert "Session Error" in result.text
+    assert mock_execute.await_count == 1
+    reset_provider.assert_not_awaited()
+
+
 async def test_context_recovery_preserves_other_provider_and_topic_sessions(
     orch: Orchestrator,
 ) -> None:
@@ -597,6 +639,39 @@ async def test_streaming_context_limit_retries_resumed_session_once(
     assert retry_request.resume_session is None
     reset_provider.assert_awaited_once_with(key, provider="claude", model="opus")
     status.assert_any_await("recovering")
+
+
+async def test_streaming_stream_interruption_retries_resumed_session_once(
+    orch: Orchestrator,
+) -> None:
+    key = SessionKey(chat_id=1, topic_id=42)
+    object.__setattr__(
+        orch._cli_service,
+        "execute_streaming",
+        AsyncMock(return_value=_mock_response(session_id="stream-session")),
+    )
+    await normal_streaming(orch, key, "Setup")
+
+    interrupted = _mock_response(
+        is_error=True,
+        result="Error: The stream was interrupted. Please continue the task.",
+    )
+    mock_streaming = AsyncMock(side_effect=[interrupted, _mock_response(result="Recovered stream")])
+    on_delta = AsyncMock()
+    object.__setattr__(orch._cli_service, "execute_streaming", mock_streaming)
+    object.__setattr__(orch._process_registry, "kill_by_chat_topic", AsyncMock(return_value=0))
+
+    result = await normal_streaming(
+        orch,
+        key,
+        "Continue",
+        cbs=StreamingCallbacks(on_text_delta=on_delta),
+    )
+
+    assert result.text == "Recovered stream"
+    assert mock_streaming.await_count == 2
+    assert mock_streaming.await_args_list[1].args[0].resume_session is None
+    on_delta.assert_awaited_once()
 
 
 async def test_streaming_new_session_context_limit_does_not_retry(
