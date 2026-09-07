@@ -39,7 +39,54 @@ class TestSendRich:
         bot.send_message = AsyncMock(
             side_effect=TelegramNetworkError(method=MagicMock(), message="boom")
         )
-        assert await send_rich(bot, 1, "Hello world") is False
+        with patch(
+            "ductor_bot.messenger.telegram.sender.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep:
+            assert await send_rich(bot, 1, "Hello world") is False
+
+        assert bot.send_message.await_count == 6
+        assert sleep.await_count == 5
+
+    async def test_retries_a_chunk_after_transient_network_error(self) -> None:
+        from aiogram.exceptions import TelegramNetworkError
+
+        from ductor_bot.messenger.telegram.sender import send_rich
+
+        bot = MagicMock()
+        sent = MagicMock()
+        bot.send_message = AsyncMock(
+            side_effect=[TelegramNetworkError(MagicMock(), "network down"), sent]
+        )
+
+        with patch(
+            "ductor_bot.messenger.telegram.sender.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep:
+            assert await send_rich(bot, 1, "Hello world") is True
+
+        assert bot.send_message.await_count == 2
+        sleep.assert_awaited_once_with(1)
+
+    async def test_retry_does_not_resend_completed_chunks(self) -> None:
+        from aiogram.exceptions import TelegramNetworkError
+
+        from ductor_bot.messenger.telegram.sender import send_rich
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(
+            side_effect=[
+                MagicMock(),
+                TelegramNetworkError(MagicMock(), "network down"),
+                MagicMock(),
+            ]
+        )
+
+        with patch("ductor_bot.messenger.telegram.sender.asyncio.sleep", new_callable=AsyncMock):
+            assert await send_rich(bot, 1, "A" * 5000) is True
+
+        calls = bot.send_message.await_args_list
+        assert len(calls) == 3
+        assert calls[0].kwargs["text"] != calls[1].kwargs["text"]
+        assert calls[1].kwargs["text"] == calls[2].kwargs["text"]
 
     async def test_file_tags_extracted_and_sent(self, tmp_path: Path) -> None:
         from ductor_bot.messenger.telegram.sender import SendRichOpts, send_rich

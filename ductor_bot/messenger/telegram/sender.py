@@ -38,11 +38,52 @@ class SendRichOpts(BaseSendOpts):
     thread_id: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _TextChunkOpts:
+    parse_mode: ParseMode | None
+    thread_id: int | None
+    reply_parameters: ReplyParameters | None = None
+
+
 logger = logging.getLogger(__name__)
 
 _PHOTO_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"})
 _VIDEO_SUFFIXES = frozenset({".mp4"})
 _AUDIO_SUFFIXES = frozenset({".mp3", ".m4a"})
+_NETWORK_SEND_ATTEMPTS = 6
+_NETWORK_SEND_MAX_BACKOFF = 16
+
+
+async def _send_text_chunk(
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    opts: _TextChunkOpts,
+) -> Message:
+    """Send one chunk, tolerating a short Telegram network interruption."""
+    for attempt in range(_NETWORK_SEND_ATTEMPTS):
+        try:
+            return await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=opts.parse_mode,
+                reply_parameters=opts.reply_parameters,
+                message_thread_id=opts.thread_id,
+            )
+        except TelegramNetworkError as exc:
+            if attempt == _NETWORK_SEND_ATTEMPTS - 1:
+                raise
+            delay = min(1 << attempt, _NETWORK_SEND_MAX_BACKOFF)
+            logger.warning(
+                "Telegram message send failed (%d/%d), retrying in %ds: %s",
+                attempt + 1,
+                _NETWORK_SEND_ATTEMPTS,
+                delay,
+                exc,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("unreachable")
 
 
 def _select_telegram_upload_mode(path: Path, mime: str) -> str:
@@ -142,26 +183,26 @@ async def _send_text_chunks(
     chunks = split_html_message(html_text)
     for i, chunk in enumerate(chunks):
         try:
-            if reply_to_message_id and i == 0:
-                last_msg = await bot.send_message(
-                    chat_id=chat_id,
-                    text=chunk,
-                    parse_mode=ParseMode.HTML,
-                    reply_parameters=ReplyParameters(
-                        message_id=reply_to_message_id,
-                        allow_sending_without_reply=True,
-                    ),
-                    message_thread_id=thread_id,
+            reply_parameters = (
+                ReplyParameters(
+                    message_id=reply_to_message_id,
+                    allow_sending_without_reply=True,
                 )
-            else:
-                last_msg = await bot.send_message(
-                    chat_id=chat_id,
-                    text=chunk,
+                if reply_to_message_id and i == 0
+                else None
+            )
+            last_msg = await _send_text_chunk(
+                bot,
+                chat_id,
+                chunk,
+                _TextChunkOpts(
                     parse_mode=ParseMode.HTML,
-                    message_thread_id=thread_id,
-                )
-        except TelegramNetworkError:
-            logger.debug("Network error sending message (likely shutdown), skipping")
+                    reply_parameters=reply_parameters,
+                    thread_id=thread_id,
+                ),
+            )
+        except TelegramNetworkError as exc:
+            logger.warning("Telegram message send exhausted retries: %s", exc)
             return last_msg, False
         except TelegramBadRequest:
             logger.warning(
@@ -172,12 +213,16 @@ async def _send_text_chunks(
             remaining = "\n\n".join(chunks[i:])
             plain = html_mod.unescape(re.sub(r"<[^>]+>", "", remaining))
             for pc in split_html_message(plain):
-                last_msg = await bot.send_message(
-                    chat_id=chat_id,
-                    text=pc,
-                    parse_mode=None,
-                    message_thread_id=thread_id,
-                )
+                try:
+                    last_msg = await _send_text_chunk(
+                        bot,
+                        chat_id,
+                        pc,
+                        _TextChunkOpts(parse_mode=None, thread_id=thread_id),
+                    )
+                except TelegramNetworkError as exc:
+                    logger.warning("Telegram plain-text send exhausted retries: %s", exc)
+                    return last_msg, False
             break
     return last_msg, True
 
