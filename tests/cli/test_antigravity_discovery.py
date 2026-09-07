@@ -161,6 +161,13 @@ def test_runtime_display_name_routes_to_antigravity() -> None:
     assert ModelRegistry().provider_for("Claude Opus 4.6 (Thinking)") == "antigravity"
 
 
-def test_runtime_display_name_unknown_routes_to_codex() -> None:
-    # Without discovery, a bare display name is not recognized as Antigravity.
-    assert ModelRegistry().provider_for("Claude Opus 4.6 (Thinking)") == "codex"
+@pytest.mark.parametrize(
+    "model",
+    [
+        "Gemini 3.7 Flash (High)",
+        "Claude Opus 4.6 (Thinking)",
+        "GPT-OSS 120B (Medium)",
+    ],
+)
+def test_runtime_display_name_routes_without_discovery(model: str) -> None:
+    assert ModelRegistry().provider_for(model) == "antigravity"

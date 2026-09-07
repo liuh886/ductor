@@ -327,6 +327,34 @@ class TestEditStreamEditor:
         assert "AAA" not in edited
         assert "CCC" in edited
 
+    async def test_overflow_sends_every_chunk_beyond_two_messages(self) -> None:
+        bot, editor = _make_editor()
+        text = "A" * 10000
+
+        await editor.append_text(text)
+
+        sent = [str(call.kwargs["text"]) for call in bot.send_message.await_args_list]
+        assert len(sent) == 3
+        assert "".join(sent) == text
+        assert all(len(chunk) <= 4096 for chunk in sent)
+
+    async def test_overflow_edit_failure_keeps_content_for_finalize(self) -> None:
+        bot, editor = _make_editor()
+        await editor.append_text("A" * 3000)
+        bot.edit_message_text = AsyncMock(
+            side_effect=[TelegramNetworkError(MagicMock(), "network down"), None]
+        )
+
+        await editor.append_text("B" * 3000)
+
+        assert bot.send_message.await_count == 1
+        assert len(editor._render_active_html()) == 6000
+
+        await editor.finalize(("A" * 3000) + ("B" * 3000))
+
+        assert bot.edit_message_text.await_count == 2
+        assert bot.send_message.await_count == 2
+
     @staticmethod
     def _get_last_message_text(bot: MagicMock) -> str:
         """Extract the text from the last send_message or edit_message_text call."""

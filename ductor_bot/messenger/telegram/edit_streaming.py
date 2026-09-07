@@ -99,7 +99,7 @@ class _EditorState:
     messages_sent: int = 0
     last_edit_time: float = 0.0
     edit_timer: asyncio.TimerHandle | None = None
-    edit_task: asyncio.Task[None] | None = None
+    edit_task: asyncio.Task[bool] | None = None
     consecutive_failures: int = 0
     fallen_back: bool = False
     fallback_finalized: bool = False
@@ -186,8 +186,11 @@ class EditStreamEditor:
         # Discard pending indicators and strip flushed ones from active portion.
         self._s.tool_tracker = _ToolTracker()
         self._strip_active_indicators()
-        await self._do_edit()
+        delivered = await self._do_edit()
         if self._has_fallen_back():
+            await self._finalize_fallback(full_text)
+            return
+        if not delivered:
             await self._finalize_fallback(full_text)
             return
         await self._attach_buttons(full_text)
@@ -281,33 +284,35 @@ class EditStreamEditor:
     # Internal: message creation / editing
     # ------------------------------------------------------------------
 
-    async def _do_edit(self) -> None:
+    async def _do_edit(self) -> bool:
         """Render content and create or edit the Telegram message."""
         full_html = self._render_active_html()
         if not full_html.strip():
-            return
+            return True
 
         chunks = split_html_message(full_html, max_len=TELEGRAM_MSG_LIMIT)
 
         if len(chunks) > 1:
-            await self._handle_overflow(chunks)
-            return
+            return await self._handle_overflow(chunks)
 
         if self._s.active_msg is None:
-            await self._create_message(chunks[0])
+            delivered = await self._create_message(chunks[0])
         else:
-            await self._edit_message(chunks[0])
+            delivered = await self._edit_message(chunks[0])
 
         self._s.last_edit_time = asyncio.get_event_loop().time()
+        return delivered
 
-    async def _handle_overflow(self, chunks: list[str]) -> None:
-        """Seal current message with first chunk, continue in a new one."""
+    async def _handle_overflow(self, chunks: list[str]) -> bool:
+        """Seal full chunks and keep the final chunk active for later edits."""
         if self._s.active_msg is not None:
-            await self._edit_message(chunks[0])
+            delivered = await self._edit_message(chunks[0])
         else:
-            await self._create_message(chunks[0])
+            delivered = await self._create_message(chunks[0])
+        if not delivered:
+            return False
         if self._s.fallen_back:
-            return
+            return False
 
         logger.debug("Message sealed, starting new segment")
 
@@ -316,19 +321,23 @@ class EditStreamEditor:
         if self._s.tool_tracker.has_entries:
             self._flush_tool_segment()
 
-        remaining = "\n\n".join(chunks[1:])
-
-        # Discard the old unsealed segments and indicators, replace with the remaining HTML
+        remaining_chunks = chunks[1:]
         self._s.segments = self._s.segments[: self._s.sealed_segment_idx]
-        if remaining.strip():
-            self._s.segments.append(remaining)
-
         self._s.indicator_indices.clear()
 
-        self._s.active_msg = None
-        if remaining.strip():
-            await self._create_message(remaining)
+        for index, chunk in enumerate(remaining_chunks):
+            self._s.active_msg = None
+            if not await self._create_message(chunk):
+                unsent = "\n\n".join(remaining_chunks[index:])
+                if unsent.strip():
+                    self._s.segments.append(unsent)
+                return False
+
+        final_chunk = remaining_chunks[-1]
+        if final_chunk.strip():
+            self._s.segments.append(final_chunk)
         self._s.last_edit_time = asyncio.get_event_loop().time()
+        return True
 
     async def _send_created_message(
         self,
@@ -353,42 +362,48 @@ class EditStreamEditor:
             await asyncio.sleep(exc.retry_after)
             return await send()
 
-    async def _create_message(self, text: str) -> None:
+    async def _create_message(self, text: str) -> bool:
         """Send a new message (reply for the first one)."""
         display = text[:TELEGRAM_MSG_LIMIT]
         if not display.strip():
-            return
+            return True
         try:
             msg = await self._send_created_message(display, ParseMode.HTML)
+        except TelegramBadRequest:
+            logger.warning("HTML create failed, falling back to plain text")
+            return await self._create_message_plain(display)
+        except (TelegramNetworkError, TelegramRetryAfter) as exc:
+            self._record_delivery_failure("create", exc)
+            return False
+        else:
             self._s.active_msg = msg
             self._s.messages_sent += 1
             self._s.active_parse_mode = ParseMode.HTML
             logger.debug("Message created msg_id=%d", msg.message_id)
             self._s.consecutive_failures = 0
-        except TelegramBadRequest:
-            logger.warning("HTML create failed, falling back to plain text")
-            await self._create_message_plain(display)
-        except (TelegramNetworkError, TelegramRetryAfter) as exc:
-            self._record_delivery_failure("create", exc)
+            return True
 
-    async def _create_message_plain(self, text: str) -> None:
+    async def _create_message_plain(self, text: str) -> bool:
         """Fallback: send without HTML parse mode."""
         try:
             plain_text = _html_to_plain_text(text)
             msg = await self._send_created_message(plain_text[:TELEGRAM_MSG_LIMIT], None)
-            self._s.active_msg = msg
-            self._s.active_parse_mode = None
-            self._s.messages_sent += 1
-            self._s.consecutive_failures = 0
         except TelegramBadRequest:
             logger.exception("Failed to send even as plain text")
         except (TelegramNetworkError, TelegramRetryAfter) as exc:
             self._record_delivery_failure("plain create", exc)
+        else:
+            self._s.active_msg = msg
+            self._s.active_parse_mode = None
+            self._s.messages_sent += 1
+            self._s.consecutive_failures = 0
+            return True
+        return False
 
-    async def _edit_message(self, text: str) -> None:
+    async def _edit_message(self, text: str) -> bool:
         """Edit the active Telegram message with error handling."""
         if self._s.active_msg is None:
-            return
+            return False
         display = (
             text if self._s.active_parse_mode is ParseMode.HTML else _html_to_plain_text(text)
         )[:TELEGRAM_MSG_LIMIT]
@@ -399,10 +414,9 @@ class EditStreamEditor:
                 message_id=self._s.active_msg.message_id,
                 parse_mode=self._s.active_parse_mode,
             )
-            self._s.consecutive_failures = 0
         except TelegramBadRequest as exc:
             if "message is not modified" in str(exc).lower():
-                return
+                return True
             self._s.consecutive_failures += 1
             logger.warning(
                 "Edit failed (%d/%d): %s",
@@ -422,12 +436,18 @@ class EditStreamEditor:
                     message_id=self._s.active_msg.message_id,
                     parse_mode=self._s.active_parse_mode,
                 )
-                self._s.consecutive_failures = 0
             except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter) as retry_exc:
                 logger.warning("Edit retry after rate-limit also failed")
                 self._record_delivery_failure("edit retry", retry_exc)
+            else:
+                self._s.consecutive_failures = 0
+                return True
         except TelegramNetworkError as exc:
             self._record_delivery_failure("edit", exc)
+        else:
+            self._s.consecutive_failures = 0
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Internal: button keyboard attachment
@@ -516,7 +536,7 @@ class EditStreamEditor:
             self._s.fallen_back = True
 
 
-def _log_task_error(task: asyncio.Task[None]) -> None:
+def _log_task_error(task: asyncio.Task[bool]) -> None:
     """Log exceptions from deferred edit tasks."""
     if task.cancelled():
         return

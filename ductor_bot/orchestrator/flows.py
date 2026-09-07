@@ -105,6 +105,16 @@ async def _prepare_normal(
         reasoning_effort=requested_effort,
         preserve_existing_target=model_override is None,
     )
+    inferred_provider = orch.models.provider_for(session.model)
+    if session.provider != inferred_provider:
+        logger.warning(
+            "Repairing session target provider=%s -> %s model=%s",
+            session.provider,
+            inferred_provider,
+            session.model,
+        )
+        session.provider = inferred_provider
+        is_new = not bool(session.session_id)
     req_model = session.model
     req_provider = session.provider
     req_effort = session.reasoning_effort

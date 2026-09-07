@@ -635,6 +635,13 @@ _GEMINI_ALIASES: frozenset[str] = frozenset({"auto", "pro", "flash", "flash-lite
 # Antigravity currently exposes a provider-level default through its CLI bridge.
 ANTIGRAVITY_MODELS_ORDERED: tuple[str, ...] = ("antigravity-default",)
 ANTIGRAVITY_MODELS: frozenset[str] = frozenset(ANTIGRAVITY_MODELS_ORDERED)
+_ANTIGRAVITY_DISPLAY_PREFIXES: tuple[str, ...] = ("Gemini ", "Claude ", "GPT-OSS ")
+_ANTIGRAVITY_DISPLAY_SUFFIXES: tuple[str, ...] = (
+    " (Low)",
+    " (Medium)",
+    " (High)",
+    " (Thinking)",
+)
 
 # Grok Build models (xAI Grok CLI). Fallback when discovery is unavailable.
 GROK_MODELS_ORDERED: tuple[str, ...] = (
@@ -689,6 +696,10 @@ class ModelRegistry:
             model_id in ANTIGRAVITY_MODELS
             or model_id in _runtime_antigravity[0]
             or model_id.startswith("antigravity-")
+            or (
+                model_id.startswith(_ANTIGRAVITY_DISPLAY_PREFIXES)
+                and model_id.endswith(_ANTIGRAVITY_DISPLAY_SUFFIXES)
+            )
         ):
             return "antigravity"
         if model_id in GROK_MODELS or model_id in _runtime_grok[0] or model_id.startswith("grok-"):

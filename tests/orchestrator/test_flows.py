@@ -457,6 +457,31 @@ async def test_normal_preserves_existing_session_target_on_restart(orch: Orchest
     assert request.model_override == "gemini-3-pro-preview"
 
 
+async def test_normal_repairs_antigravity_session_misrouted_to_codex(
+    orch: Orchestrator,
+) -> None:
+    key = SessionKey(chat_id=1)
+    session = await orch._sessions.reset_provider_session(
+        key,
+        provider="codex",
+        model="Gemini 3.7 Flash (High)",
+    )
+    session.session_id = "wrong-codex-session"
+    await orch._sessions.preserve_session_identity(session)
+    mock_execute = AsyncMock(return_value=_mock_response(session_id="antigravity-session"))
+    object.__setattr__(orch._cli_service, "execute", mock_execute)
+
+    await normal(orch, key, "Hello")
+
+    request = mock_execute.await_args.args[0]
+    assert request.provider_override == "antigravity"
+    assert request.model_override == "Gemini 3.7 Flash (High)"
+    assert request.resume_session is None
+    repaired = await orch._sessions.get_active(key)
+    assert repaired is not None
+    assert repaired.provider == "antigravity"
+
+
 async def test_normal_warns_for_gemini_api_key_mode_without_ductor_key(
     orch: Orchestrator,
     monkeypatch: pytest.MonkeyPatch,
