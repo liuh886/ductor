@@ -13,6 +13,7 @@ from ductor_bot.config import AgentConfig
 from ductor_bot.multiagent.health import AgentHealth
 from ductor_bot.multiagent.models import SubAgentConfig
 from ductor_bot.multiagent.supervisor import (
+    _MAX_BACKOFF,
     _MAX_RESTART_RETRIES,
     AgentSupervisor,
     _is_transient,
@@ -473,6 +474,32 @@ class TestHandleCrash:
             "sub1", stack, health, retry_count, RuntimeError("keeps crashing")
         )
         assert should_return is True
+
+    async def test_sub_agent_transient_network_retries_past_limit(
+        self, supervisor: AgentSupervisor
+    ) -> None:
+        """A transport outage must not permanently stop a sub-agent."""
+        health = AgentHealth(name="sub1")
+        supervisor._health["sub1"] = health
+        stack = MagicMock()
+        stack.shutdown = AsyncMock()
+        exc = type("TelegramNetworkError", (Exception,), {})("connection reset")
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch.object(
+                supervisor, "_rebuild_stack", new_callable=AsyncMock, return_value=MagicMock()
+            ) as mock_rebuild,
+        ):
+            _, retry_count, should_return = await supervisor._handle_crash(
+                "sub1", stack, health, _MAX_RESTART_RETRIES + 3, exc
+            )
+
+        assert should_return is False
+        assert retry_count == _MAX_RESTART_RETRIES + 3
+        mock_sleep.assert_called_once_with(_MAX_BACKOFF)
+        mock_rebuild.assert_called_once()
+        assert health.status == "starting"
 
     async def test_sub_agent_recoverable(self, supervisor: AgentSupervisor) -> None:
         """Sub-agent crash with retries left triggers backoff and rebuild."""

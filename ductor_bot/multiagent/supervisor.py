@@ -287,11 +287,11 @@ class AgentSupervisor:
         Returns ``(stack, retry_count, should_return)`` — when *should_return*
         is True the caller must ``return 1``.
 
-        The main agent terminates the supervisor on fatal errors, but retries
-        transient network failures (see ``_is_transient``) indefinitely with
-        capped backoff — an early-startup network blip must not take down the
-        whole service. Sub-agents retry any crash up to ``_MAX_RESTART_RETRIES``
-        times.
+        The main agent terminates the supervisor on fatal errors. All agents
+        retry transient network failures (see ``_is_transient``) indefinitely
+        with capped backoff so a temporary transport outage cannot permanently
+        remove a sub-agent. Non-transient sub-agent crashes remain bounded by
+        ``_MAX_RESTART_RETRIES``.
         """
         error_msg = f"{type(exc).__name__}: {exc}"
         health.mark_crashed(error_msg)
@@ -307,6 +307,18 @@ class AgentSupervisor:
 
             logger.warning(
                 "Main agent crashed (transient, attempt %d): %s — retrying",
+                retry_count,
+                error_msg,
+            )
+            stack = await self._backoff_and_rebuild(
+                name, stack, health, _capped_backoff(retry_count)
+            )
+            return stack, retry_count, False
+
+        if _is_transient(exc):
+            logger.warning(
+                "Agent '%s' crashed (transient, attempt %d): %s — retrying",
+                name,
                 retry_count,
                 error_msg,
             )
@@ -364,8 +376,9 @@ class AgentSupervisor:
         """Run an agent with automatic crash recovery.
 
         On crash:
-          - Sub-agents: retry with exponential backoff (5s, 10s, 20s, 40s, 80s);
-            give up after ``_MAX_RESTART_RETRIES`` consecutive failures.
+          - Sub-agents: transient network errors retry indefinitely with capped
+            backoff; other crashes use bounded exponential backoff and give up
+            after ``_MAX_RESTART_RETRIES`` consecutive failures.
           - Main agent: fatal errors terminate the supervisor; transient network
             errors (see ``_is_transient``) retry indefinitely with capped backoff.
         On clean exit: return the exit code.
