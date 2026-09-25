@@ -132,6 +132,23 @@ _IS_CONFIGURED_CHECKS: dict[str, Callable[[dict[str, object]], bool]] = {
 }
 
 
+def _warn_unknown_config_keys(user_data: dict[str, object]) -> None:
+    """Surface config keys that this build does not consume.
+
+    Config files carry sections added by older local branches; unknown keys are
+    silently preserved by the deep-merge, so without a warning it is impossible
+    to tell an effective setting from a no-op one.
+    """
+    known = set(AgentConfig.model_fields)
+    unknown = sorted(key for key in user_data if not key.startswith("_") and key not in known)
+    if unknown:
+        logger.warning(
+            "Config has %d key(s) with no effect in this build: %s",
+            len(unknown),
+            ", ".join(unknown),
+        )
+
+
 def load_config() -> AgentConfig:
     """Load, auto-create, and smart-merge the bot config.
 
@@ -167,6 +184,8 @@ def load_config() -> AgentConfig:
     except (json.JSONDecodeError, OSError):
         logger.exception("Failed to parse config at %s", config_path)
         sys.exit(1)
+
+    _warn_unknown_config_keys(user_data)
 
     normalized_existing = False
     if user_data.get("gemini_api_key") is None:

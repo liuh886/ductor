@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -99,6 +100,36 @@ class TestLoadConfig:
         assert config.provider == "claude"
         created = json.loads(paths.config_path.read_text(encoding="utf-8"))
         assert created["gemini_api_key"] == "null"
+
+    def test_warns_about_unknown_config_keys(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from ductor_bot.__main__ import load_config
+
+        home = tmp_path / ".ductor"
+        config_dir = home / "config"
+        config_dir.mkdir(parents=True)
+        fw = tmp_path / "framework"
+        fw.mkdir()
+        user_cfg = {
+            "telegram_token": "TOKEN",
+            "provider": "claude",
+            "workspace_sync": {"rule_watcher_enabled": False},
+            "telemetry_v9": {},
+        }
+        (config_dir / "config.json").write_text(json.dumps(user_cfg), encoding="utf-8")
+
+        with (
+            patch("ductor_bot.__main__.resolve_paths") as mock_paths,
+            patch("ductor_bot.__main__.init_workspace"),
+        ):
+            paths = DuctorPaths(ductor_home=home, home_defaults=fw / "workspace", framework_root=fw)
+            mock_paths.return_value = paths
+            with caplog.at_level(logging.WARNING):
+                load_config()
+
+        assert "workspace_sync" in caplog.text
+        assert "telemetry_v9" in caplog.text
 
     def test_normalizes_existing_null_gemini_api_key_to_string(self, tmp_path: Path) -> None:
         from ductor_bot.__main__ import load_config
