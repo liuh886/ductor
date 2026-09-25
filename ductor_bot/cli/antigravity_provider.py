@@ -85,10 +85,13 @@ class AntigravityCLI(BaseCLI):
     (pipe/subprocess/redirect) -- upstream bug
     ``google-antigravity/antigravity-cli#76``. The answer is therefore read
     back from agy's own per-conversation transcript
-    (``<home>/.gemini/antigravity-cli/brain/<conv-id>/.system_generated/logs/transcript.jsonl``),
+    (``<home>/.gemini/antigravity-cli/brain/<conv-id>/.system_generated/logs/transcript_full.jsonl``),
     taking the final ``source=MODEL, type=PLANNER_RESPONSE, status=DONE``
     entry's ``content`` -- the clean answer without the intermediate tool-call
-    narration. stdout is used only as a fallback.
+    narration. The ``_full`` transcript holds the complete text; agy's
+    token-efficient ``transcript.jsonl`` replaces large blocks with
+    ``<truncated N bytes>`` markers and is only a fallback. stdout is used
+    only as a last resort.
 
     agy flags reference:
       --print / -p <prompt>   Non-interactive single-shot
@@ -438,6 +441,10 @@ def _ensure_agy_link(link: Path, target: Path) -> bool:
 # ``agy --print`` completes the model round-trip but writes nothing to stdout
 # when stdout is not a TTY (pipe/subprocess). It persists the full turn to a
 # per-conversation JSONL transcript instead, so the answer is read from there.
+# agy writes two synchronized copies: ``transcript.jsonl`` is the token-efficient
+# variant that swaps large text blocks for ``<truncated N bytes>`` markers, and
+# ``transcript_full.jsonl`` is the complete, untruncated transcript with the same
+# line numbers. ductor prefers the full copy so markers never reach the user.
 # See https://github.com/google-antigravity/antigravity-cli/issues/76
 
 
@@ -456,8 +463,22 @@ def _agy_state_root(env: Mapping[str, str] | None = None) -> Path:
     return base / ".gemini" / "antigravity-cli"
 
 
+_FULL_TRANSCRIPT_FILENAME = "transcript_full.jsonl"
+_TRUNCATED_TRANSCRIPT_FILENAME = "transcript.jsonl"
+
+
 def _transcript_path(root: Path, session_id: str) -> Path:
-    return root / "brain" / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+    """Return the most complete transcript agy wrote for *session_id*.
+
+    ``transcript_full.jsonl`` is the untruncated transcript and wins whenever
+    it exists; ``transcript.jsonl`` (whose large text blocks are replaced by
+    ``<truncated N bytes>`` markers) is the fallback for older agy builds.
+    """
+    logs = root / "brain" / session_id / ".system_generated" / "logs"
+    full_transcript = logs / _FULL_TRANSCRIPT_FILENAME
+    if full_transcript.is_file():
+        return full_transcript
+    return logs / _TRUNCATED_TRANSCRIPT_FILENAME
 
 
 def _snapshot_transcript(transcript: Path) -> _TranscriptCursor | None:

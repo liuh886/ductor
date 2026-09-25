@@ -259,16 +259,26 @@ def isolated_agy_state(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Pat
         yield root
 
 
-def _write_transcript(root: Path, conv_id: str, entries: list[dict[str, str]]) -> None:
+def _write_transcript(
+    root: Path,
+    conv_id: str,
+    entries: list[dict[str, str]],
+    filename: str = "transcript.jsonl",
+) -> None:
     logs = root / "brain" / conv_id / ".system_generated" / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    (logs / "transcript.jsonl").write_text(
+    (logs / filename).write_text(
         "\n".join(json.dumps(entry) for entry in entries), encoding="utf-8"
     )
 
 
-def _append_transcript(root: Path, conv_id: str, entries: list[dict[str, str]]) -> None:
-    transcript = root / "brain" / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+def _append_transcript(
+    root: Path,
+    conv_id: str,
+    entries: list[dict[str, str]],
+    filename: str = "transcript.jsonl",
+) -> None:
+    transcript = root / "brain" / conv_id / ".system_generated" / "logs" / filename
     transcript.parent.mkdir(parents=True, exist_ok=True)
     prefix = "\n" if transcript.exists() and transcript.stat().st_size else ""
     with transcript.open("a", encoding="utf-8") as transcript_file:
@@ -571,6 +581,55 @@ class TestSendUsesTranscript:
             resp = await cli.send("hi")
 
         assert resp.result == "plain stdout answer"
+
+    async def test_prefers_full_transcript_over_truncated_markers(
+        self, isolated_agy_state: Path
+    ) -> None:
+        """agy's token-efficient transcript is never delivered to the user.
+
+        ``transcript.jsonl`` replaces large text blocks with
+        ``<truncated N bytes>`` markers; the last PLANNER_RESPONSE from
+        ``transcript_full.jsonl`` must win so the reply stays complete.
+        """
+        cli = _make_cli()
+        _map_cwd(isolated_agy_state, cli._agy_workspace, "conv-1")
+        _write_transcript(
+            isolated_agy_state,
+            "conv-1",
+            [{**_PLANNER, "content": "answer <truncated 4096 bytes>"}],
+        )
+        _write_transcript(
+            isolated_agy_state,
+            "conv-1",
+            [{**_PLANNER, "content": "complete answer without markers"}],
+            filename="transcript_full.jsonl",
+        )
+        proc = _make_oneshot_process(b"")
+
+        async def communicate() -> tuple[bytes, bytes]:
+            _write_transcript(
+                isolated_agy_state,
+                "conv-1",
+                [{**_PLANNER, "content": "answer <truncated 4096 bytes>"}],
+            )
+            _write_transcript(
+                isolated_agy_state,
+                "conv-1",
+                [{**_PLANNER, "content": "complete answer without markers"}],
+                filename="transcript_full.jsonl",
+            )
+            return b"", b""
+
+        proc.communicate = AsyncMock(side_effect=communicate)
+
+        with patch(
+            "ductor_bot.cli.antigravity_provider.asyncio.create_subprocess_exec",
+            return_value=proc,
+        ):
+            resp = await cli.send("hi")
+
+        assert resp.result == "complete answer without markers"
+        assert "<truncated" not in resp.result
 
     async def test_empty_success_is_an_explicit_error(self, isolated_agy_state: Path) -> None:
         cli = _make_cli()
