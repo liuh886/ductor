@@ -269,6 +269,9 @@ def test_media_tools_scripts_updated_on_reinit(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     init_workspace(paths)
 
+    # Simulate a pre-manifest install (no provenance for the stale script).
+    (paths.ductor_home / ".zone2_manifest.json").unlink()
+
     # Simulate a stale v0.15.0 script in the user's workspace
     media_dir = paths.tools_dir / "media_tools"
     deployed = media_dir / "transcribe_audio.py"
@@ -297,14 +300,15 @@ def test_zone2_identical_content_not_backed_up(tmp_path: Path) -> None:
     assert not (media_dir / "transcribe_audio.py.bak").exists()
 
 
-def test_zone2_user_modification_is_backed_up(
+def test_zone2_pre_manifest_user_modification_is_backed_up(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """User-modified Zone 2 .py files get a .bak sibling and a WARNING log."""
+    """Pre-manifest installs keep the legacy upgrade path: backend up once."""
     import logging
 
     paths = _make_paths(tmp_path)
     init_workspace(paths)
+    (paths.ductor_home / ".zone2_manifest.json").unlink()
 
     media_dir = paths.tools_dir / "media_tools"
     deployed = media_dir / "transcribe_audio.py"
@@ -325,6 +329,51 @@ def test_zone2_user_modification_is_backed_up(
     assert any(
         "Zone 2 overwrite" in r.getMessage() and str(deployed) in r.getMessage() for r in warnings
     ), f"Expected Zone 2 overwrite warning, got: {[r.getMessage() for r in warnings]}"
+
+
+def test_zone2_user_modification_is_preserved_after_manifest(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Post-manifest user edits are preserved; the framework does not clobber them."""
+    import logging
+
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    media_dir = paths.tools_dir / "media_tools"
+    deployed = media_dir / "transcribe_audio.py"
+    deployed.write_text("# USER-MODIFIED transcribe_audio (custom pipeline)")
+
+    template = paths.home_defaults / "workspace" / "tools" / "media_tools" / "transcribe_audio.py"
+    template.write_text("# v0.16.1 framework transcribe_audio")
+
+    with caplog.at_level(logging.WARNING, logger="ductor_bot.workspace.init"):
+        init_workspace(paths)
+
+    assert deployed.read_text() == "# USER-MODIFIED transcribe_audio (custom pipeline)"
+    assert not (media_dir / "transcribe_audio.py.bak").exists()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "preserved user-modified" in r.getMessage() and str(deployed) in r.getMessage()
+        for r in warnings
+    ), f"Expected preservation warning, got: {[r.getMessage() for r in warnings]}"
+
+
+def test_zone2_pristine_file_receives_framework_update(tmp_path: Path) -> None:
+    """Untouched framework files still receive updates once a manifest exists."""
+    paths = _make_paths(tmp_path)
+    init_workspace(paths)
+
+    media_dir = paths.tools_dir / "media_tools"
+    deployed = media_dir / "transcribe_audio.py"
+
+    template = paths.home_defaults / "workspace" / "tools" / "media_tools" / "transcribe_audio.py"
+    template.write_text("# v0.17.0 framework transcribe_audio")
+
+    init_workspace(paths)
+
+    assert deployed.read_text() == "# v0.17.0 framework transcribe_audio"
+    assert not (media_dir / "transcribe_audio.py.bak").exists()
 
 
 def test_ductor_home_claude_md_overwritten(tmp_path: Path) -> None:

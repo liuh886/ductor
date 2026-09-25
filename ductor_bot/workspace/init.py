@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from ductor_bot.infra.atomic_io import atomic_text_save
@@ -51,6 +53,67 @@ _SKIP_FILES = frozenset(
 
 _SKIP_DIRS = frozenset({".venv", ".git", ".mypy_cache", "__pycache__", "node_modules"})
 
+_ZONE2_MANIFEST_FILENAME = ".zone2_manifest.json"
+
+
+def _file_digest(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+class _Zone2Manifest:
+    """Track deployed framework-tool hashes so user edits survive restarts.
+
+    Zone 2 ``.py`` files are framework-managed, but sub-agents legitimately
+    adjust them. Without provenance every restart treated any divergence from
+    the template as drift and reverted it. The manifest records each file's
+    hash as deployed, so pristine files still receive updates and post-deploy
+    user edits are preserved instead of clobbered.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._hashes: dict[str, str] = {}
+        self._dirty = False
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(data, dict):
+            self._hashes = {str(key): str(value) for key, value in data.items()}
+
+    def relative(self, target: Path, home_root: Path) -> str:
+        return target.relative_to(home_root).as_posix()
+
+    def get(self, relative_path: str) -> str | None:
+        return self._hashes.get(relative_path)
+
+    def record(self, relative_path: str, digest: str) -> None:
+        if self._hashes.get(relative_path) != digest:
+            self._hashes[relative_path] = digest
+            self._dirty = True
+
+    def save(self) -> None:
+        if not self._dirty:
+            return
+        try:
+            atomic_text_save(self._path, json.dumps(self._hashes, indent=2, sort_keys=True))
+        except OSError as exc:
+            logger.warning("Could not save Zone 2 manifest %s: %s", self._path, exc)
+
+
+@dataclass(frozen=True, slots=True)
+class _Zone2Context:
+    """Manifest plus the home root its relative paths are anchored to."""
+
+    manifest: _Zone2Manifest
+    home_root: Path
+
 
 # ---------------------------------------------------------------------------
 # Home defaults sync (replaces _ensure_dirs + _copy_framework + _seed_defaults)
@@ -72,7 +135,10 @@ def _sync_home_defaults(paths: DuctorPaths) -> None:
     if not paths.home_defaults.is_dir():
         logger.warning("Home defaults directory not found: %s", paths.home_defaults)
         return
-    _walk_and_copy(paths.home_defaults, paths.ductor_home)
+    manifest = _Zone2Manifest(paths.ductor_home / _ZONE2_MANIFEST_FILENAME)
+    zone2 = _Zone2Context(manifest=manifest, home_root=paths.ductor_home)
+    _walk_and_copy(paths.home_defaults, paths.ductor_home, zone2=zone2)
+    manifest.save()
     # Ensure logs dir exists for the main agent only.  Sub-agents share the
     # central log file and don't need their own logs directory.
     # Sub-agent homes live under <main_home>/agents/<name>/.
@@ -143,14 +209,64 @@ def _backup_user_modified_zone2(entry: Path, target: Path) -> None:
         logger.warning("Could not create backup for %s: %s", target, exc)
 
 
-def _handle_regular_file(entry: Path, target: Path, src: Path, root_src: Path) -> None:
-    """Handle regular file with Zone 2 .py or Zone 3 logic."""
-    if _is_zone2_py_file(entry, src, root_src):
-        # Zone 2 .py file: always overwrite (framework-controlled).
-        # Back up user modifications first so upgrades never destroy edits silently.
+def _sync_zone2_py_file(
+    entry: Path,
+    target: Path,
+    zone2: _Zone2Context | None,
+) -> None:
+    """Deploy a Zone 2 ``.py`` file with manifest-based user-edit protection."""
+    if zone2 is None:
+        # Legacy path (direct callers/tests): back up then overwrite.
         _backup_user_modified_zone2(entry, target)
         _copy_with_symlink_check(entry, target)
         logger.debug("Zone 2 copy (framework tool): %s", target)
+        return
+
+    manifest = zone2.manifest
+    relative = manifest.relative(target, zone2.home_root)
+    template_digest = _file_digest(entry)
+    deployed_digest = _file_digest(target) if target.exists() else None
+    known_digest = manifest.get(relative)
+
+    if template_digest is not None and deployed_digest == template_digest:
+        manifest.record(relative, template_digest)
+        return
+
+    if deployed_digest is None or deployed_digest == known_digest:
+        # Missing file or an untouched framework copy: safe to (re)deploy.
+        _copy_with_symlink_check(entry, target)
+        if template_digest is not None:
+            manifest.record(relative, template_digest)
+        logger.debug("Zone 2 copy (framework tool): %s", target)
+        return
+
+    if known_digest is None:
+        # Pre-manifest install: keep the legacy upgrade path (backup once, update).
+        _backup_user_modified_zone2(entry, target)
+        _copy_with_symlink_check(entry, target)
+        if template_digest is not None:
+            manifest.record(relative, template_digest)
+        return
+
+    logger.warning(
+        "Zone 2 preserved user-modified %s (framework update skipped; "
+        "move durable edits to tools/user_tools/ to re-enable updates)",
+        target,
+    )
+
+
+def _handle_regular_file(
+    entry: Path,
+    target: Path,
+    src: Path,
+    root_src: Path,
+    *,
+    zone2: _Zone2Context | None = None,
+) -> None:
+    """Handle regular file with Zone 2 .py or Zone 3 logic."""
+    if _is_zone2_py_file(entry, src, root_src):
+        # Zone 2 .py file: framework-controlled, user edits preserved via manifest.
+        _sync_zone2_py_file(entry, target, zone2)
     elif not target.exists():
         # Zone 3: seed only (user-owned, never overwritten)
         shutil.copy2(entry, target)
@@ -159,13 +275,20 @@ def _handle_regular_file(entry: Path, target: Path, src: Path, root_src: Path) -
         logger.debug("Zone 3 skip: %s (exists)", target)
 
 
-def _walk_and_copy(src: Path, dst: Path, root_src: Path | None = None) -> None:
+def _walk_and_copy(
+    src: Path,
+    dst: Path,
+    root_src: Path | None = None,
+    *,
+    zone2: _Zone2Context | None = None,
+) -> None:
     """Recursively copy *src* tree into *dst* with zone-based overwrite rules.
 
     Args:
         src: Source directory to copy from
         dst: Destination directory to copy to
         root_src: Root source directory (for calculating relative paths). Defaults to src.
+        zone2: Optional deployed-hash context protecting user edits.
     """
     if root_src is None:
         root_src = src
@@ -179,11 +302,11 @@ def _walk_and_copy(src: Path, dst: Path, root_src: Path | None = None) -> None:
             if target.is_symlink():
                 logger.debug("Skip symlinked target: %s", target)
                 continue
-            _walk_and_copy(entry, target, root_src)
+            _walk_and_copy(entry, target, root_src, zone2=zone2)
         elif entry.name in _ZONE2_FILES:
             _handle_zone2_file(entry, target, dst)
         else:
-            _handle_regular_file(entry, target, src, root_src)
+            _handle_regular_file(entry, target, src, root_src, zone2=zone2)
 
 
 # ---------------------------------------------------------------------------
