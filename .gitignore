@@ -59,3 +59,9 @@ python_best_practice.md
 run.py
 .planning/
 graphify-out/
+
+# Local worktree aliases / scratch (agy workspace links, pytest temp)
+/worktrees
+/worktrees-agy-*
+/.tmp/
+/.pytest-tmp-*
