@@ -59,6 +59,7 @@ _HOT_RELOADABLE: frozenset[str] = frozenset(
         "scene",
         "image",
         "language",
+        "knowledge_router",
     }
 )
 

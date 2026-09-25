@@ -422,7 +422,7 @@ def main() -> None:
                 "The external service must send JSON: Content-Type: application/json"
             ),
             "step_5_test": (
-                f'Test locally: python3 tools/webhook_tools/webhook_test.py "{name}" '
+                f'Test locally: python tools/webhook_tools/webhook_test.py "{name}" '
                 f"--payload '{{\"test\": true}}'"
             ),
         }
@@ -448,7 +448,7 @@ def main() -> None:
             ),
             "step_5_test": (
                 "Use the external service's test/ping feature to send a test event. "
-                f'Or: python3 tools/webhook_tools/webhook_test.py "{name}" '
+                f'Or: python tools/webhook_tools/webhook_test.py "{name}" '
                 f"--payload '{{\"test\": true}}'"
             ),
         }

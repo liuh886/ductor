@@ -2,7 +2,7 @@
 """List active and recent background tasks.
 
 Usage:
-    python3 list_tasks.py
+    python list_tasks.py
 """
 
 from __future__ import annotations

@@ -20,6 +20,7 @@ from ductor_bot.i18n import t
 from ductor_bot.infra.inflight import InflightTurn
 from ductor_bot.log_context import set_log_context
 from ductor_bot.orchestrator.hooks import HookContext
+from ductor_bot.orchestrator.knowledge_context import retrieve_start_context
 from ductor_bot.orchestrator.registry import OrchestratorResult
 from ductor_bot.session import SessionData, SessionKey
 from ductor_bot.text.response_format import session_error_text, timeout_error_text
@@ -158,6 +159,11 @@ async def _prepare_normal(
         model=req_model,
     )
     prompt = orch._hook_registry.apply(text, hook_ctx)
+    knowledge_context = await retrieve_start_context(
+        orch.paths, orch._config.knowledge_router, text, is_new=is_new
+    )
+    if knowledge_context:
+        prompt += "\n\n" + knowledge_context
 
     timeout_secs = resolve_timeout(orch._config, "normal")
     request = AgentRequest(

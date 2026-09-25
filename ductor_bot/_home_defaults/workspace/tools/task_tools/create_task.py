@@ -6,7 +6,7 @@ when complete. You formulate the prompt with all necessary context — the
 task agent does NOT have access to the conversation history.
 
 Usage:
-    python3 create_task.py [options] "Your task description here"
+    python create_task.py [options] "Your task description here"
 
 Options:
     --name NAME        Human-readable task name (e.g. "Flugsuche Paris")
@@ -78,7 +78,7 @@ def main() -> None:
 
     if not args:
         print(
-            "Usage: python3 create_task.py [--name NAME] [--provider P] "
+            "Usage: python create_task.py [--name NAME] [--provider P] "
             '[--model M] [--thinking L] [--priority LEVEL] "prompt"',
             file=sys.stderr,
         )

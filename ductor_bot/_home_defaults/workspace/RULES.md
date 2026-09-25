@@ -25,7 +25,18 @@ Only provide user-facing results.
 
 Read `memory_system/CLAUDE/GEMINI/AGENTS.md` for full format and cleanup rules.
 
-- Search durable knowledge with `python3 tools/agent_tools/vault_search.py "query"`.
+- When the local Router is installed, search durable knowledge with
+  `python tools/user_tools/knowledge_router.py search "query" --json`.
+  Check installation with `python tools/user_tools/knowledge_router.py --bridge-check`.
+  Use `python`, not `python3`: on this host `python3` resolves to a Windows Store
+  placeholder that never runs the bridge.
+  If it is absent, retain `tools/agent_tools/vault_search.py` as the legacy read-only tool.
+  Do not fall back to legacy results after a Router integrity/error response.
+- For ongoing people/project/daily work, use Router `contexts brief NAME --json` at task
+  start. At task end, identify durable progress and offer a `contexts capture` preview;
+  commit only within explicit user capture authority and the saved Vault write policy.
+  Use the event id to check/retry interrupted work. Never claim a detected follow-up is
+  scheduled. These are agent invocation rules, not a background scheduler.
 - Treat the default vault tool as read-only. Do not write a vault-relative path
   unless the user explicitly asks and an authorized absolute vault root has
   been resolved and containment-checked.
@@ -96,7 +107,7 @@ When it finishes, the result is delivered into this conversation.
 ### Creating a task
 
 ```bash
-python3 tools/task_tools/create_task.py --name "Flugsuche" "Suche Flüge nach Paris..."
+python tools/task_tools/create_task.py --name "Flugsuche" "Suche Flüge nach Paris..."
 ```
 
 Include ALL context — the task agent cannot see our conversation.
@@ -105,7 +116,7 @@ Tell the user you delegated the work, then continue the conversation.
 ### Stopping a task
 
 ```bash
-python3 tools/task_tools/cancel_task.py TASK_ID
+python tools/task_tools/cancel_task.py TASK_ID
 ```
 
 ### Resuming a completed task (keeping context)
@@ -114,7 +125,7 @@ When a task is done and you need more from it, **resume** instead of creating
 a new task. The agent still has its full context from the previous run.
 
 ```bash
-python3 tools/task_tools/resume_task.py TASK_ID "jetzt nur 2. Bundesliga Ergebnisse"
+python tools/task_tools/resume_task.py TASK_ID "jetzt nur 2. Bundesliga Ergebnisse"
 ```
 
 **When to resume vs. create new:**

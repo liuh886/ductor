@@ -5,7 +5,7 @@ This is the navigation index for workspace tools.
 ## Global Rules
 
 - Prefer these tool scripts over manual JSON/file surgery.
-- Run with `python3`.
+- Run with `python` (`python3` is a Store placeholder on this host).
 - Normal successful runs are JSON-oriented; tutorial/help output may be plain text.
 - Open the matching subfolder `CLAUDE.md` before non-trivial changes.
 

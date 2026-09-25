@@ -15,7 +15,7 @@ Create custom scripts here when the user needs one-off or reusable utilities.
 For dependencies, use a local virtual environment in this folder:
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 ```
 

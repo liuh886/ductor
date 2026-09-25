@@ -13,7 +13,7 @@ Environment variables DUCTOR_AGENT_NAME, DUCTOR_INTERAGENT_PORT, and
 DUCTOR_INTERAGENT_HOST are automatically set by the Ductor framework.
 
 Usage:
-    python3 ask_agent_async.py [--new] [--summary "Short description"]
+    python ask_agent_async.py [--new] [--summary "Short description"]
                                [--reply-to AGENT] [--silent]
                                TARGET_AGENT "Your message here"
 
@@ -75,7 +75,7 @@ def main() -> None:
 
     if len(args) < 2:
         print(
-            'Usage: python3 ask_agent_async.py [--new] [--summary "desc"] '
+            'Usage: python ask_agent_async.py [--new] [--summary "desc"] '
             '[--reply-to AGENT] [--silent] TARGET_AGENT "message"',
             file=sys.stderr,
         )

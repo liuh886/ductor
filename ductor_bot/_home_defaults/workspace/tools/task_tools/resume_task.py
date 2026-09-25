@@ -7,7 +7,7 @@ resumes on the original provider/model regardless of the current chat
 provider.
 
 Usage:
-    python3 resume_task.py TASK_ID "your follow-up prompt"
+    python resume_task.py TASK_ID "your follow-up prompt"
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def main() -> None:
     args = sys.argv[1:]
     if len(args) < 2:
         print(
-            'Usage: python3 resume_task.py TASK_ID "follow-up prompt"',
+            'Usage: python resume_task.py TASK_ID "follow-up prompt"',
             file=sys.stderr,
         )
         sys.exit(1)

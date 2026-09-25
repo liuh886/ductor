@@ -96,20 +96,20 @@ Optional tuning:
 
 ```bash
 # bearer mode
-python3 tools/webhook_tools/webhook_add.py \
+python tools/webhook_tools/webhook_add.py \
   --name "email-notify" --title "Email Notify" \
   --description "Incoming email events" \
   --mode "wake" --prompt-template "New email from {{from}}: {{subject}}"
 
 # hmac mode (example: GitHub)
-python3 tools/webhook_tools/webhook_add.py \
+python tools/webhook_tools/webhook_add.py \
   --name "github-pr" --title "GitHub PR" \
   --description "PR events" --mode "wake" \
   --prompt-template "PR {{action}}: {{title}}" \
   --auth-mode "hmac" --hmac-secret "<secret>" --hmac-header "X-Hub-Signature-256"
 
 # cron_task mode (with model selection)
-python3 tools/webhook_tools/webhook_add.py \
+python tools/webhook_tools/webhook_add.py \
   --name "github-review" --title "PR Review" \
   --description "Review incoming PR payloads" \
   --mode "cron_task" --task-folder "github-review" \
@@ -124,24 +124,24 @@ python3 tools/webhook_tools/webhook_add.py \
 ### List
 
 ```bash
-python3 tools/webhook_tools/webhook_list.py
+python tools/webhook_tools/webhook_list.py
 ```
 
 ### Edit
 
 ```bash
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --enable
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --disable
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --prompt-template "..."
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --auth-mode "hmac"
-python3 tools/webhook_tools/webhook_edit.py "hook-id" --regenerate-token
+python tools/webhook_tools/webhook_edit.py "hook-id" --enable
+python tools/webhook_tools/webhook_edit.py "hook-id" --disable
+python tools/webhook_tools/webhook_edit.py "hook-id" --prompt-template "..."
+python tools/webhook_tools/webhook_edit.py "hook-id" --auth-mode "hmac"
+python tools/webhook_tools/webhook_edit.py "hook-id" --regenerate-token
 ```
 
 ### Remove
 
 ```bash
-python3 tools/webhook_tools/webhook_list.py
-python3 tools/webhook_tools/webhook_remove.py "hook-id"
+python tools/webhook_tools/webhook_list.py
+python tools/webhook_tools/webhook_remove.py "hook-id"
 ```
 
 `webhook_remove.py` deletes only the hook entry, not cron task folders.
@@ -149,14 +149,14 @@ python3 tools/webhook_tools/webhook_remove.py "hook-id"
 ### Rotate Tokens
 
 ```bash
-python3 tools/webhook_tools/webhook_rotate_token.py
-python3 tools/webhook_tools/webhook_rotate_token.py "hook-id"
+python tools/webhook_tools/webhook_rotate_token.py
+python tools/webhook_tools/webhook_rotate_token.py "hook-id"
 ```
 
 ### Test
 
 ```bash
-python3 tools/webhook_tools/webhook_test.py "hook-id" --payload '{"test": true}'
+python tools/webhook_tools/webhook_test.py "hook-id" --payload '{"test": true}'
 ```
 
 `webhook_test.py` auto-resolves hook auth mode. It requires:

@@ -2,7 +2,7 @@
 """Permanently delete a finished background task (entry + folder).
 
 Usage:
-    python3 delete_task.py TASK_ID
+    python delete_task.py TASK_ID
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def main() -> None:
     get_api_url, post_json, detect_agent_name = _load_shared()
     args = sys.argv[1:]
     if not args:
-        print("Usage: python3 delete_task.py TASK_ID", file=sys.stderr)
+        print("Usage: python delete_task.py TASK_ID", file=sys.stderr)
         sys.exit(1)
 
     task_id = args[0]

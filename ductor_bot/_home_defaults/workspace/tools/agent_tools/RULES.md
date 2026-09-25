@@ -14,7 +14,7 @@ The user has two options:
    The response comes back to the main agent's chat, NOT the sub-agent's chat.
 
 **After creating a sub-agent, tell the user to open its chat to talk to it
-directly.** Do NOT show `python3 tools/...` commands to the user — those are
+directly.** Do NOT show `python tools/...` commands to the user — those are
 internal tools for agent-to-agent communication only.
 
 ## Available Tools (internal, not user-facing)
@@ -28,7 +28,7 @@ internal tools for agent-to-agent communication only.
 | `remove_agent.py` | Remove a sub-agent from the registry | Main only |
 | `list_agents.py` | List all sub-agents and their configuration | Main only |
 
-Use `python3 tools/agent_tools/vault_search.py "query"` only when durable
+Use `python tools/agent_tools/vault_search.py "query"` only when durable
 project or domain context is needed. The tool does not write the vault or index.
 
 ## How agent-to-agent communication works
@@ -65,7 +65,7 @@ The `--model` must be a specific model ID from the lists above.
 Requires a bot token from @BotFather and Telegram user IDs (integers).
 
 ```bash
-python3 tools/agent_tools/create_agent.py \
+python tools/agent_tools/create_agent.py \
   --name "agent-name" \
   --token "BOT_TOKEN" \
   --users "USER_ID1,USER_ID2" \
@@ -80,7 +80,7 @@ Requires a Matrix account (user ID, homeserver URL). Password is optional
 at creation time — it can be added to `agents.json` later before starting.
 
 ```bash
-python3 tools/agent_tools/create_agent.py \
+python tools/agent_tools/create_agent.py \
   --name "matrix-agent" \
   --transport matrix \
   --homeserver "https://matrix.example.com" \
@@ -181,7 +181,7 @@ blocks until the sub-agent responds. The response is returned to you
 directly as tool output.
 
 ```bash
-python3 tools/agent_tools/ask_agent.py "agent-name" "Quick question"
+python tools/agent_tools/ask_agent.py "agent-name" "Quick question"
 ```
 
 ### Asynchronous (long-running tasks)
@@ -191,7 +191,7 @@ with a task_id. The sub-agent's response is delivered back to **your**
 chat (the calling agent's chat) when ready.
 
 ```bash
-python3 tools/agent_tools/ask_agent_async.py "agent-name" "Complex request that takes time"
+python tools/agent_tools/ask_agent_async.py "agent-name" "Complex request that takes time"
 ```
 
 Use async for code generation, analysis, research, or anything that may
@@ -204,8 +204,8 @@ inter-agent session (context is preserved). To start a completely new
 task with no prior context, use the `--new` flag:
 
 ```bash
-python3 tools/agent_tools/ask_agent_async.py --new "agent-name" "Brand new task"
-python3 tools/agent_tools/ask_agent.py --new "agent-name" "Brand new question"
+python tools/agent_tools/ask_agent_async.py --new "agent-name" "Brand new task"
+python tools/agent_tools/ask_agent.py --new "agent-name" "Brand new question"
 ```
 
 ### Named Sessions for inter-agent work
@@ -232,5 +232,5 @@ Removing a sub-agent stops its bot but **preserves its workspace**.
 The workspace can be reused if the agent is re-created with the same name.
 
 ```bash
-python3 tools/agent_tools/remove_agent.py "agent-name"
+python tools/agent_tools/remove_agent.py "agent-name"
 ```

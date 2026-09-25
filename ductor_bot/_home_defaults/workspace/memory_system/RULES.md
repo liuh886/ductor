@@ -5,8 +5,13 @@ read-only, rebuildable projections. Provider sessions own conversation context.
 
 ## Retrieval
 
-- Use `python3 tools/agent_tools/vault_search.py "query"` for durable project
-  or domain knowledge only when the current task needs it.
+- Prefer `python tools/user_tools/knowledge_router.py search "query" --json` when
+  the Router is installed (`python`, not `python3`, which is a Store placeholder here).
+  Use `contexts brief NAME --json` for a functional Context
+  and `contexts state ID --json` for explicitly recorded state. These commands read
+  the shared Router registry and event links, not a separate per-agent knowledge copy.
+- Only if the Router is not installed, retain `tools/agent_tools/vault_search.py` for
+  legacy read-only retrieval. Never treat an integrity failure as an empty result.
 - Use the smallest source-backed passage that answers the question.
 - A miss means no context; do not substitute unrelated legacy memory.
 

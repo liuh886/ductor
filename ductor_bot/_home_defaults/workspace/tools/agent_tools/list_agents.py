@@ -2,7 +2,7 @@
 """List all registered sub-agents and their configuration.
 
 Usage:
-    python3 list_agents.py
+    python list_agents.py
 """
 
 from __future__ import annotations

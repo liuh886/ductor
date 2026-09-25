@@ -5,7 +5,7 @@ The agent is stopped automatically (FileWatcher detects the removal).
 The agent's workspace is preserved and can be reused.
 
 Usage:
-    python3 remove_agent.py NAME
+    python remove_agent.py NAME
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _agents_path() -> Path:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: python3 remove_agent.py NAME", file=sys.stderr)
+        print("Usage: python remove_agent.py NAME", file=sys.stderr)
         sys.exit(1)
 
     name = sys.argv[1].strip().lower()

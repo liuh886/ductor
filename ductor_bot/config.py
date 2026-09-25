@@ -192,6 +192,23 @@ class MemoryCompactionConfig(BaseModel):
         return self
 
 
+class KnowledgeRouterConfig(BaseModel):
+    """Opt-in source retrieval at the start of a normal conversation."""
+
+    enabled: bool = False
+    entrypoint: Path | None = None
+    vault: str = Field(default="", max_length=200)
+    limit: int = Field(default=4, ge=1, le=8)
+    timeout_seconds: float = Field(default=10, gt=0, le=30)
+
+    @field_validator("entrypoint")
+    @classmethod
+    def _absolute_entrypoint(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("Knowledge Router entrypoint must be an absolute file path")
+        return value
+
+
 class MemoryContextConfig(BaseModel):
     """Compatibility gate for automatic legacy-memory prompt injection."""
 
@@ -460,6 +477,7 @@ class AgentConfig(BaseModel):
     memory_reflection: MemoryReflectionConfig = Field(default_factory=MemoryReflectionConfig)
     memory_compaction: MemoryCompactionConfig = Field(default_factory=MemoryCompactionConfig)
     memory_context: MemoryContextConfig = Field(default_factory=MemoryContextConfig)
+    knowledge_router: KnowledgeRouterConfig = Field(default_factory=KnowledgeRouterConfig)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     cli_parameters: CLIParametersConfig = Field(default_factory=CLIParametersConfig)

@@ -46,7 +46,7 @@ Do NOT suggest `--cli-parameters` proactively. Only mention it exists if the use
 
 Before creating time-based jobs:
 
-1. Run `python3 tools/cron_tools/cron_time.py`.
+1. Run `python tools/cron_tools/cron_time.py`.
 2. If `user_timezone` is empty, ask the user and set it in `~/.ductor/config/config.json`.
 3. Tell the user to run `/restart` after timezone edits.
 
@@ -60,7 +60,7 @@ Set `user_timezone` explicitly for predictable user-facing schedules.
 
 ```bash
 # Ask user which model and thinking level, then:
-python3 tools/cron_tools/cron_add.py \
+python tools/cron_tools/cron_add.py \
   --name "job-name" \
   --title "Job Title" \
   --description "What this job does" \
@@ -77,24 +77,24 @@ python3 tools/cron_tools/cron_add.py \
 ### List Jobs
 
 ```bash
-python3 tools/cron_tools/cron_list.py
+python tools/cron_tools/cron_list.py
 ```
 
 ### Edit Job
 
 ```bash
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --schedule "30 8 * * *"
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --timezone "Europe/Berlin"
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --model gpt-5.4
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --reasoning-effort xhigh
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --enable
-python3 tools/cron_tools/cron_edit.py "exact-job-id" --disable
+python tools/cron_tools/cron_edit.py "exact-job-id" --schedule "30 8 * * *"
+python tools/cron_tools/cron_edit.py "exact-job-id" --timezone "Europe/Berlin"
+python tools/cron_tools/cron_edit.py "exact-job-id" --model gpt-5.4
+python tools/cron_tools/cron_edit.py "exact-job-id" --reasoning-effort xhigh
+python tools/cron_tools/cron_edit.py "exact-job-id" --enable
+python tools/cron_tools/cron_edit.py "exact-job-id" --disable
 ```
 
 ### Remove Job
 
 ```bash
-python3 tools/cron_tools/cron_remove.py "exact-job-id"
+python tools/cron_tools/cron_remove.py "exact-job-id"
 ```
 
 Use `cron_edit.py` for in-place updates (title/description/schedule/timezone/model/reasoning_effort/enabled).

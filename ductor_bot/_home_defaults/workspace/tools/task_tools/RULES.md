@@ -18,7 +18,7 @@ separate CLI session while you keep chatting with the user.
 ## Creating a task
 
 ```bash
-python3 tools/task_tools/create_task.py --name "Flugsuche Paris" "Suche verfügbare Flüge nach Paris für 2 Personen im Juni. Vergleiche Preise und Airlines."
+python tools/task_tools/create_task.py --name "Flugsuche Paris" "Suche verfügbare Flüge nach Paris für 2 Personen im Juni. Vergleiche Preise und Airlines."
 ```
 
 Options:
@@ -33,13 +33,13 @@ the conversation — give it everything it needs.
 ## Listing tasks
 
 ```bash
-python3 tools/task_tools/list_tasks.py
+python tools/task_tools/list_tasks.py
 ```
 
 ## Cancelling a task
 
 ```bash
-python3 tools/task_tools/cancel_task.py TASK_ID
+python tools/task_tools/cancel_task.py TASK_ID
 ```
 
 ## Resuming a completed task
@@ -49,7 +49,7 @@ from the previous run. Use this instead of creating a new task when you want
 to build on existing work.
 
 ```bash
-python3 tools/task_tools/resume_task.py TASK_ID "jetzt nur 2-Wochen-Reisen suchen"
+python tools/task_tools/resume_task.py TASK_ID "jetzt nur 2-Wochen-Reisen suchen"
 ```
 
 Runs on the **original provider/model**, regardless of current chat provider.
@@ -75,7 +75,7 @@ Runs on the **original provider/model**, regardless of current chat provider.
 When running as a background task agent, you can ask the parent agent:
 
 ```bash
-python3 tools/task_tools/ask_parent.py "your question"
+python tools/task_tools/ask_parent.py "your question"
 ```
 
 This forwards your question and returns immediately. The parent agent

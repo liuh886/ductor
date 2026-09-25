@@ -5,13 +5,13 @@ Scripts for processing files received via any transport (Telegram, Matrix, API).
 ## Common Commands
 
 ```bash
-python3 tools/media_tools/list_files.py --limit 20
-python3 tools/media_tools/list_files.py --type image
-python3 tools/media_tools/list_files.py --date 2026-01-15
-python3 tools/media_tools/file_info.py --file /absolute/path/to/file
-python3 tools/media_tools/read_document.py --file /absolute/path/to/doc.pdf
-python3 tools/media_tools/transcribe_audio.py --file /absolute/path/to/audio.ogg
-python3 tools/media_tools/process_video.py --file /absolute/path/to/video.mp4
+python tools/media_tools/list_files.py --limit 20
+python tools/media_tools/list_files.py --type image
+python tools/media_tools/list_files.py --date 2026-01-15
+python tools/media_tools/file_info.py --file /absolute/path/to/file
+python tools/media_tools/read_document.py --file /absolute/path/to/doc.pdf
+python tools/media_tools/transcribe_audio.py --file /absolute/path/to/audio.ogg
+python tools/media_tools/process_video.py --file /absolute/path/to/video.mp4
 ```
 
 ## File-Type Routing

@@ -99,6 +99,12 @@ class DuctorPaths:
     def skills_dir(self) -> Path:
         return self.workspace / "skills"
 
+    def knowledge_router_entry(self, configured: Path | None = None) -> Path:
+        """Use an explicit local install without enabling cross-provider skill sync."""
+        return (
+            configured or self.skills_dir / "knowledge-router" / "scripts" / "knowledge_router.py"
+        )
+
     @property
     def bundled_skills_dir(self) -> Path:
         """Package-internal skill directory (read-only, ships with ductor)."""

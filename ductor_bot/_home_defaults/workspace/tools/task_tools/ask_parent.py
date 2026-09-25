@@ -6,7 +6,7 @@ will answer by resuming your task with the response. This call returns
 immediately — finish your current work and the parent will resume you.
 
 Usage:
-    python3 ask_parent.py "Your question here"
+    python ask_parent.py "Your question here"
 
 Environment variable DUCTOR_TASK_ID is automatically set by the framework
 when running inside a background task.
@@ -31,7 +31,7 @@ def main() -> None:
     get_api_url, post_json = _load_shared()
     args = sys.argv[1:]
     if not args:
-        print('Usage: python3 ask_parent.py "your question"', file=sys.stderr)
+        print('Usage: python ask_parent.py "your question"', file=sys.stderr)
         sys.exit(1)
 
     question = args[0]

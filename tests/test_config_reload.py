@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from ductor_bot.config import AgentConfig
+from ductor_bot.config import AgentConfig, KnowledgeRouterConfig
 from ductor_bot.config_reload import (
     ConfigReloader,
     classify_changes,
@@ -17,6 +17,52 @@ from ductor_bot.config_reload import (
 
 def _make_config(**overrides: Any) -> AgentConfig:
     return AgentConfig(**overrides)
+
+
+async def test_router_hot_reload_enable_disable_preserves_inflight_snapshot(tmp_path: Path) -> None:
+    config = AgentConfig()
+    path = tmp_path / "config.json"
+    path.write_text(config.model_dump_json(), encoding="utf-8")
+    restart = MagicMock()
+    applied = MagicMock()
+    reloader = ConfigReloader(path, config, on_hot_reload=applied, on_restart_needed=restart)
+    disabled_snapshot = config.knowledge_router
+    enabled = KnowledgeRouterConfig(
+        enabled=True,
+        vault="test",
+        entrypoint=tmp_path / "router.py",
+        limit=2,
+    )
+    updated = config.model_copy(update={"knowledge_router": enabled})
+    path.write_text(updated.model_dump_json(), encoding="utf-8")
+    await reloader._check()
+    assert config.knowledge_router.enabled
+    assert config.knowledge_router.limit == 2
+    assert config.knowledge_router.entrypoint == tmp_path / "router.py"
+    assert not disabled_snapshot.enabled
+    enabled_snapshot = config.knowledge_router
+    updated = config.model_copy(update={"knowledge_router": KnowledgeRouterConfig()})
+    path.write_text(updated.model_dump_json(), encoding="utf-8")
+    await reloader._check()
+    assert not config.knowledge_router.enabled
+    assert enabled_snapshot.enabled  # An already-running lookup keeps its snapshot.
+    assert applied.call_count == 2
+    restart.assert_not_called()
+
+
+async def test_router_invalid_reload_keeps_last_valid_config(tmp_path: Path) -> None:
+    config = AgentConfig(knowledge_router=KnowledgeRouterConfig(enabled=True, vault="test"))
+    path = tmp_path / "config.json"
+    path.write_text(config.model_dump_json(), encoding="utf-8")
+    applied = MagicMock()
+    reloader = ConfigReloader(path, config, on_hot_reload=applied)
+    saved = config.knowledge_router
+    invalid = config.model_dump(mode="json")
+    invalid["knowledge_router"]["entrypoint"] = "relative.py"
+    path.write_text(json.dumps(invalid), encoding="utf-8")
+    await reloader._check()
+    assert config.knowledge_router is saved
+    applied.assert_not_called()
 
 
 class TestDiffConfigs:

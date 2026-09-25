@@ -365,10 +365,10 @@ def main() -> None:
             f"The agent's memory is {task_path}/{name}_MEMORY.md. "
             "CLAUDE.md already tells the agent to read and update it.",
             f"To change title/description/schedule/name/enabled later: "
-            f'python3 tools/cron_tools/cron_edit.py "{name}" ...',
+            f'python tools/cron_tools/cron_edit.py "{name}" ...',
             "To modify this task later: edit TASK_DESCRIPTION.md only. "
             "CLAUDE.md and AGENTS.md are fixed framework files.",
-            f'To REMOVE this job later: python3 tools/cron_tools/cron_remove.py "{name}"',
+            f'To REMOVE this job later: python tools/cron_tools/cron_remove.py "{name}"',
         ],
     }
     if not effective_tz:

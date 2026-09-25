@@ -5,10 +5,10 @@ The AgentSupervisor watches agents.json via FileWatcher and automatically
 starts the new agent within seconds.
 
 Usage (Telegram):
-    python3 create_agent.py --name NAME --token TOKEN --users ID1,ID2 [--provider P] [--model M]
+    python create_agent.py --name NAME --token TOKEN --users ID1,ID2 [--provider P] [--model M]
 
 Usage (Matrix):
-    python3 create_agent.py --name NAME --transport matrix \
+    python create_agent.py --name NAME --transport matrix \
         --homeserver URL --user-id @bot:server \
         --allowed-users @user:server [--password PASS] [--provider P] [--model M]
 """
