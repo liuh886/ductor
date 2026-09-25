@@ -18,6 +18,7 @@ def _make_editor(
     reply_to: Message | None = None,
     edit_interval: float = 0.0,
     max_failures: int = 3,
+    max_messages: int = 5,
     thread_id: int | None = None,
 ) -> tuple[MagicMock, EditStreamEditor]:
     """Create a bot mock and an EditStreamEditor with zero throttle by default."""
@@ -32,7 +33,11 @@ def _make_editor(
     if reply_to is not None:
         object.__setattr__(reply_to, "answer", AsyncMock(return_value=sent_msg))
 
-    cfg = StreamingConfig(edit_interval_seconds=edit_interval, max_edit_failures=max_failures)
+    cfg = StreamingConfig(
+        edit_interval_seconds=edit_interval,
+        max_edit_failures=max_failures,
+        max_messages=max_messages,
+    )
     editor = EditStreamEditor(
         bot,
         chat_id=1,
@@ -598,3 +603,40 @@ class TestEditStreamEditorThreadId:
         await editor.finalize("")
         for call in bot.send_message.call_args_list:
             assert call.kwargs["message_thread_id"] == 55
+
+
+def _consume_document(document: object) -> str:
+    """Read and remove a folded-reply temp file captured in a mock call."""
+    from pathlib import Path
+
+    path = Path(document.path)  # type: ignore[attr-defined]
+    content = path.read_text(encoding="utf-8")
+    path.unlink(missing_ok=True)
+    return content
+
+
+class TestEditStreamEditorFolding:
+    """Replies beyond streaming.max_messages fold into a document attachment."""
+
+    async def test_overflow_beyond_cap_folds_into_document(self) -> None:
+        bot, editor = _make_editor(max_messages=3)
+        sent_doc = MagicMock(spec=Message)
+        type(sent_doc).message_id = PropertyMock(return_value=99)
+        bot.send_document = AsyncMock(return_value=sent_doc)
+
+        long_text = "A" * (4096 * 5)
+        await editor.append_text(long_text)
+        await editor.finalize(long_text)
+
+        assert bot.send_message.await_count == 3
+        assert bot.send_document.await_count == 1
+        document = bot.send_document.call_args.kwargs["document"]
+        assert _consume_document(document) == long_text
+
+    async def test_reply_within_cap_never_sends_document(self) -> None:
+        bot, editor = _make_editor(max_messages=5)
+        bot.send_document = AsyncMock()
+        text = "B" * 8000
+        await editor.append_text(text)
+        await editor.finalize(text)
+        bot.send_document.assert_not_called()

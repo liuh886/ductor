@@ -465,3 +465,6 @@ async_task_received = "📥 **Tarea asíncrona recibida** de `{sender}`\nSesión
 [effort]
 select = "Selecciona el esfuerzo de razonamiento para {model}:"
 unsupported = "El esfuerzo de razonamiento no es configurable para el proveedor `{provider}`."
+
+[stream]
+folded_reply = "Esta respuesta era muy larga, así que el texto completo se adjunta como archivo."

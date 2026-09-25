@@ -35,6 +35,8 @@ class StreamingConfig(BaseModel):
     show_reasoning_stream: bool = False
     show_tool_progress: bool = True
     show_thinking_indicator: bool = True
+    max_messages: int = Field(default=5, ge=0)
+    """Chat messages a single reply may span before the full text folds into a file (0 = unlimited)."""
 
 
 class DockerConfig(BaseModel):

@@ -465,3 +465,6 @@ async_task_received = "📥 **Async-Aufgabe empfangen** von `{sender}`\nSession:
 [effort]
 select = "Denkaufwand für {model} wählen:"
 unsupported = "Denkaufwand ist für den Anbieter `{provider}` nicht einstellbar."
+
+[stream]
+folded_reply = "Diese Antwort war sehr lang, daher ist der vollständige Text als Datei angehängt."

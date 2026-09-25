@@ -18,6 +18,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
 
 from ductor_bot.messenger.telegram.buttons import extract_buttons
+from ductor_bot.messenger.telegram.folding import send_reply_document
 from ductor_bot.messenger.telegram.formatting import (
     TELEGRAM_MSG_LIMIT,
     markdown_to_telegram_html,
@@ -103,6 +104,7 @@ class _EditorState:
     consecutive_failures: int = 0
     fallen_back: bool = False
     fallback_finalized: bool = False
+    folded: bool = False
 
 
 class EditStreamEditor:
@@ -127,6 +129,7 @@ class EditStreamEditor:
         self._reply_to = reply_to
         self._interval = cfg.edit_interval_seconds if cfg else 2.0
         self._max_failures = cfg.max_edit_failures if cfg else 3
+        self._max_messages = cfg.max_messages if cfg else 5
         self._thread_id = thread_id
         self._s = _EditorState()
 
@@ -182,6 +185,9 @@ class EditStreamEditor:
         if self._has_fallen_back():
             await self._finalize_fallback(full_text)
             return
+        if self._s.folded:
+            await self._finalize_folded(full_text)
+            return
         self._flush_text_segment()
         # Discard pending indicators and strip flushed ones from active portion.
         self._s.tool_tracker = _ToolTracker()
@@ -204,6 +210,21 @@ class EditStreamEditor:
             )
         if self._s.fallback_finalized:
             await self._attach_buttons(full_text)
+
+    async def _finalize_folded(self, full_text: str) -> None:
+        """Attach the complete reply as a file after the message cap was hit."""
+        cleaned_text, _ = extract_buttons(full_text)
+        if cleaned_text.strip():
+            document = await send_reply_document(
+                self._bot,
+                self._chat_id,
+                cleaned_text,
+                thread_id=self._thread_id,
+            )
+            if document is not None:
+                self._s.active_msg = document
+                self._s.messages_sent += 1
+        await self._attach_buttons(full_text)
 
     # ------------------------------------------------------------------
     # Internal: segment management
@@ -286,6 +307,9 @@ class EditStreamEditor:
 
     async def _do_edit(self) -> bool:
         """Render content and create or edit the Telegram message."""
+        if self._s.folded:
+            # The message cap was hit; the full text ships as a file at finalize.
+            return True
         full_html = self._render_active_html()
         if not full_html.strip():
             return True
@@ -303,10 +327,17 @@ class EditStreamEditor:
         self._s.last_edit_time = asyncio.get_event_loop().time()
         return delivered
 
+    def _cap_reached(self) -> bool:
+        """True when the configured per-reply message budget is exhausted."""
+        return self._max_messages > 0 and self._s.messages_sent >= self._max_messages
+
     async def _handle_overflow(self, chunks: list[str]) -> bool:
         """Seal full chunks and keep the final chunk active for later edits."""
         if self._s.active_msg is not None:
             delivered = await self._edit_message(chunks[0])
+        elif self._cap_reached():
+            self._s.folded = True
+            return True
         else:
             delivered = await self._create_message(chunks[0])
         if not delivered:
@@ -325,18 +356,33 @@ class EditStreamEditor:
         self._s.segments = self._s.segments[: self._s.sealed_segment_idx]
         self._s.indicator_indices.clear()
 
+        if not await self._deliver_remaining_chunks(remaining_chunks):
+            return False
+        if self._s.folded:
+            return True
+
+        final_chunk = remaining_chunks[-1]
+        if final_chunk.strip():
+            self._s.segments.append(final_chunk)
+        self._s.last_edit_time = asyncio.get_event_loop().time()
+        return True
+
+    async def _deliver_remaining_chunks(self, remaining_chunks: list[str]) -> bool:
+        """Send overflow chunks until the message budget is exhausted."""
         for index, chunk in enumerate(remaining_chunks):
+            if self._cap_reached():
+                logger.debug(
+                    "Reply exceeded %d messages; folding the remainder into a file",
+                    self._max_messages,
+                )
+                self._s.folded = True
+                return True
             self._s.active_msg = None
             if not await self._create_message(chunk):
                 unsent = "\n\n".join(remaining_chunks[index:])
                 if unsent.strip():
                     self._s.segments.append(unsent)
                 return False
-
-        final_chunk = remaining_chunks[-1]
-        if final_chunk.strip():
-            self._s.segments.append(final_chunk)
-        self._s.last_edit_time = asyncio.get_event_loop().time()
         return True
 
     async def _send_created_message(

@@ -465,3 +465,8 @@ async_task_received = "📥 **Async task received** from `{sender}`\nSession: `{
 [effort]
 select = "Select reasoning effort for {model}:"
 unsupported = "Reasoning effort is not configurable for the `{provider}` provider."
+
+# -- Streaming -----------------------------------------------------------------
+
+[stream]
+folded_reply = "This reply was very long, so the complete text is attached as a file."

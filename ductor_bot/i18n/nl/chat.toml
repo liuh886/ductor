@@ -465,3 +465,6 @@ async_task_received = "📥 **Async taak ontvangen** van `{sender}`\nSessie: `{s
 [effort]
 select = "Kies de redeneerinzet voor {model}:"
 unsupported = "Redeneerinzet is niet instelbaar voor provider `{provider}`."
+
+[stream]
+folded_reply = "Dit antwoord was erg lang, daarom is de volledige tekst als bestand bijgevoegd."

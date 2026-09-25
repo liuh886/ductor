@@ -20,6 +20,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, Telegra
 
 from ductor_bot.i18n import t
 from ductor_bot.messenger.telegram.buttons import extract_buttons
+from ductor_bot.messenger.telegram.folding import send_reply_document
 from ductor_bot.messenger.telegram.formatting import (
     TELEGRAM_MSG_LIMIT,
     markdown_to_telegram_html,
@@ -29,7 +30,7 @@ from ductor_bot.text.response_format import normalize_tool_name
 
 if TYPE_CHECKING:
     from aiogram import Bot
-    from aiogram.types import Message
+    from aiogram.types import InlineKeyboardMarkup, Message
 
     from ductor_bot.config import StreamingConfig
 
@@ -72,17 +73,20 @@ class StreamEditor:
         chat_id: int,
         *,
         reply_to: Message | None = None,
+        cfg: StreamingConfig | None = None,
         thread_id: int | None = None,
     ) -> None:
         self._bot = bot
         self._chat_id = chat_id
         self._reply_to = reply_to
         self._thread_id = thread_id
+        self._max_messages = cfg.max_messages if cfg else 5
         self._messages_sent = 0
         self._text_messages_sent = 0
         self._last_msg: Message | None = None
         self._transient_send_failure = False
         self._text_delivery_failed = False
+        self._folded = False
 
     @property
     def has_content(self) -> bool:
@@ -94,6 +98,11 @@ class StreamEditor:
         if not text.strip():
             return
         if self._text_delivery_failed:
+            return
+        if self._max_messages > 0 and self._text_messages_sent >= self._max_messages:
+            # Message budget exhausted: keep the beginning in chat and let
+            # finalize() attach the complete answer as a file.
+            self._folded = True
             return
         formatted = markdown_to_telegram_html(text)
         chunks = split_html_message(formatted)
@@ -135,6 +144,18 @@ class StreamEditor:
     async def finalize(self, full_text: str) -> None:
         """Ensure a final body exists, then attach its button keyboard."""
         cleaned_text, markup = extract_buttons(full_text)
+        if self._folded and cleaned_text.strip():
+            document = await send_reply_document(
+                self._bot,
+                self._chat_id,
+                cleaned_text,
+                thread_id=self._thread_id,
+            )
+            if document is not None:
+                self._last_msg = document
+                self._messages_sent += 1
+            await self._attach_buttons(markup)
+            return
         if self._text_delivery_failed and cleaned_text.strip():
             self._text_delivery_failed = False
             await self.append_text(cleaned_text)
@@ -148,6 +169,10 @@ class StreamEditor:
             elif self._messages_sent > 0:
                 await self._send(t("session.empty_turn"), parse_mode=None)
 
+        await self._attach_buttons(markup)
+
+    async def _attach_buttons(self, markup: InlineKeyboardMarkup | None) -> None:
+        """Attach *markup* to the last delivered message, if any."""
         if self._last_msg is None or markup is None:
             return
         try:
@@ -219,7 +244,7 @@ def create_stream_editor(
 
     c = cfg or StreamingConfig()
     if c.append_mode:
-        return StreamEditor(bot, chat_id, reply_to=reply_to, thread_id=thread_id)
+        return StreamEditor(bot, chat_id, reply_to=reply_to, cfg=c, thread_id=thread_id)
     from ductor_bot.messenger.telegram.edit_streaming import EditStreamEditor
 
     return EditStreamEditor(

@@ -464,3 +464,6 @@ async_task_received = "📥 **Tugas async diterima** dari `{sender}`\nSesi: `{se
 [effort]
 select = "Pilih upaya penalaran untuk {model}:"
 unsupported = "Upaya penalaran tidak dapat diatur untuk penyedia `{provider}`."
+
+[stream]
+folded_reply = "Balasan ini sangat panjang, jadi teks lengkapnya dilampirkan sebagai berkas."

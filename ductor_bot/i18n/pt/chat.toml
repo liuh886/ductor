@@ -465,3 +465,6 @@ async_task_received = "📥 **Tarefa assíncrona recebida** de `{sender}`\nSess�
 [effort]
 select = "Selecione o esforco de raciocinio para {model}:"
 unsupported = "O esforco de raciocinio nao e configuravel para o provedor `{provider}`."
+
+[stream]
+folded_reply = "Esta resposta era muito longa, por isso o texto completo está anexado como ficheiro."

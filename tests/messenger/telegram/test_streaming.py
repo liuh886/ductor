@@ -471,3 +471,36 @@ class TestStreamEditorTransientFailures:
         sleep.assert_awaited_once_with(10)
         assert editor.has_content is False
         assert bot.send_message.await_count == 2
+
+
+def _consume_document(document: object) -> str:
+    """Read and remove a folded-reply temp file captured in a mock call."""
+    from pathlib import Path
+
+    path = Path(document.path)  # type: ignore[attr-defined]
+    content = path.read_text(encoding="utf-8")
+    path.unlink(missing_ok=True)
+    return content
+
+
+class TestStreamEditorFolding:
+    """Append-mode replies beyond streaming.max_messages fold into a document."""
+
+    async def test_text_cap_folds_remaining_reply_into_document(self) -> None:
+        from ductor_bot.config import StreamingConfig
+
+        bot = MagicMock()
+        sent_msg = MagicMock(spec=Message)
+        bot.send_message = AsyncMock(return_value=sent_msg)
+        bot.send_document = AsyncMock(return_value=sent_msg)
+
+        editor = StreamEditor(bot, chat_id=1, cfg=StreamingConfig(max_messages=2))
+        await editor.append_text("first")
+        await editor.append_text("second")
+        await editor.append_text("third")
+        await editor.finalize("firstsecondthird")
+
+        assert bot.send_message.await_count == 2
+        assert bot.send_document.await_count == 1
+        document = bot.send_document.call_args.kwargs["document"]
+        assert _consume_document(document) == "firstsecondthird"
