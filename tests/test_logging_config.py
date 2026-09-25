@@ -58,6 +58,54 @@ class TestSetupLogging:
         assert len(stream_handlers) <= 2  # Console + possibly QueueHandler
 
 
+class TestNetworkErrorRateLimit:
+    """Repeated Telegram polling network errors must be rate-limited in logs."""
+
+    @staticmethod
+    def _record(message: str) -> logging.LogRecord:
+        return logging.LogRecord(
+            "aiogram.dispatcher", logging.ERROR, __file__, 0, message, (), None
+        )
+
+    _MESSAGE = "Failed to fetch updates - TelegramNetworkError: boom"
+
+    def test_repeats_suppressed_and_summarized(self) -> None:
+        from ductor_bot.logging_config import _NetworkErrorRateLimitFilter
+
+        rate_filter = _NetworkErrorRateLimitFilter(interval_seconds=300)
+        first = self._record(self._MESSAGE)
+        second = self._record(self._MESSAGE)
+        assert rate_filter.filter(first) is True
+        assert rate_filter.filter(second) is False
+
+        rate_filter._last_emitted -= 301
+        third = self._record(self._MESSAGE)
+        assert rate_filter.filter(third) is True
+        assert "+1 identical errors suppressed" in third.getMessage()
+
+    def test_unrelated_records_pass_through(self) -> None:
+        from ductor_bot.logging_config import _NetworkErrorRateLimitFilter
+
+        rate_filter = _NetworkErrorRateLimitFilter(interval_seconds=300)
+        assert rate_filter.filter(self._record(self._MESSAGE)) is True
+        other = self._record("Ordered shutdown complete")
+        assert rate_filter.filter(other) is True
+        assert "suppressed" not in other.getMessage()
+
+    def test_setup_logging_attaches_filter_once(self) -> None:
+        from ductor_bot import logging_config
+
+        logging_config.setup_logging(log_dir=None)
+        logging_config.setup_logging(log_dir=None)
+        dispatcher = logging.getLogger("aiogram.dispatcher")
+        attached = [
+            f
+            for f in dispatcher.filters
+            if isinstance(f, logging_config._NetworkErrorRateLimitFilter)
+        ]
+        assert len(attached) == 1
+
+
 class TestColorFormatter:
     """Test ANSI color formatting."""
 

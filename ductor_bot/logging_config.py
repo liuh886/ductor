@@ -9,11 +9,17 @@ import atexit
 import logging
 import queue
 import sys
+import time
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 
 MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
 BACKUP_COUNT = 3
+
+NETWORK_ERROR_LOG_INTERVAL_SECONDS = 300.0
+"""Repeated aiogram polling network errors are collapsed to one line per window."""
+
+_NETWORK_ERROR_MARKERS = ("Failed to fetch updates", "TelegramNetworkError")
 
 CONSOLE_FMT = "%(asctime)s %(levelname)s %(name)s: %(ctx)s%(message)s"
 FILE_FMT = "%(asctime)s [%(levelname)s] %(name)s:%(filename)s:%(lineno)d: %(ctx)s%(message)s"
@@ -46,6 +52,37 @@ def _stop_queue_listener() -> None:
     if _state.listener is not None:
         _state.listener.stop()
         _state.listener = None
+
+
+class _NetworkErrorRateLimitFilter(logging.Filter):
+    """Collapse repeated aiogram polling network errors into one line per window.
+
+    Telegram outages (proxy restarts, sleep/resume) make every bot log a
+    ``Failed to fetch updates`` line on each poll retry, drowning real errors.
+    The first line of a window is kept (with the count of identical errors
+    suppressed afterwards); the rest is dropped.
+    """
+
+    def __init__(self, interval_seconds: float = NETWORK_ERROR_LOG_INTERVAL_SECONDS) -> None:
+        super().__init__()
+        self._interval = interval_seconds
+        self._last_emitted = 0.0
+        self._suppressed = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if not all(marker in message for marker in _NETWORK_ERROR_MARKERS):
+            return True
+        now = time.monotonic()
+        if self._last_emitted and now - self._last_emitted < self._interval:
+            self._suppressed += 1
+            return False
+        if self._suppressed:
+            record.msg = f"{message} (+{self._suppressed} identical errors suppressed)"
+            record.args = None
+            self._suppressed = 0
+        self._last_emitted = now
+        return True
 
 
 class _ColorFormatter(logging.Formatter):
@@ -133,5 +170,9 @@ def setup_logging(
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
     logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+
+    aiogram_dispatcher = logging.getLogger("aiogram.dispatcher")
+    if not any(isinstance(f, _NetworkErrorRateLimitFilter) for f in aiogram_dispatcher.filters):
+        aiogram_dispatcher.addFilter(_NetworkErrorRateLimitFilter())
 
     logger.info("Logging initialized (level=%s)", logging.getLevelName(level))
