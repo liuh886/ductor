@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ductor_bot.files.storage import prepare_destination, sanitize_filename
+import yaml
+
+from ductor_bot.files.storage import (
+    prepare_destination,
+    sanitize_filename,
+    update_index,
+    update_index_entry,
+)
 
 
 class TestSanitizeFilename:
@@ -59,3 +66,63 @@ class TestPrepareDestination:
 
         dest3 = prepare_destination(tmp_path, "file.pdf")
         assert dest3.name == "file_2.pdf"
+
+
+def _read_index(base_dir: Path) -> dict[str, object]:
+    return yaml.safe_load((base_dir / "_index.yaml").read_text(encoding="utf-8"))
+
+
+class TestUpdateIndexEntry:
+    def test_appends_new_file_keeping_existing_entries(self, tmp_path: Path) -> None:
+        day = tmp_path / "2025-06-15"
+        day.mkdir()
+        (day / "a.jpg").write_bytes(b"x" * 10)
+        update_index(tmp_path)
+
+        (day / "b.ogg").write_bytes(b"y" * 20)
+        update_index_entry(tmp_path, day / "b.ogg")
+
+        data = _read_index(tmp_path)
+        names = {entry["name"] for entry in data["tree"]["2025-06-15"]}
+        assert names == {"a.jpg", "b.ogg"}
+        assert data["total_files"] == 2
+
+    def test_replaces_existing_entry_without_duplicating(self, tmp_path: Path) -> None:
+        day = tmp_path / "2025-06-15"
+        day.mkdir()
+        target = day / "a.jpg"
+        target.write_bytes(b"x" * 10)
+        update_index(tmp_path)
+
+        target.write_bytes(b"x" * 30)
+        update_index_entry(tmp_path, target)
+
+        data = _read_index(tmp_path)
+        entries = data["tree"]["2025-06-15"]
+        assert len(entries) == 1
+        assert entries[0]["size"] == 30
+        assert data["total_files"] == 1
+
+    def test_builds_index_when_missing(self, tmp_path: Path) -> None:
+        day = tmp_path / "2025-06-15"
+        day.mkdir()
+        target = day / "a.jpg"
+        target.write_bytes(b"x" * 10)
+
+        update_index_entry(tmp_path, target)
+
+        data = _read_index(tmp_path)
+        assert data["total_files"] == 1
+        assert data["tree"]["2025-06-15"][0]["name"] == "a.jpg"
+
+    def test_non_date_dir_falls_back_to_rebuild(self, tmp_path: Path) -> None:
+        odd = tmp_path / "random"
+        odd.mkdir()
+        target = odd / "x.txt"
+        target.write_text("x", encoding="utf-8")
+
+        update_index_entry(tmp_path, target)
+
+        data = _read_index(tmp_path)
+        assert data["tree"] == {}
+        assert data["total_files"] == 0

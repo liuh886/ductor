@@ -16,7 +16,7 @@ from ductor_bot.files.prompt import MediaInfo
 from ductor_bot.files.prompt import build_media_prompt as _build_media_prompt_generic
 from ductor_bot.files.storage import prepare_destination as _prepare_destination
 from ductor_bot.files.storage import sanitize_filename as _sanitize_filename
-from ductor_bot.files.storage import update_index
+from ductor_bot.files.storage import update_index_entry
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -153,7 +153,7 @@ async def resolve_media_text(
         return None
 
     try:
-        await asyncio.to_thread(update_index, telegram_files_dir)
+        await asyncio.to_thread(update_index_entry, telegram_files_dir, info.path)
     except (OSError, yaml.YAMLError):
         logger.warning("Index update failed", exc_info=True)
 

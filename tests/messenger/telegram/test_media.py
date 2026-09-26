@@ -360,7 +360,7 @@ class TestResolveMedia:
 
 class TestUpdateIndex:
     def test_builds_index(self, tmp_path: Path) -> None:
-        from ductor_bot.messenger.telegram.media import update_index
+        from ductor_bot.files.storage import update_index
 
         day_dir = tmp_path / "2025-06-15"
         day_dir.mkdir()
@@ -381,7 +381,7 @@ class TestUpdateIndex:
         assert "voice_xyz.ogg" in names
 
     def test_skips_non_date_dirs(self, tmp_path: Path) -> None:
-        from ductor_bot.messenger.telegram.media import update_index
+        from ductor_bot.files.storage import update_index
 
         (tmp_path / "random_dir").mkdir()
         (tmp_path / "random_dir" / "file.txt").write_text("x")
@@ -392,7 +392,7 @@ class TestUpdateIndex:
         assert data["total_files"] == 0
 
     def test_empty_dir(self, tmp_path: Path) -> None:
-        from ductor_bot.messenger.telegram.media import update_index
+        from ductor_bot.files.storage import update_index
 
         update_index(tmp_path)
 

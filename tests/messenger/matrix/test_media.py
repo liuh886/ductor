@@ -212,7 +212,7 @@ class TestResolveMatrixMedia:
                 return_value=info,
             ),
             patch(
-                "ductor_bot.messenger.matrix.media._update_index",
+                "ductor_bot.messenger.matrix.media._update_index_entry",
             ),
         ):
             result = await resolve_matrix_media(client, event, tmp_path, tmp_path)

@@ -14,7 +14,7 @@ from ductor_bot.files.prompt import MediaInfo
 from ductor_bot.files.prompt import build_media_prompt as _build_media_prompt_generic
 from ductor_bot.files.storage import prepare_destination as _prepare_destination
 from ductor_bot.files.storage import sanitize_filename as _sanitize_filename
-from ductor_bot.files.storage import update_index as _update_index
+from ductor_bot.files.storage import update_index_entry as _update_index_entry
 from ductor_bot.files.tags import guess_mime
 
 if TYPE_CHECKING:
@@ -68,7 +68,7 @@ async def resolve_matrix_media(
         return None
 
     try:
-        await asyncio.to_thread(_update_index, matrix_files_dir)
+        await asyncio.to_thread(_update_index_entry, matrix_files_dir, info.path)
     except Exception:
         logger.warning("Index update failed", exc_info=True)
 
