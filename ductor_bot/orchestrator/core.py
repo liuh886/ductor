@@ -196,6 +196,7 @@ class Orchestrator:
             lambda: self._process_registry.kill_stale(stale_max)
         )
         self._api_stop: Callable[[], Awaitable[None]] | None = None
+        self._pending_tasks: set[asyncio.Task[None]] = set()
         self._inflight_tracker = InflightTracker(paths.inflight_turns_path)
         self._memory_flusher: MemoryFlusher | None = (
             MemoryFlusher(
@@ -254,6 +255,17 @@ class Orchestrator:
     def inflight_tracker(self) -> InflightTracker:
         """Public access to the inflight turn tracker."""
         return self._inflight_tracker
+
+    def track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
+        """Keep a strong reference to a fire-and-forget task until it finishes.
+
+        The event loop only holds weak references to tasks, so an unanchored
+        task may be garbage-collected mid-flight. Tracked tasks are cancelled
+        during :meth:`shutdown`.
+        """
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
 
     @property
     def named_sessions(self) -> NamedSessionRegistry:
@@ -810,12 +822,10 @@ class Orchestrator:
         if "heartbeat" in hot:
             hb = self._observers.heartbeat
             if config.heartbeat.enabled and not hb.running:
-                task = asyncio.create_task(hb.start())
-                task.add_done_callback(lambda _: None)
+                self.track_task(asyncio.create_task(hb.start()))
                 logger.info("Heartbeat observer started via hot-reload")
             elif not config.heartbeat.enabled and hb.running:
-                task = asyncio.create_task(hb.stop())
-                task.add_done_callback(lambda _: None)
+                self.track_task(asyncio.create_task(hb.stop()))
                 logger.info("Heartbeat observer stopped via hot-reload")
 
         handler = getattr(self, "_config_hot_reload_handler", None)

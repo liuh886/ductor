@@ -194,6 +194,10 @@ async def ensure_docker(orch: Orchestrator) -> None:
 
 async def shutdown(orch: Orchestrator) -> None:
     """Cleanup on bot shutdown."""
+    if orch._pending_tasks:
+        for task in list(orch._pending_tasks):
+            task.cancel()
+        await asyncio.gather(*orch._pending_tasks, return_exceptions=True)
     killed = await orch._process_registry.kill_all_active()
     if killed:
         logger.info("Shutdown terminated %d active CLI process(es)", killed)

@@ -950,3 +950,20 @@ async def test_message_log_omits_user_content(
         message == f"Message received chars={len(sensitive_text)} command=False"
         for message in messages
     )
+
+
+async def test_track_task_cancelled_on_shutdown(orch: Orchestrator) -> None:
+    started = asyncio.Event()
+
+    async def _long_running() -> None:
+        started.set()
+        await asyncio.sleep(60)
+
+    task = orch.track_task(asyncio.create_task(_long_running()))
+    await started.wait()
+    assert task in orch._pending_tasks
+
+    await orch.shutdown()
+
+    assert task.cancelled()
+    assert not orch._pending_tasks

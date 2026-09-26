@@ -64,7 +64,7 @@ def _schedule_memory_flush(orch: Orchestrator, key: SessionKey, session: Session
             logger.exception("Memory flush task failed chat=%d", key.chat_id)
 
     topic = "main" if key.topic_id is None else str(key.topic_id)
-    task = asyncio.create_task(_run(), name=f"memory-flush:{key.chat_id}:{topic}")
+    task = orch.track_task(asyncio.create_task(_run(), name=f"memory-flush:{key.chat_id}:{topic}"))
     task.add_done_callback(_consume_background_result)
 
 

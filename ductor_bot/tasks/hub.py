@@ -333,7 +333,8 @@ class TaskHub:
             self._deliver_question(handler, entry, question),
             name=f"task-question:{task_id}",
         )
-        task.add_done_callback(lambda _: None)  # prevent GC of fire-and-forget task
+        self._pending_deliveries.add(task)
+        task.add_done_callback(self._pending_deliveries.discard)
 
         return (
             "Question forwarded to parent agent. "
