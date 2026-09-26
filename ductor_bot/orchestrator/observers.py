@@ -40,6 +40,7 @@ from ductor_bot.webhook.observer import WebhookObserver
 from ductor_bot.workspace.init import watch_rule_files
 from ductor_bot.workspace.paths import DuctorPaths
 from ductor_bot.workspace.skill_sync import watch_skill_sync
+from ductor_bot.workspace.vault_index_observer import VaultIndexObserver, is_root_home
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,11 @@ class ObserverManager:
         self._paths = paths
         self.heartbeat = HeartbeatObserver(config)
         self.cleanup = CleanupObserver(config, paths)
+        self.vault_index: VaultIndexObserver | None = (
+            VaultIndexObserver(paths, config.vault_index, vault_name=config.knowledge_router.vault)
+            if config.vault_index.enabled and is_root_home(paths)
+            else None
+        )
 
         self.cron: CronObserver | None = None
         self.webhook: WebhookObserver | None = None
@@ -167,6 +173,9 @@ class ObserverManager:
         if self.webhook:
             await self.webhook.start()
         await self.cleanup.start()
+        if self.vault_index:
+            await self.vault_index.start()
+            logger.info("Vault index observer started")
 
         self._rule_sync_task = asyncio.create_task(watch_rule_files(self._paths.workspace))
         logger.info("Rule file watcher started (CLAUDE.md <-> AGENTS.md <-> GEMINI.md)")
@@ -203,6 +212,9 @@ class ObserverManager:
         if self.cron:
             await self.cron.stop()
         await self.cleanup.stop()
+        if self.vault_index:
+            await self.vault_index.stop()
+            self.vault_index = None
         cache_observer_attrs = (
             "codex_cache_obs",
             "gemini_cache_obs",

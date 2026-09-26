@@ -217,6 +217,14 @@ class MemoryContextConfig(BaseModel):
     enabled: bool = False
 
 
+class VaultIndexConfig(BaseModel):
+    """Periodic rebuild of the read-only vault index used by ``vault_search.py``."""
+
+    enabled: bool = True
+    vault_root: str = ""
+    sync_interval_hours: int = Field(default=168, ge=1)
+
+
 class ImageConfig(BaseModel):
     """Settings for incoming image processing."""
 
@@ -480,6 +488,7 @@ class AgentConfig(BaseModel):
     memory_compaction: MemoryCompactionConfig = Field(default_factory=MemoryCompactionConfig)
     memory_context: MemoryContextConfig = Field(default_factory=MemoryContextConfig)
     knowledge_router: KnowledgeRouterConfig = Field(default_factory=KnowledgeRouterConfig)
+    vault_index: VaultIndexConfig = Field(default_factory=VaultIndexConfig)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     cli_parameters: CLIParametersConfig = Field(default_factory=CLIParametersConfig)

@@ -30,6 +30,14 @@ def mock_codex_cache() -> CodexModelCache:
     )
 
 
+def _mock_vault_observer() -> MagicMock:
+    """Observer stub with awaitable lifecycle methods."""
+    observer = MagicMock()
+    observer.start = AsyncMock()
+    observer.stop = AsyncMock()
+    return observer
+
+
 async def test_orchestrator_starts_cache_observer(mock_codex_cache: CodexModelCache) -> None:
     """Should start CodexCacheObserver during orchestrator creation."""
     from ductor_bot.config import AgentConfig
@@ -44,6 +52,10 @@ async def test_orchestrator_starts_cache_observer(mock_codex_cache: CodexModelCa
 
     with (
         patch("ductor_bot.orchestrator.observers.CodexCacheObserver", return_value=mock_observer),
+        patch(
+            "ductor_bot.orchestrator.observers.VaultIndexObserver",
+            return_value=_mock_vault_observer(),
+        ),
         patch("ductor_bot.orchestrator.lifecycle.resolve_paths"),
         patch("ductor_bot.orchestrator.lifecycle.inject_runtime_environment"),
         patch(
@@ -89,6 +101,10 @@ async def test_orchestrator_passes_cache_to_observers(
         ),
         patch("ductor_bot.orchestrator.observers.CronObserver", mock_cron_class),
         patch("ductor_bot.orchestrator.observers.WebhookObserver", mock_webhook_class),
+        patch(
+            "ductor_bot.orchestrator.observers.VaultIndexObserver",
+            return_value=_mock_vault_observer(),
+        ),
         patch("ductor_bot.orchestrator.lifecycle.resolve_paths"),
         patch("ductor_bot.orchestrator.lifecycle.inject_runtime_environment"),
         patch(
@@ -130,6 +146,10 @@ async def test_orchestrator_stops_cache_observer(mock_codex_cache: CodexModelCac
 
     with (
         patch("ductor_bot.orchestrator.observers.CodexCacheObserver", return_value=mock_observer),
+        patch(
+            "ductor_bot.orchestrator.observers.VaultIndexObserver",
+            return_value=_mock_vault_observer(),
+        ),
         patch("ductor_bot.orchestrator.lifecycle.resolve_paths"),
         patch("ductor_bot.orchestrator.lifecycle.inject_runtime_environment"),
         patch(
