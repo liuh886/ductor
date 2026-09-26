@@ -16,6 +16,8 @@ from rich.console import Console
 # tests that patch ductor_bot.__main__.<name>.
 from ductor_bot.cli_commands.agents import cmd_agents as _cmd_agents
 from ductor_bot.cli_commands.api_cmd import cmd_api as _cmd_api
+from ductor_bot.cli_commands.config_cmd import cmd_config as _cmd_config
+from ductor_bot.cli_commands.config_cmd import unknown_config_keys
 from ductor_bot.cli_commands.docker import cmd_docker as _cmd_docker
 from ductor_bot.cli_commands.install import cmd_install as _cmd_install
 from ductor_bot.cli_commands.lifecycle import (
@@ -139,8 +141,7 @@ def _warn_unknown_config_keys(user_data: dict[str, object]) -> None:
     silently preserved by the deep-merge, so without a warning it is impossible
     to tell an effective setting from a no-op one.
     """
-    known = set(AgentConfig.model_fields)
-    unknown = sorted(key for key in user_data if not key.startswith("_") and key not in known)
+    unknown = unknown_config_keys(user_data)
     if unknown:
         logger.warning(
             "Config has %d key(s) with no effect in this build: %s",
@@ -392,6 +393,7 @@ _COMMANDS: dict[str, str] = {
     "api": "api",
     "agents": "agents",
     "install": "install",
+    "config": "config",
 }
 
 _Action = Callable[[], None]
@@ -428,6 +430,7 @@ def main() -> None:
         "api": lambda: _cmd_api(args),
         "agents": lambda: _cmd_agents(args),
         "install": lambda: _cmd_install(args),
+        "config": lambda: _cmd_config(args),
     }
 
     handler = dispatch.get(action) if action else None

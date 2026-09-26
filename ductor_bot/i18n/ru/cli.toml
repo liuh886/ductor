@@ -278,6 +278,7 @@ uninstall = "Полностью удалить и деинсталлироват
 service_install = "Запустить как фоновую службу ({hint})"
 service = "Управление службой (status/stop/logs/...)"
 agents = "Управление суб-агентами (list/add/remove)"
+config_prune = "Удалить ключи конфигурации, которые игнорирует эта сборка"
 docker = "Управление Docker (rebuild/enable/disable)"
 api = "Управление API-сервером (enable/disable) [бета]"
 install = "Установка доп. пакетов (matrix, api)"
