@@ -241,7 +241,7 @@ class CLIService:
             self._resolve_model(request),
         )
 
-        accumulated_text = ""
+        accumulated_chunks: list[str] = []
         result_event: ResultEvent | None = None
         stream_error = False
 
@@ -268,17 +268,19 @@ class CLIService:
                     logger.info("Streaming aborted mid-stream chat=%d", request.chat_id)
                     break
                 text, result = await callbacks.dispatch(event)
-                accumulated_text += text
+                accumulated_chunks.append(text)
                 if result is not None:
                     result_event = result
                     is_timeout = (result.result or "").startswith("__TIMEOUT__")
                     if not result.is_error and not is_timeout:
-                        final_delta = _missing_final_delta(accumulated_text, result.result)
+                        final_delta = _missing_final_delta(
+                            "".join(accumulated_chunks), result.result
+                        )
                         if final_delta:
                             text, _ = await callbacks.dispatch(
                                 AssistantTextDelta(type="assistant", text=final_delta)
                             )
-                            accumulated_text += text
+                            accumulated_chunks.append(text)
         except asyncio.CancelledError:
             raise
         except (OSError, RuntimeError, ValueError, UnicodeDecodeError):
@@ -291,7 +293,7 @@ class CLIService:
         if stream_error or result_event is None:
             return await self._handle_stream_fallback(
                 request,
-                accumulated_text,
+                "".join(accumulated_chunks),
                 stream_error=stream_error,
                 init_session_id=callbacks.init_session_id,
             )
@@ -312,7 +314,7 @@ class CLIService:
         )
         cli_resp = CLIResponse(
             session_id=result_event.session_id,
-            result="" if timed_out else (result_event.result or accumulated_text),
+            result="" if timed_out else (result_event.result or "".join(accumulated_chunks)),
             is_error=result_event.is_error,
             timed_out=timed_out,
             returncode=result_event.returncode,
