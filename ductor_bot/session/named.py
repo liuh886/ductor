@@ -291,26 +291,33 @@ class NamedSessionRegistry:
         )
 
     def end_session(self, chat_id: int, name: str) -> bool:
-        """Mark a session as ended. Returns True if found and ended."""
-        ns = self._sessions.get((chat_id, name))
+        """Mark a session as ended and drop it from memory.
+
+        Ended sessions are excluded from persistence, so keeping them in
+        ``_sessions`` would grow memory for the whole bot lifetime. Removing
+        them also matches the post-restart view, where ended sessions are gone.
+        Returns True if the session existed and was active.
+        """
+        ns = self._sessions.pop((chat_id, name), None)
         if ns is None or ns.status == "ended":
             return False
-        ns.status = "ended"
         self._persist()
         logger.info("Named session ended name=%s chat=%d", name, chat_id)
         return True
 
     def end_all(self, chat_id: int) -> int:
         """End all active sessions for *chat_id*. Returns count ended."""
-        count = 0
-        for ns in self._sessions.values():
-            if ns.chat_id == chat_id and ns.status != "ended":
-                ns.status = "ended"
-                count += 1
-        if count:
+        keys = [
+            key
+            for key, ns in self._sessions.items()
+            if ns.chat_id == chat_id and ns.status != "ended"
+        ]
+        for key in keys:
+            del self._sessions[key]
+        if keys:
             self._persist()
-            logger.info("All named sessions ended chat=%d count=%d", chat_id, count)
-        return count
+            logger.info("All named sessions ended chat=%d count=%d", chat_id, len(keys))
+        return len(keys)
 
     def update_after_response(
         self,

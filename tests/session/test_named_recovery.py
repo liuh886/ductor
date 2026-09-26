@@ -231,3 +231,34 @@ class TestInteragentQuotaIsolation:
             reg.add(self._ia_session(f"ia.agent{i}.t{i}.xdeadbeef", created_at=float(i)))
 
         assert reg.get(1, user.name) is not None
+
+
+class TestEndedSessionsDropped:
+    """Ended sessions must not linger in memory (unbounded leak)."""
+
+    def test_end_session_removes_entry(self, tmp_path: Path) -> None:
+        reg = _make_registry(tmp_path)
+        ns = reg.create(chat_id=1, provider="claude", model="opus", prompt_preview="hi")
+
+        assert reg.end_session(1, ns.name) is True
+        assert reg.get(1, ns.name) is None
+        assert reg.end_session(1, ns.name) is False
+
+    def test_end_all_removes_entries(self, tmp_path: Path) -> None:
+        reg = _make_registry(tmp_path)
+        reg.create(chat_id=1, provider="claude", model="opus", prompt_preview="a")
+        reg.create(chat_id=1, provider="claude", model="opus", prompt_preview="b")
+
+        assert reg.end_all(1) == 2
+        assert reg.list_active(1) == []
+        assert reg._sessions == {}
+
+    def test_ended_session_not_persisted(self, tmp_path: Path) -> None:
+        import json
+
+        reg = _make_registry(tmp_path)
+        ns = reg.create(chat_id=1, provider="claude", model="opus", prompt_preview="hi")
+        reg.end_session(1, ns.name)
+
+        data = json.loads((tmp_path / "named_sessions.json").read_text(encoding="utf-8"))
+        assert data["sessions"] == []
