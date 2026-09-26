@@ -40,18 +40,35 @@ class MatrixMessageQueue:
     # -- Pending task tracking -----------------------------------------------
 
     def track(self, *, chat_id: int, task: asyncio.Task[None]) -> None:
-        """Register a spawned message-handling task for a chat."""
-        self._pending.setdefault(chat_id, []).append(task)
+        """Register a spawned message-handling task for a chat.
+
+        Completed tasks are pruned on completion, so the per-chat list never
+        grows with finished work (the queue previously only pruned on
+        ``pending_count``/``drain``, which have no callers in steady state).
+        """
+        tasks = self._pending.setdefault(chat_id, [])
+        tasks.append(task)
+
+        def _prune_on_done(_task: asyncio.Task[None]) -> None:
+            self._prune(chat_id)
+
+        task.add_done_callback(_prune_on_done)
+
+    def _prune(self, chat_id: int) -> None:
+        """Drop finished tasks for *chat_id*, removing empty lists."""
+        tasks = self._pending.get(chat_id)
+        if not tasks:
+            return
+        active = [t for t in tasks if not t.done()]
+        if active:
+            self._pending[chat_id] = active
+        else:
+            self._pending.pop(chat_id, None)
 
     def pending_count(self, chat_id: int) -> int:
         """Return the number of pending (not yet done) tasks for a chat."""
-        tasks = self._pending.get(chat_id)
-        if not tasks:
-            return 0
-        # Prune completed tasks
-        active = [t for t in tasks if not t.done()]
-        self._pending[chat_id] = active
-        return len(active)
+        self._prune(chat_id)
+        return len(self._pending.get(chat_id, []))
 
     def is_busy(self, chat_id: int) -> bool:
         """Return True if there are pending tasks for this chat."""

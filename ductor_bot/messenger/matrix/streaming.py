@@ -50,12 +50,15 @@ class MatrixStreamEditor:
         self._room_id = room_id
         self._send_fn = send_fn
         self._button_tracker = button_tracker
-        self._buffer = ""
+        self._buffer_parts: list[str] = []
         self._segment_count = 0
+
+    def _buffer_text(self) -> str:
+        return "".join(self._buffer_parts)
 
     async def on_delta(self, delta: str) -> None:
         """Append text to the current segment buffer."""
-        self._buffer += delta
+        self._buffer_parts.append(delta)
 
     async def on_tool(self, tool: object) -> None:
         """Flush the buffer on tool activity and log the segment."""
@@ -65,7 +68,7 @@ class MatrixStreamEditor:
             "Matrix streaming: tool=%s segment=%d buf_len=%d",
             tool_name,
             self._segment_count,
-            len(self._buffer.strip()),
+            len(self._buffer_text().strip()),
         )
         await self._flush_and_tag(f"**[TOOL: {tool_name}]**")
 
@@ -78,7 +81,7 @@ class MatrixStreamEditor:
 
     async def finalize(self, result_text: str | None) -> None:
         """Send the final segment with button extraction."""
-        final_text = self._buffer.strip()
+        final_text = self._buffer_text().strip()
         logger.info(
             "Matrix streaming done: segments=%d final_buf_len=%d result_len=%d",
             self._segment_count,
@@ -100,10 +103,10 @@ class MatrixStreamEditor:
         keep the Matrix chat clean -- only reasoning text and the
         final summary are visible to the user.
         """
-        seg_text = self._buffer.strip()
+        seg_text = self._buffer_text().strip()
         if seg_text:
-            await self._send_fn(self._room_id, self._buffer)
-        self._buffer = ""
+            await self._send_fn(self._room_id, self._buffer_text())
+        self._buffer_parts = []
         # Re-set typing indicator (sending messages clears it in Matrix)
         with contextlib.suppress(Exception):
             await self._client.room_typing(self._room_id, typing_state=True, timeout=30000)

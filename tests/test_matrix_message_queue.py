@@ -119,6 +119,22 @@ class TestPendingTasks:
 
         asyncio.run(_run())
 
+    def test_completed_tasks_pruned_without_queries(self) -> None:
+        """Done callbacks drop finished tasks even if nothing queries the queue."""
+        q = MatrixMessageQueue()
+
+        async def _instant() -> None:
+            pass
+
+        async def _run() -> None:
+            task = asyncio.create_task(_instant())
+            q.track(chat_id=1, task=task)
+            await task
+            await asyncio.sleep(0)  # let the done callback run
+            assert q._pending == {}
+
+        asyncio.run(_run())
+
 
 # ---------------------------------------------------------------------------
 # Drain (cancel pending tasks for a chat)
