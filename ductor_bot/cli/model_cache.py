@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 _CACHE_MAX_AGE = timedelta(hours=24)
 REFRESH_INTERVAL_S: int = 3600
 
+# Providers whose hardcoded fallback has already been logged at WARNING level.
+# Main agent and every sub-agent run their own cache observer in one process,
+# so without this the same fallback warning would repeat hourly per agent.
+_fallback_warned: set[str] = set()
+
 
 class BaseModelCache(ABC):
     """Abstract base for immutable model caches with disk persistence.
@@ -128,6 +133,7 @@ class BaseModelCache(ABC):
 
         # Discovery returned real models — persist and return.
         if models:
+            _fallback_warned.discard(name)
             cache = cls(  # type: ignore[call-arg]
                 last_updated=datetime.now(UTC).isoformat(),
                 models=models,
@@ -154,10 +160,14 @@ class BaseModelCache(ABC):
         # Last resort: hardcoded fallback, in-memory only (NOT saved to disk).
         fallback = cls._fallback_models()
         if fallback:
-            logger.warning(
-                "Using hardcoded %s fallback models (not persisted)",
-                name,
-            )
+            if name in _fallback_warned:
+                logger.debug("Using hardcoded %s fallback models (not persisted)", name)
+            else:
+                _fallback_warned.add(name)
+                logger.warning(
+                    "Using hardcoded %s fallback models (not persisted)",
+                    name,
+                )
             return cls(  # type: ignore[call-arg]
                 last_updated=datetime.now(UTC).isoformat(),
                 models=fallback,

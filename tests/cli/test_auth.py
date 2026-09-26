@@ -12,6 +12,7 @@ from ductor_bot.cli.auth import (
     check_claude_auth,
     check_codex_auth,
     check_gemini_auth,
+    check_grok_auth,
     check_mimo_auth,
     format_age,
     gemini_uses_api_key_mode,
@@ -767,3 +768,67 @@ def test_antigravity_cli_logged_in_returns_false_on_probe_error(
     monkeypatch.setattr(subprocess, "run", _raise)
 
     assert _auth_mod._antigravity_cli_logged_in() is False
+
+
+# -- Grok auth --
+
+
+def test_check_grok_auth_ignores_env_key_without_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """XAI_API_KEY alone is unusable: every grok call spawns the grok CLI."""
+    import ductor_bot.cli.auth as _auth_mod
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("XAI_API_KEY", "xai-test")
+    monkeypatch.setattr(_auth_mod.shutil, "which", lambda _name: None)
+
+    result = check_grok_auth()
+
+    assert result.provider == "grok"
+    assert result.status == AuthStatus.NOT_FOUND
+
+
+def test_check_grok_auth_env_key_with_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ductor_bot.cli.auth as _auth_mod
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.setenv("XAI_API_KEY", "xai-test")
+    monkeypatch.setattr(_auth_mod.shutil, "which", lambda _name: r"C:\fake\grok.exe")
+
+    result = check_grok_auth()
+
+    assert result.status == AuthStatus.AUTHENTICATED
+
+
+def test_check_grok_auth_file_with_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ductor_bot.cli.auth as _auth_mod
+
+    grok_home = tmp_path / ".grok"
+    grok_home.mkdir()
+    (grok_home / "auth.json").write_text("{}")
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(_auth_mod.shutil, "which", lambda _name: r"C:\fake\grok.exe")
+
+    result = check_grok_auth()
+
+    assert result.status == AuthStatus.AUTHENTICATED
+
+
+def test_check_grok_auth_installed_without_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ductor_bot.cli.auth as _auth_mod
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("GROK_HOME", raising=False)
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(_auth_mod.shutil, "which", lambda _name: r"C:\fake\grok.exe")
+    monkeypatch.setattr(_auth_mod, "_grok_cli_logged_in", lambda _binary: False)
+
+    result = check_grok_auth()
+
+    assert result.status == AuthStatus.INSTALLED

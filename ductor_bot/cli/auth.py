@@ -498,6 +498,13 @@ def check_grok_auth() -> AuthResult:
     auth_file = grok_home / "auth.json"
     binary = shutil.which("grok")
 
+    if binary is None:
+        # The grok provider shells out to the ``grok`` CLI for every call, so
+        # an env key or leftover config without the binary is not usable and
+        # must not start model-cache observers.
+        logger.debug("Auth check provider=grok status=NOT_FOUND (cli missing)")
+        return AuthResult("grok", AuthStatus.NOT_FOUND)
+
     if auth_file.is_file() and auth_file.stat().st_size > 0:
         mtime = datetime.fromtimestamp(auth_file.stat().st_mtime, tz=UTC)
         result = AuthResult("grok", AuthStatus.AUTHENTICATED, auth_file, mtime)
@@ -509,17 +516,12 @@ def check_grok_auth() -> AuthResult:
         logger.debug("Auth check provider=%s status=%s (env key)", result.provider, result.status)
         return result
 
-    if binary is not None and _grok_cli_logged_in(binary):
+    if _grok_cli_logged_in(binary):
         result = AuthResult("grok", AuthStatus.AUTHENTICATED)
         logger.debug("Auth check provider=%s status=%s (cli)", result.provider, result.status)
         return result
 
-    if binary is not None or (grok_home / "config.toml").is_file():
-        result = AuthResult("grok", AuthStatus.INSTALLED)
-        logger.debug("Auth check provider=%s status=%s", result.provider, result.status)
-        return result
-
-    result = AuthResult("grok", AuthStatus.NOT_FOUND)
+    result = AuthResult("grok", AuthStatus.INSTALLED)
     logger.debug("Auth check provider=%s status=%s", result.provider, result.status)
     return result
 
