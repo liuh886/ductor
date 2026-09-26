@@ -27,6 +27,7 @@ ductor -v
 
 # Tests
 pytest
+pytest -n auto   # parallel (~2.5 min instead of ~7 min)
 pytest -k "pattern"
 
 # Quality
