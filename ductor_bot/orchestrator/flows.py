@@ -527,27 +527,26 @@ def _request_target(orch: Orchestrator, request: AgentRequest) -> tuple[str, str
     return model_name, provider_name
 
 
-def _begin_inflight(
+async def _begin_inflight(
     orch: Orchestrator,
     request: AgentRequest,
     session: SessionData,
     *,
     is_recovery: bool = False,
 ) -> None:
-    """Record an in-flight turn for crash recovery."""
+    """Record an in-flight turn for crash recovery (off the event loop)."""
     model_name, provider_name = _request_target(orch, request)
-    orch._inflight_tracker.begin(
-        InflightTurn(
-            chat_id=request.chat_id,
-            provider=provider_name,
-            model=model_name,
-            session_id=session.session_id or "",
-            prompt_preview=request.prompt[:100],
-            started_at=datetime.now(UTC).isoformat(),
-            is_recovery=is_recovery,
-            path="normal",
-        )
+    turn = InflightTurn(
+        chat_id=request.chat_id,
+        provider=provider_name,
+        model=model_name,
+        session_id=session.session_id or "",
+        prompt_preview=request.prompt[:100],
+        started_at=datetime.now(UTC).isoformat(),
+        is_recovery=is_recovery,
+        path="normal",
     )
+    await asyncio.to_thread(orch._inflight_tracker.begin, turn)
 
 
 async def _gemini_missing_config_key_warning(
@@ -648,7 +647,7 @@ async def normal(
         logger.warning("Gemini API-key mode without configured ductor key")
         return warning
 
-    _begin_inflight(orch, request, session, is_recovery=is_recovery)
+    await _begin_inflight(orch, request, session, is_recovery=is_recovery)
     try:
         response = await orch._cli_service.execute(request)
         outcome = await _maybe_recover_session(orch, key, request, session, response)
@@ -664,7 +663,7 @@ async def normal(
             session_recovered=outcome.session_recovered,
         )
     finally:
-        orch._inflight_tracker.complete(key.chat_id)
+        await asyncio.to_thread(orch._inflight_tracker.complete, key.chat_id)
 
 
 async def normal_streaming(
@@ -683,7 +682,7 @@ async def normal_streaming(
         logger.warning("Gemini API-key mode without configured ductor key")
         return warning
 
-    _begin_inflight(orch, request, session, is_recovery=False)
+    await _begin_inflight(orch, request, session, is_recovery=False)
     try:
         cb = cbs or StreamingCallbacks()
 
@@ -721,7 +720,7 @@ async def normal_streaming(
             schedule_memory_flush=True,
         )
     finally:
-        orch._inflight_tracker.complete(key.chat_id)
+        await asyncio.to_thread(orch._inflight_tracker.complete, key.chat_id)
 
 
 def _session_age_note(session: SessionData, warning_hours: int) -> str:
