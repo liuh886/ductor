@@ -1,0 +1,17 @@
+# Keep the repository line endings consistent across platforms.
+* text=auto eol=lf
+
+# Windows helper scripts must keep CRLF to stay runnable.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.whl binary

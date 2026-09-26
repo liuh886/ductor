@@ -135,7 +135,9 @@ async def test_start_seeds_operations_and_cleans_projection_once(tmp_path: Path)
     supervisor = cast(
         "AgentSupervisor",
         SimpleNamespace(
-            stacks={"worker": SimpleNamespace(paths=SimpleNamespace(mainmemory_path=mainmemory_path))}
+            stacks={
+                "worker": SimpleNamespace(paths=SimpleNamespace(mainmemory_path=mainmemory_path))
+            }
         ),
     )
     sync = SharedKnowledgeSync(shared_path, supervisor)

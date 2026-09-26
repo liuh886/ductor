@@ -306,9 +306,7 @@ def main() -> int:
     assert isinstance(after, dict)
     return (
         0
-        if not after["missing_paths"]
-        and not after["stale_paths"]
-        and not after["changed_paths"]
+        if not after["missing_paths"] and not after["stale_paths"] and not after["changed_paths"]
         else 1
     )
 

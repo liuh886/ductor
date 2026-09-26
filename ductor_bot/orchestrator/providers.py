@@ -194,9 +194,7 @@ class ProviderManager:
             return ""
         defaults = {
             "gemini": "",
-            "mimo": (
-                self._config.model if self._config.provider == "mimo" else "mimo-v2.5-pro"
-            ),
+            "mimo": (self._config.model if self._config.provider == "mimo" else "mimo-v2.5-pro"),
             "antigravity": "antigravity-default",
         }
         return defaults.get(provider, "")
