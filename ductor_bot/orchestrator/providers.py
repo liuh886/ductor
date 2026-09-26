@@ -31,6 +31,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Providers whose "installed but NOT authenticated" warning was already
+# emitted. Every agent runs apply_auth_results in one process, so without
+# this the same warning repeats once per agent at startup.
+_warned_unauthenticated: set[str] = set()
+
 
 class ProviderManager:
     """Owns provider authentication state, model resolution, and provider metadata.
@@ -104,9 +109,14 @@ class ProviderManager:
 
         for provider, result in auth_results.items():
             if result.status == authenticated:
+                _warned_unauthenticated.discard(provider)
                 logger.info("Provider [%s]: authenticated", provider)
             elif result.status == installed:
-                logger.warning("Provider [%s]: installed but NOT authenticated", provider)
+                if provider in _warned_unauthenticated:
+                    logger.debug("Provider [%s]: installed but NOT authenticated", provider)
+                else:
+                    _warned_unauthenticated.add(provider)
+                    logger.warning("Provider [%s]: installed but NOT authenticated", provider)
             else:
                 logger.info("Provider [%s]: not found", provider)
 

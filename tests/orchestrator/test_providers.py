@@ -246,6 +246,35 @@ class TestApplyAuthResults:
         )
         assert pm.available_providers == frozenset({"claude", "codex", "gemini"})
 
+    def test_installed_warning_logged_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        import ductor_bot.orchestrator.providers as providers_module
+
+        providers_module._warned_unauthenticated.discard("codex")
+        pm = _pm()
+        auth_status = MagicMock()
+        auth_status.AUTHENTICATED = "auth"
+        auth_status.INSTALLED = "inst"
+        result_codex = MagicMock()
+        result_codex.status = "inst"
+        result_codex.is_authenticated = False
+
+        with caplog.at_level("WARNING", logger="ductor_bot.orchestrator.providers"):
+            pm.apply_auth_results(
+                {"codex": result_codex},
+                auth_status_enum=auth_status,
+                cli_service=MagicMock(),
+            )
+            pm.apply_auth_results(
+                {"codex": result_codex},
+                auth_status_enum=auth_status,
+                cli_service=MagicMock(),
+            )
+
+        warnings = [
+            r for r in caplog.records if "installed but NOT authenticated" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+
 
 # ---------------------------------------------------------------------------
 # active_provider_name
