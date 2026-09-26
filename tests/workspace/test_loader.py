@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 from ductor_bot.workspace.loader import (
     build_appended_files_block,
@@ -127,3 +131,36 @@ async def test_appended_block_blocks_symlink_escape(tmp_path: Path) -> None:
     link.symlink_to(outside)
     block = await build_appended_files_block(paths, ["link.md"])
     assert block is None
+
+
+async def test_appended_block_cache_invalidates_on_file_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ductor_bot.workspace.loader as loader_module
+
+    paths = _ws(tmp_path)
+    (paths.workspace / "A.md").write_text("alpha")
+    reads = 0
+    original_read = loader_module.read_file
+
+    def counting_read(path: Path) -> str | None:
+        nonlocal reads
+        reads += 1
+        return original_read(path)
+
+    monkeypatch.setattr(loader_module, "read_file", counting_read)
+
+    assert await build_appended_files_block(paths, ["A.md"]) == "alpha"
+    assert await build_appended_files_block(paths, ["A.md"]) == "alpha"
+    assert reads == 1
+
+    (paths.workspace / "A.md").write_text("updated content")
+    assert await build_appended_files_block(paths, ["A.md"]) == "updated content"
+    assert reads == 2
+
+
+async def test_appended_block_cache_picks_up_late_file(tmp_path: Path) -> None:
+    paths = _ws(tmp_path)
+    assert await build_appended_files_block(paths, ["later.md"]) is None
+    (paths.workspace / "later.md").write_text("here now")
+    assert await build_appended_files_block(paths, ["later.md"]) == "here now"
