@@ -663,3 +663,57 @@ async def test_list_active_for_chat_excludes_stale(tmp_path: Path) -> None:
     with time_machine.travel("2099-01-01 00:00:00", tick=False):
         result = await mgr.list_active_for_chat(-100)
         assert len(result) == 0
+
+
+# -- sessions.json read cache -------------------------------------------------
+
+
+async def test_load_reuses_cache_and_invalidates_on_file_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ductor_bot.session.manager as manager_module
+
+    mgr = _make_manager(tmp_path)
+    reads = 0
+    original_load = manager_module.load_json
+
+    def counting_load(path: Path) -> dict[str, Any] | None:
+        nonlocal reads
+        reads += 1
+        return original_load(path)
+
+    monkeypatch.setattr(manager_module, "load_json", counting_load)
+
+    assert await mgr._load() == {}
+    assert await mgr._load() == {}
+    assert reads == 1
+
+    (tmp_path / "sessions.json").write_text(
+        '{"7": {"chat_id": 7, "provider": "codex", "model": "gpt-5.2"}}',
+        encoding="utf-8",
+    )
+    sessions = await mgr._load()
+    assert reads == 2
+    assert "tg:7" in sessions
+    assert await mgr._load() is sessions
+    assert reads == 2
+
+
+async def test_save_keeps_cache_warm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import ductor_bot.session.manager as manager_module
+
+    mgr = _make_manager(tmp_path)
+    await mgr.resolve_session(key=SessionKey(chat_id=1))
+
+    reads = 0
+    original_load = manager_module.load_json
+
+    def counting_load(path: Path) -> dict[str, Any] | None:
+        nonlocal reads
+        reads += 1
+        return original_load(path)
+
+    monkeypatch.setattr(manager_module, "load_json", counting_load)
+    sessions = await mgr._load()
+    assert reads == 0
+    assert "tg:1" in sessions

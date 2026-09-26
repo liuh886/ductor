@@ -269,6 +269,9 @@ class SessionManager:
         self._config = config
         self._lock = asyncio.Lock()
         self._topic_name_resolver: TopicNameResolver | None = None
+        self._cache: dict[str, SessionData] | None = None
+        self._cache_stat: tuple[int, int] | None = None
+        self._cache_model_keys: set[str] = set()
 
     def set_topic_name_resolver(self, resolver: TopicNameResolver) -> None:
         """Register a callback that resolves ``(chat_id, topic_id)`` to a name."""
@@ -663,6 +666,10 @@ class SessionManager:
         keys (``"1"``) that may still be on disk before the first save
         migrates them.
         """
+        if self._cache is not None and self._cache_stat == self._file_signature():
+            # Cache mirrors the raw file, including which entries carry a
+            # ``model`` key, so no extra file read is needed.
+            return storage_key in self._cache and storage_key not in self._cache_model_keys
         if not self._path.exists():
             return False
         try:
@@ -740,13 +747,21 @@ class SessionManager:
         Handles migration from legacy unprefixed keys (``"12345"``,
         ``"12345:99"``) to transport-prefixed keys (``"tg:12345"``,
         ``"tg:12345:99"``).
-        """
 
-        def _read() -> dict[str, SessionData]:
+        The parsed mapping is cached in memory and reused while the file's
+        ``(mtime_ns, size)`` signature is unchanged, so per-message hot paths
+        no longer re-read and re-parse the JSON on every call.
+        """
+        signature = self._file_signature()
+        if self._cache is not None and signature == self._cache_stat:
+            return self._cache
+
+        def _read() -> tuple[dict[str, SessionData], set[str]]:
             data = load_json(self._path)
             if data is None:
-                return {}
+                return {}, set()
             result: dict[str, SessionData] = {}
+            with_model_key: set[str] = set()
             for k, v in data.items():
                 parsed = SessionKey.parse(k)
                 if "topic_id" not in v and parsed.topic_id is not None:
@@ -756,11 +771,17 @@ class SessionManager:
                 if "transport" not in v:
                     v["transport"] = parsed.transport
                 sd = SessionData(**v)
+                if "model" in v:
+                    with_model_key.add(parsed.storage_key)
                 # Re-key under the canonical prefixed storage key
                 result[parsed.storage_key] = sd
-            return result
+            return result, with_model_key
 
-        return await asyncio.to_thread(_read)
+        sessions, with_model_key = await asyncio.to_thread(_read)
+        self._cache = sessions
+        self._cache_model_keys = with_model_key
+        self._cache_stat = signature
+        return sessions
 
     async def _save(self, sessions: dict[str, SessionData]) -> None:
         """Atomically write sessions to JSON file."""
@@ -769,3 +790,17 @@ class SessionManager:
             atomic_json_save(self._path, {k: asdict(v) for k, v in sessions.items()})
 
         await asyncio.to_thread(_write)
+        # The persisted mapping is the freshest state: adopt it as the cache so
+        # the next ``_load`` does not re-read and re-parse the file. Every
+        # dataclass dump carries a ``model`` field, so all keys are recorded.
+        self._cache = sessions
+        self._cache_model_keys = set(sessions)
+        self._cache_stat = self._file_signature()
+
+    def _file_signature(self) -> tuple[int, int] | None:
+        """Return a cheap ``(mtime_ns, size)`` signature for the sessions file."""
+        try:
+            stat = self._path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
