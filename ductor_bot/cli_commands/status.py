@@ -184,6 +184,7 @@ def print_usage() -> None:
     table.add_row("ductor service", t_rich("help.service"))
     table.add_row("ductor agents", t_rich("help.agents"))
     table.add_row("ductor config prune", t_rich("help.config_prune"))
+    table.add_row("ductor backup", t_rich("help.backup"))
     table.add_row("ductor docker", t_rich("help.docker"))
     table.add_row("ductor api", t_rich("help.api"))
     table.add_row("ductor install <extra>", t_rich("help.install"))

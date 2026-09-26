@@ -16,6 +16,7 @@ from rich.console import Console
 # tests that patch ductor_bot.__main__.<name>.
 from ductor_bot.cli_commands.agents import cmd_agents as _cmd_agents
 from ductor_bot.cli_commands.api_cmd import cmd_api as _cmd_api
+from ductor_bot.cli_commands.backup_cmd import cmd_backup as _cmd_backup
 from ductor_bot.cli_commands.config_cmd import cmd_config as _cmd_config
 from ductor_bot.cli_commands.config_cmd import unknown_config_keys
 from ductor_bot.cli_commands.docker import cmd_docker as _cmd_docker
@@ -394,6 +395,7 @@ _COMMANDS: dict[str, str] = {
     "agents": "agents",
     "install": "install",
     "config": "config",
+    "backup": "backup",
 }
 
 _Action = Callable[[], None]
@@ -431,6 +433,7 @@ def main() -> None:
         "agents": lambda: _cmd_agents(args),
         "install": lambda: _cmd_install(args),
         "config": lambda: _cmd_config(args),
+        "backup": lambda: _cmd_backup(args),
     }
 
     handler = dispatch.get(action) if action else None
