@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import shutil
 from unittest.mock import MagicMock
 
 import pytest
 
 from ductor_bot.cli.base import CLIConfig
 from ductor_bot.cli.service import CLIServiceConfig
+
+_requires_claude_cli = pytest.mark.skipif(
+    shutil.which("claude") is None,
+    reason="claude CLI not installed on PATH",
+)
 
 
 @pytest.fixture
@@ -27,6 +33,7 @@ def service_config_with_params() -> CLIServiceConfig:
     )
 
 
+@_requires_claude_cli
 def test_main_agent_claude_parameters() -> None:
     """Should pass Claude-specific CLI parameters to Claude provider."""
     from ductor_bot.cli.claude_provider import ClaudeCodeCLI
@@ -98,6 +105,7 @@ def test_main_agent_codex_parameters() -> None:
     assert "test prompt" not in cmd
 
 
+@_requires_claude_cli
 def test_parameter_isolation() -> None:
     """Should not leak Claude parameters to Codex and vice versa."""
     from ductor_bot.cli.claude_provider import ClaudeCodeCLI
