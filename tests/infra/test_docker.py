@@ -259,6 +259,42 @@ class TestDockerManager:
             result = await mgr.ensure_running()
         assert result == "test-ctr"
 
+    async def test_ensure_running_skips_probe_within_ttl(
+        self, docker_config: DockerConfig, docker_paths: DuctorPaths
+    ) -> None:
+        import time
+
+        from ductor_bot.infra.docker import DockerManager
+
+        mgr = DockerManager(docker_config, docker_paths)
+        mgr._container = "test-ctr"
+        mgr._verified_at = time.monotonic()
+
+        probe = AsyncMock(return_value=True)
+        with patch.object(mgr, "_container_running", probe):
+            assert await mgr.ensure_running() == "test-ctr"
+            assert await mgr.ensure_running() == "test-ctr"
+
+        probe.assert_not_awaited()
+
+    async def test_ensure_running_probes_again_after_ttl(
+        self, docker_config: DockerConfig, docker_paths: DuctorPaths
+    ) -> None:
+        import time
+
+        from ductor_bot.infra.docker import DockerManager
+
+        mgr = DockerManager(docker_config, docker_paths)
+        mgr._container = "test-ctr"
+        mgr._verified_at = time.monotonic() - 31.0
+
+        probe = AsyncMock(return_value=True)
+        with patch.object(mgr, "_container_running", probe):
+            assert await mgr.ensure_running() == "test-ctr"
+            assert await mgr.ensure_running() == "test-ctr"
+
+        assert probe.await_count == 1
+
     async def test_ensure_running_recovers_stopped_container(
         self, docker_config: DockerConfig, docker_paths: DuctorPaths
     ) -> None:

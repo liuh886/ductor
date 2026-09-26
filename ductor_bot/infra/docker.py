@@ -8,6 +8,7 @@ import os
 import platform
 import sys
 import tempfile
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from shutil import which
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 _DUCTOR_MOUNT = "/ductor"
 _CONTAINER_WS = f"{_DUCTOR_MOUNT}/workspace"
 _MOUNT_PREFIX = "/mnt"
+_CONTAINER_CHECK_TTL_S = 30.0
 
 
 def _needs_uid_mapping() -> bool:
@@ -130,6 +132,7 @@ class DockerManager:
         self._config = config
         self._paths = paths
         self._container: str | None = None
+        self._verified_at: float = 0.0
         self._console: Console | None = self._create_console()
 
     @property
@@ -224,17 +227,27 @@ class DockerManager:
             self._status(f"[bold green]Container '{container}' ready.[/bold green]")
 
         self._container = container
+        self._verified_at = time.monotonic()
         return container
 
     async def ensure_running(self) -> str | None:
         """Verify the container is alive; auto-recover if it stopped.
+
+        The health probe (``docker container inspect`` subprocess) is cached
+        for ``_CONTAINER_CHECK_TTL_S`` seconds so per-message callers do not
+        spawn a process on every turn.
 
         Returns the container name on success, or ``None`` if recovery failed.
         """
         if not self._container:
             return await self.setup()
 
+        now = time.monotonic()
+        if now - self._verified_at < _CONTAINER_CHECK_TTL_S:
+            return self._container
+
         if await self._container_running(self._container):
+            self._verified_at = now
             return self._container
 
         logger.warning(
@@ -250,6 +263,7 @@ class DockerManager:
             return
         name = self._container
         self._container = None
+        self._verified_at = 0.0
         await self._exec("docker", "stop", "-t", "5", name)
         await self._exec("docker", "rm", "-f", name)
         logger.info("Docker container '%s' stopped and removed", name)
