@@ -72,6 +72,7 @@ async def create_orchestrator(
         docker_container=docker_container,
         agent_name=agent_name,
         interagent_port=config.interagent_port,
+        interagent_token=config.interagent_token,
     )
     orch._docker = docker_mgr
 

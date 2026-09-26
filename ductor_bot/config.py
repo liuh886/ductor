@@ -506,6 +506,7 @@ class AgentConfig(BaseModel):
     update_check: bool = True
     group_mention_only: bool = False
     interagent_port: int = 8799
+    interagent_token: str = ""
     transport: str = "telegram"  # "telegram" | "matrix" | "slack"
     transports: list[str] = Field(default_factory=list)
     telegram_token: str = ""

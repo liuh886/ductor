@@ -126,6 +126,7 @@ class CLIConfig:
     # Multi-agent identification:
     agent_name: str = "main"
     interagent_port: int = 8799
+    interagent_token: str = ""
     # External transcription hooks (#66) — empty strings keep built-in strategies.
     transcribe_command: str = ""
     video_transcribe_command: str = ""
@@ -164,6 +165,8 @@ def _docker_env_flags(
         "-e",
         "DUCTOR_INTERAGENT_HOST=host.docker.internal",
     ]
+    if config.interagent_token:
+        env_flags += ["-e", f"DUCTOR_INTERAGENT_TOKEN={config.interagent_token}"]
     if config.topic_id:
         env_flags += ["-e", f"DUCTOR_TOPIC_ID={config.topic_id}"]
     if task_id := task_id_from_label(config.process_label):

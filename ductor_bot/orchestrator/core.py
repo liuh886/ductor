@@ -127,7 +127,7 @@ class _MessageDispatch:
 class Orchestrator:
     """Routes messages through command dispatch and conversation flows."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- transport identity fields are all intrinsic
         self,
         config: AgentConfig,
         paths: DuctorPaths,
@@ -135,6 +135,7 @@ class Orchestrator:
         docker_container: str = "",
         agent_name: str = "main",
         interagent_port: int = 8799,
+        interagent_token: str = "",
     ) -> None:
         self._config = config
         self._paths: DuctorPaths = paths
@@ -164,6 +165,7 @@ class Orchestrator:
                 grok_cli_parameters=tuple(config.cli_parameters.grok),
                 agent_name=agent_name,
                 interagent_port=interagent_port,
+                interagent_token=interagent_token,
                 transcribe_command=config.transcription.audio_command,
                 video_transcribe_command=config.transcription.video_command,
             ),
@@ -806,6 +808,7 @@ class Orchestrator:
                     antigravity_cli_parameters=tuple(config.cli_parameters.antigravity),
                     agent_name=self._cli_service._config.agent_name,
                     interagent_port=self._cli_service._config.interagent_port,
+                    interagent_token=self._cli_service._config.interagent_token,
                     transcribe_command=config.transcription.audio_command,
                     video_transcribe_command=config.transcription.video_command,
                 )

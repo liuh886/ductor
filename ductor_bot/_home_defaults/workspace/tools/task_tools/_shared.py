@@ -39,13 +39,24 @@ def get_api_url(path: str) -> str:
     return f"http://{host}:{port}{path}"
 
 
+def auth_headers(*, json_body: bool = False) -> dict[str, str]:
+    """Build request headers, including the interagent token when configured."""
+    headers: dict[str, str] = {}
+    token = os.environ.get("DUCTOR_INTERAGENT_TOKEN", "")
+    if token:
+        headers["X-DUCTOR-TOKEN"] = token
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
 def post_json(url: str, body: dict[str, object], *, timeout: int = 300) -> dict[str, object]:
     """POST JSON to internal API, return parsed response."""
     payload = json.dumps(body).encode()
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=auth_headers(json_body=True),
         method="POST",
     )
     try:
@@ -62,7 +73,7 @@ def post_json(url: str, body: dict[str, object], *, timeout: int = 300) -> dict[
 
 def get_json(url: str, *, timeout: int = 10) -> dict[str, object]:
     """GET JSON from internal API, return parsed response."""
-    req = urllib.request.Request(url, method="GET")
+    req = urllib.request.Request(url, headers=auth_headers(), method="GET")
     try:
         with _INTERNAL_OPENER.open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())  # type: ignore[no-any-return]

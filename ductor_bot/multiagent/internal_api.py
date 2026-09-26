@@ -12,7 +12,9 @@ The server also starts in **task-only mode** (no multi-agent bus) when
 
 from __future__ import annotations
 
+import hmac
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
@@ -43,14 +45,16 @@ def _parse_origin(data: dict[str, object]) -> tuple[int, int | None]:
 
 _DEFAULT_PORT = 8799
 _BIND_ALL_HOST = ".".join(["0"] * 4)
+_TOKEN_HEADER = "X-DUCTOR-TOKEN"  # noqa: S105 -- header name, not a credential
 
 
 class InternalAgentAPI:
     """HTTP server for CLI → Bus / TaskHub communication.
 
-    Binds to ``127.0.0.1`` by default.  When *docker_mode* is ``True`` it
-    binds to ``0.0.0.0`` so that CLI processes running inside a Docker
-    container can reach the API via ``host.docker.internal``.
+    Binds to ``127.0.0.1`` by default.  In Docker mode the API only binds to
+    ``0.0.0.0`` when an ``interagent_token`` is configured; the token is then
+    required (via the ``X-DUCTOR-TOKEN`` header) on every request.  Without a
+    token, Docker mode stays on loopback and logs a warning.
 
     The *bus* parameter is optional: when ``None`` only task endpoints are
     registered (task-only mode for single-agent setups).
@@ -62,13 +66,16 @@ class InternalAgentAPI:
         port: int = _DEFAULT_PORT,
         *,
         docker_mode: bool = False,
+        token: str = "",
     ) -> None:
         self._bus = bus
         self._port = port
-        self._bind_host = _BIND_ALL_HOST if docker_mode else "127.0.0.1"
+        self._token = token.strip()
+        self._docker_mode = docker_mode
+        self._bind_host = _BIND_ALL_HOST if (docker_mode and self._token) else "127.0.0.1"
         self._health_ref: dict[str, AgentHealth] | None = None
         self._task_hub: TaskHub | None = None
-        self._app = web.Application()
+        self._app = web.Application(middlewares=[self._auth_middleware])
 
         # Inter-agent routes (only when bus is available)
         if bus is not None:
@@ -99,12 +106,33 @@ class InternalAgentAPI:
     def port(self) -> int:
         return self._port
 
+    @web.middleware
+    async def _auth_middleware(
+        self,
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        """Require the configured token on every request when one is set."""
+        if self._token:
+            supplied = request.headers.get(_TOKEN_HEADER, "")
+            if not hmac.compare_digest(supplied, self._token):
+                return web.json_response(
+                    {"success": False, "error": "Unauthorized"},
+                    status=401,
+                )
+        return await handler(request)
+
     async def start(self) -> bool:
         """Start the internal API server.
 
         Returns:
             True when the listener is active, False when bind/start fails.
         """
+        if self._docker_mode and not self._token:
+            logger.warning(
+                "Docker mode without interagent_token: internal API stays on 127.0.0.1; "
+                "set interagent_token to allow container access"
+            )
         self._runner = web.AppRunner(self._app, access_log=None)
         await self._runner.setup()
         try:

@@ -154,6 +154,7 @@ class AgentSupervisor:
             self._bus,
             port=self._main_config.interagent_port,
             docker_mode=self._main_config.docker.enabled,
+            token=self._main_config.interagent_token,
         )
         self._internal_api.set_health_ref(self._health)
         started = await self._internal_api.start()

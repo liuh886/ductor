@@ -122,6 +122,30 @@ def test_subprocess_env_sets_task_id_for_task_label(tmp_path: Path) -> None:
     assert env["DUCTOR_TASK_ID"] == "abc123"
 
 
+def test_subprocess_env_sets_interagent_token_when_configured(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = CLIConfig(working_dir=str(workspace), interagent_token="sekret")
+    clear_cache()
+    env = build_subprocess_env(config)
+
+    assert env is not None
+    assert env["DUCTOR_INTERAGENT_TOKEN"] == "sekret"
+
+
+def test_subprocess_env_omits_interagent_token_when_empty(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = CLIConfig(working_dir=str(workspace))
+    clear_cache()
+    env = build_subprocess_env(config)
+
+    assert env is not None
+    assert "DUCTOR_INTERAGENT_TOKEN" not in env
+
+
 def test_subprocess_env_omits_task_id_for_other_labels(tmp_path: Path) -> None:
     """Non-task labels (main, ns:*, interagent:*) must not leak DUCTOR_TASK_ID."""
     workspace = tmp_path / "workspace"

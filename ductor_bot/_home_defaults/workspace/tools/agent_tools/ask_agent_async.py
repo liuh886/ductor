@@ -108,10 +108,14 @@ def main() -> None:
         body["transport"] = transport
     payload = json.dumps(body).encode()
 
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("DUCTOR_INTERAGENT_TOKEN", "")
+    if token:
+        headers["X-DUCTOR-TOKEN"] = token
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
 

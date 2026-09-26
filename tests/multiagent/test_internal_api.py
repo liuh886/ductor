@@ -292,3 +292,46 @@ class TestLifecycle:
             started = await api.start()
 
         assert started is False
+
+
+class TestTokenAuth:
+    """Token middleware and bind-host rules."""
+
+    @pytest.fixture
+    def token_api(self, bus: InterAgentBus) -> InternalAgentAPI:
+        return InternalAgentAPI(bus, port=0, token="sekret")
+
+    @pytest.fixture
+    async def token_client(self, token_api: InternalAgentAPI) -> TestClient:
+        from aiohttp.test_utils import TestServer
+
+        server = TestServer(token_api._app)
+        c = TestClient(server)
+        await c.start_server()
+        yield c
+        await c.close()
+
+    async def test_request_without_token_is_unauthorized(self, token_client: TestClient) -> None:
+        resp = await token_client.get("/interagent/health")
+        assert resp.status == 401
+        data = await resp.json()
+        assert data["success"] is False
+
+    async def test_request_with_wrong_token_is_unauthorized(self, token_client: TestClient) -> None:
+        resp = await token_client.get("/interagent/health", headers={"X-DUCTOR-TOKEN": "wrong"})
+        assert resp.status == 401
+
+    async def test_request_with_token_succeeds(self, token_client: TestClient) -> None:
+        resp = await token_client.get("/interagent/health", headers={"X-DUCTOR-TOKEN": "sekret"})
+        assert resp.status == 200
+
+    async def test_no_token_allows_loopback_requests(self, client: TestClient) -> None:
+        resp = await client.get("/interagent/health")
+        assert resp.status == 200
+
+    def test_bind_host_requires_token_in_docker_mode(self) -> None:
+        from ductor_bot.multiagent.internal_api import _BIND_ALL_HOST
+
+        assert InternalAgentAPI(port=0)._bind_host == "127.0.0.1"
+        assert InternalAgentAPI(port=0, docker_mode=True)._bind_host == "127.0.0.1"
+        assert InternalAgentAPI(port=0, docker_mode=True, token="t")._bind_host == _BIND_ALL_HOST
